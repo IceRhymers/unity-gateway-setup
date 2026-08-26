@@ -86,6 +86,15 @@ resource "databricks_service_principal" "otel" {
   # workspace-level SCIM API so no account-level provider is needed.
   display_name = var.service_principal_display_name
   api          = "workspace"
+
+  # Required for OTLP ingestion: the exporter authenticates as this SP and POSTs
+  # to the workspace REST API at /api/2.0/otel/v1/{metrics,logs,traces}. Any
+  # workspace API rejects an identity without workspace-access with HTTP 403
+  # ("This API is disabled for users without the workspace-access entitlement"),
+  # so without this the UC grants below are not enough — every export is refused
+  # before it reaches the tables. Workspace-local SPs are NOT granted this by
+  # default here, so set it explicitly.
+  workspace_access = true
 }
 
 resource "databricks_service_principal_secret" "otel" {
