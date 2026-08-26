@@ -241,6 +241,25 @@ class ClaudeCodeGenerator(AgentGenerator):
             default=None,
             help="Optional SSL_CERT_FILE / NODE_EXTRA_CA_CERTS path (per-machine cert bundle).",
         )
+        # ---- model picker ----
+        parser.add_argument(
+            "--model-picker",
+            action="store_true",
+            help=(
+                "Emit a modelPicker so the interactive /model picker lists every "
+                "Anthropic-capable endpoint (aliases first, then version pins), not just "
+                "the four tier slots. Off by default. Requires Claude Code v2.1.242+."
+            ),
+        )
+        parser.add_argument(
+            "--model-picker-append",
+            action="store_true",
+            help=(
+                "With --model-picker, keep Claude Code's built-in tier rows and append "
+                "these (replaceBuiltInOptions=false). Default replaces them so the picker "
+                "shows exactly Default + your catalog."
+            ),
+        )
         # ---- telemetry (OpenTelemetry) ----
         parser.add_argument(
             "--telemetry",
@@ -428,6 +447,23 @@ class ClaudeCodeGenerator(AgentGenerator):
             allowed = [e.full_name + _context_suffix(e.name, args.small_context) for e in pool]
             settings["availableModels"] = sorted(set(allowed))
             settings["enforceAvailableModels"] = True
+
+        # Model picker: list every usable endpoint in the interactive /model picker
+        # (availableModels only enforces an allow-list; it doesn't add picker rows).
+        # Row schema is { model, label?, description? }; aliases first, then pins.
+        if args.model_picker:
+            picker_pool = sorted(eps, key=lambda e: (not e.is_alias, e.schema, e.name))
+            settings["modelPicker"] = {
+                "options": [
+                    {
+                        "model": e.full_name + _context_suffix(e.name, args.small_context),
+                        "label": e.name,
+                        "description": f"{e.schema} · {e.foundation_model}".rstrip(" ·"),
+                    }
+                    for e in picker_pool
+                ],
+                "replaceBuiltInOptions": not args.model_picker_append,
+            }
 
         if not args.allow_websearch:
             settings["permissions"] = {"deny": ["WebSearch"]}

@@ -65,6 +65,13 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
 - **Governance:** `enforceAvailableModels` + `availableModels`, and
   `permissions.deny: ["WebSearch"]` (built-in search can't reach
   api.anthropic.com through the gateway; replace with a ucode web_search MCP).
+- **Model picker (opt-in, `--model-picker`):** `availableModels` is only an
+  allow-list — it does **not** add rows to the interactive `/model` picker, which
+  otherwise shows just the four tier slots. `--model-picker` emits a `modelPicker`
+  (`{ options: [{model, label, description}], replaceBuiltInOptions }`, Claude Code
+  v2.1.242+) listing every Anthropic-capable endpoint (aliases first, then version
+  pins). It replaces the built-in tier rows by default; `--model-picker-append`
+  keeps them and appends instead.
 - **Telemetry:** when the infra `telemetry` output is present (default), the
   generator adds the OTEL env block (metrics/logs/traces → `<host>/api/2.0/otel`),
   per-signal `X-Databricks-UC-Table-Name` static headers, and an
@@ -87,6 +94,8 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
 | `--lock-models` | `catalog` | `catalog` (all Anthropic-capable endpoints, enforced) · `aliases` (aliases only) · `none`. |
 | `--allow-websearch` | off | Keep the built-in WebSearch tool. |
 | `--declare-capabilities` | off | Emit per-tier `_NAME`/`_SUPPORTED_CAPABILITIES` env vars. Off by default — a drift-prone surface that mirrors model facts we don't own; enable only if effort/thinking toggles don't appear on their own. |
+| `--model-picker` | off | Emit a `modelPicker` listing every Anthropic-capable endpoint in the `/model` picker (v2.1.242+). |
+| `--model-picker-append` | off | With `--model-picker`, append to the built-in tier rows instead of replacing them. |
 | `--api-key-ttl-ms` | `900000` | apiKeyHelper cache TTL. |
 | `--databricks-bin` | `databricks` | CLI path (use absolute for launchd/MDM). |
 | `--ssl-cert-file` | – | Per-machine CA bundle (`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`). |
