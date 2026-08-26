@@ -13,3 +13,8 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Generated agent configs (workspace-specific; regenerate from TF outputs)
+agent_setups/generated/
+__pycache__/
+*.pyc

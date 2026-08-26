@@ -8,6 +8,10 @@ TF_ROOT   ?= terraform
 TF_DIR    ?= terraform/infra
 ARGS      ?=
 
+PYTHON    ?= python3
+PROFILE   ?= fevm-west
+AGENT_GEN ?= agent_setups/scripts/generate.py
+
 .DEFAULT_GOAL := help
 
 # ---- meta ----
@@ -60,3 +64,13 @@ tf-check: tf-fmt-check tf-validate ## Run fmt-check + validate (CI-friendly)
 tf-clean: ## Remove local Terraform working artifacts (.terraform, lock, plan files)
 	find $(TF_ROOT) -type d -name '.terraform' -prune -exec rm -rf {} +
 	find $(TF_ROOT) -type f \( -name '.terraform.lock.hcl' -o -name '*.tfplan' \) -delete
+
+# ---- agent configs ----
+
+.PHONY: agent-claude-code
+agent-claude-code: ## Generate Claude Code managed-settings.json from TF outputs (PROFILE=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) $(ARGS)
+
+.PHONY: agent-claude-code-preview
+agent-claude-code-preview: ## Print the generated Claude Code managed-settings.json without writing
+	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) --stdout $(ARGS)
