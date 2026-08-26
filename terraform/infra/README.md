@@ -6,10 +6,25 @@ reference-catalog mode.
 
 ## What it deploys
 
-1. `unity-foundation` — references (or creates) the catalog and creates the
-   `ai_gateway` schema.
-2. `model-service` — one FMAPI-backed model service with inference logging
-   enabled, so agent traffic is captured to a UC Delta table.
+1. `unity-foundation` — references (or creates) the catalog and creates one
+   schema per model provider (`anthropic`, `openai`, `gemini`).
+2. `model-service` (fanned out with `for_each`) — an FMAPI-backed model service
+   for every endpoint in the provider catalog, each with inference logging
+   enabled so traffic is captured to a UC Delta table.
+
+### Provider catalog
+
+`var.model_providers` maps each provider (schema) to two kinds of endpoints:
+
+- **aliases** — versionless names pointing to the current latest model
+  (`claude-opus` → opus 5, `gpt` → the flagship, `gemini-pro` → gemini 3 pro).
+- **versioned_models** — version-pinned endpoints whose name is the `system.ai`
+  model minus the `databricks-` prefix (`…databricks-claude-opus-4-8` →
+  `claude-opus-4-8`). These serve power users pinning a version and harnesses
+  (e.g. Claude Code) that hardcode names like `claude-haiku-4-5`.
+
+The default is a **curated-recent** catalog (latest of each aliased family plus a
+recent prior). Edit `model_providers` to widen/narrow endpoints or add providers.
 
 ## Quickstart
 
@@ -40,9 +55,9 @@ terraform validate
 | Output | Description |
 |---|---|
 | `catalog_name` | Catalog used. |
-| `gateway_schema` | Schema holding the services. |
-| `model_service_full_name` | `catalog.schema.id` of the service. |
-| `inference_table` | UC table capturing request/response payloads. |
+| `provider_schemas` | Map of provider → fully-qualified schema. |
+| `endpoints` | Map of `<schema>/<endpoint>` → `{ full_name, foundation_model, inference_table }`. |
+| `endpoint_count` | Total number of model services created. |
 
 ## State
 

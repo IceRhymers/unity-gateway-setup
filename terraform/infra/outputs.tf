@@ -3,22 +3,23 @@ output "catalog_name" {
   value       = module.foundation.catalog_name
 }
 
-output "gateway_schema" {
-  description = "Schema holding the model services."
-  value       = module.foundation.schemas[var.gateway_schema].full_name
+output "provider_schemas" {
+  description = "Map of provider name -> fully-qualified schema."
+  value       = { for name, s in module.foundation.schemas : name => s.full_name }
 }
 
-output "model_service_name" {
-  description = "Resource name of the created model service."
-  value       = module.model_service.name
+output "endpoints" {
+  description = "Map of every created endpoint keyed by <schema>/<endpoint>, with its UC name, routed model, and inference table."
+  value = {
+    for key, m in module.model_service : key => {
+      full_name        = m.full_name
+      foundation_model = m.foundation_model
+      inference_table  = m.inference_table
+    }
+  }
 }
 
-output "model_service_full_name" {
-  description = "Three-level UC name of the model service."
-  value       = module.model_service.full_name
-}
-
-output "inference_table" {
-  description = "UC Delta table capturing request/response payloads."
-  value       = module.model_service.inference_table
+output "endpoint_count" {
+  description = "Total number of model services created."
+  value       = length(module.model_service)
 }

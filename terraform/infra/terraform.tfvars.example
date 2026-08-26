@@ -8,16 +8,31 @@ databricks_profile = "fevm-west"
 # permit catalog creation. Flip create_catalog = true where you own catalogs.
 catalog_name   = "tanner_wendland_catalog"
 create_catalog = false
-gateway_schema = "ai_gateway"
 
-# --- model service ---
-model_service_id = "agent_gateway"
-foundation_model = "system.ai.databricks-claude-sonnet-4-5"
+# --- provider catalog ---
+# The opinionated default in variables.tf already defines the anthropic schema
+# (4 versionless aliases + version-pinned endpoints). Override model_providers
+# here to add/trim endpoints or add providers. Example (partial):
+#
+# model_providers = {
+#   anthropic = {
+#     schema_comment = "Anthropic Claude"
+#     aliases = {
+#       "claude-opus"   = "system.ai.databricks-claude-opus-5"
+#       "claude-sonnet" = "system.ai.databricks-claude-sonnet-5"
+#       "claude-haiku"  = "system.ai.databricks-claude-haiku-4-5"
+#       "claude-fable"  = "system.ai.databricks-claude-fable-5"
+#     }
+#     versioned_models = [
+#       "system.ai.databricks-claude-opus-5",
+#       "system.ai.databricks-claude-opus-4-8",
+#       "system.ai.databricks-claude-haiku-4-5",
+#     ]
+#   }
+# }
 
-# Optional: per-user rate limit.
+# --- governance (applied to every endpoint) ---
 # rate_limits = [
 #   { key = "RATE_LIMIT_KEY_USER", renewal_period = "RATE_LIMIT_RENEWAL_PERIOD_MINUTE", requests = 100 },
 # ]
-
-# Optional: who can query the service.
 # execute_principals = ["data-scientists"]
