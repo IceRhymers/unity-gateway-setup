@@ -36,3 +36,14 @@ create_catalog = false
 #   { key = "RATE_LIMIT_KEY_USER", renewal_period = "RATE_LIMIT_RENEWAL_PERIOD_MINUTE", requests = 100 },
 # ]
 # execute_principals = ["data-scientists"]
+
+# --- telemetry (OpenTelemetry ingestion for coding agents) ---
+# On by default. Needs a SQL warehouse to create the OTEL tables; it is looked up
+# by name (serverless recommended — auto-starts). Set enabled = false to skip.
+telemetry_enabled        = true
+telemetry_warehouse_name = "Serverless Starter Warehouse" # looked up to an ID
+# telemetry_warehouse_id = "5e839179e8b310b6"  # optional: skip the lookup with an explicit ID
+# Developers whose otelHeadersHelper reads the UC secret get READ_SECRET here.
+# telemetry_reader_groups = ["data-scientists"]
+# telemetry_signals       = ["metrics", "logs", "traces"]  # trim if desired
+# telemetry_schema        = "telemetry"

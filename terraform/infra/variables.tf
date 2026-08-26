@@ -150,3 +150,65 @@ variable "execute_principals" {
   type        = list(string)
   default     = []
 }
+
+# ---- telemetry (OpenTelemetry ingestion for coding agents) ----
+#
+# Provisions the ingestion side of Claude Code telemetry: a telemetry schema,
+# the OTEL metrics/logs/traces Delta tables, a service principal + UC secret
+# holding its OAuth credentials, and the grants. The generated Claude Code
+# managed-settings.json wires agents to emit OTLP here via an otelHeadersHelper
+# that mints the service principal's token (no per-developer table access).
+
+variable "telemetry_enabled" {
+  description = "Provision the telemetry ingestion stack (schema, OTEL tables, service principal, UC secret, grants)."
+  type        = bool
+  default     = true
+}
+
+variable "telemetry_schema" {
+  description = "Schema (inside catalog_name) for the OTEL tables and the UC secret."
+  type        = string
+  default     = "telemetry"
+}
+
+variable "telemetry_create_schema" {
+  description = "Create the telemetry schema (true) or assume it already exists (false)."
+  type        = bool
+  default     = true
+}
+
+variable "telemetry_warehouse_name" {
+  description = "Name of the SQL warehouse used to create the OTEL tables (case-sensitive). Resolved to an ID via a data lookup unless telemetry_warehouse_id is set. Serverless recommended; it auto-starts on demand."
+  type        = string
+  default     = "Serverless Starter Warehouse"
+}
+
+variable "telemetry_warehouse_id" {
+  description = "Explicit SQL warehouse ID override. Empty (default) looks the warehouse up by telemetry_warehouse_name."
+  type        = string
+  default     = ""
+}
+
+variable "telemetry_signals" {
+  description = "OTEL signals to provision tables for. Any of: metrics, logs, traces."
+  type        = list(string)
+  default     = ["metrics", "logs", "traces"]
+}
+
+variable "telemetry_reader_groups" {
+  description = "Groups/users granted READ_SECRET on the telemetry UC secret (the developers whose otelHeadersHelper reads it). Empty = grant out of band."
+  type        = list(string)
+  default     = []
+}
+
+variable "telemetry_service_principal_display_name" {
+  description = "Display name for the telemetry ingestion service principal."
+  type        = string
+  default     = "unity-gateway-otel-telemetry"
+}
+
+variable "telemetry_secret_lifetime" {
+  description = "Lifetime of the SP OAuth secret formatted as NNNNs (e.g. 63072000s). Null uses the provider default."
+  type        = string
+  default     = null
+}

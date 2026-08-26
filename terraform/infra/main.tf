@@ -61,3 +61,32 @@ module "model_service" {
   # Ensure the schemas exist before their model services (and inference tables).
   depends_on = [module.foundation]
 }
+
+# Resolve the telemetry warehouse by name unless an explicit ID is given.
+# Only read when telemetry is enabled and no ID override is set.
+data "databricks_sql_warehouse" "telemetry" {
+  count = var.telemetry_enabled && var.telemetry_warehouse_id == "" ? 1 : 0
+  name  = var.telemetry_warehouse_name
+}
+
+module "telemetry" {
+  source = "../modules/telemetry"
+  count  = var.telemetry_enabled ? 1 : 0
+
+  catalog_name  = module.foundation.catalog_name
+  schema_name   = var.telemetry_schema
+  create_schema = var.telemetry_create_schema
+  force_destroy = var.force_destroy
+
+  warehouse_id = var.telemetry_warehouse_id != "" ? var.telemetry_warehouse_id : data.databricks_sql_warehouse.telemetry[0].id
+  signals      = var.telemetry_signals
+
+  service_principal_display_name = var.telemetry_service_principal_display_name
+  secret_lifetime                = var.telemetry_secret_lifetime
+  reader_groups                  = var.telemetry_reader_groups
+
+  databricks_profile = var.databricks_profile
+
+  # Telemetry schema lives beside the model-provider schemas in the same catalog.
+  depends_on = [module.foundation]
+}

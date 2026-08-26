@@ -65,6 +65,14 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
 - **Governance:** `enforceAvailableModels` + `availableModels`, and
   `permissions.deny: ["WebSearch"]` (built-in search can't reach
   api.anthropic.com through the gateway; replace with a ucode web_search MCP).
+- **Telemetry:** when the infra `telemetry` output is present (default), the
+  generator adds the OTEL env block (metrics/logs/traces → `<host>/api/2.0/otel`),
+  per-signal `X-Databricks-UC-Table-Name` static headers, and an
+  `otelHeadersHelper` pointing at a generated `otel-headers-helper.sh`. That
+  helper reads the telemetry UC secret **as the developer** and mints the
+  ingestion service principal's OAuth token for the `Authorization` header, so
+  the bearer token is never baked into settings. Prompt/tool/API-body content
+  logging is **off** unless `--otel-log-content` is passed.
 
 ## Key options (`claude-code`)
 
@@ -83,6 +91,12 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
 | `--databricks-bin` | `databricks` | CLI path (use absolute for launchd/MDM). |
 | `--ssl-cert-file` | – | Per-machine CA bundle (`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`). |
 | `--required-min-version` | – | Enforce a Claude Code version floor. |
+| `--telemetry` | `auto` | OTEL export: `auto` (on iff the `telemetry` output exists) · `on` (require it) · `off`. |
+| `--otel-log-content` | off | Also log prompts, tool details/content, and raw API bodies. Privacy-sensitive. |
+| `--otel-metric-interval-ms` | `60000` | `OTEL_METRIC_EXPORT_INTERVAL`. |
+| `--otel-logs-interval-ms` | `5000` | `OTEL_LOGS_EXPORT_INTERVAL`. |
+| `--otel-headers-helper-debounce-ms` | `900000` | Token refresh interval for the headers helper. |
+| `--otel-helper-install-path` | macOS ClaudeCode path | Where `otel-headers-helper.sh` is deployed on each machine. |
 
 ## Deploying the output
 
@@ -96,6 +110,13 @@ Push `managed-settings.json` to the OS path via MDM (Jamf/Intune/GPO):
 
 Each developer runs `databricks auth login --host <url> --profile <profile>` once.
 Verify with `/status` in Claude Code.
+
+When telemetry is enabled, also deploy the generated
+`claude-code/otel-headers-helper.sh` to the path in `--otel-helper-install-path`
+(default `/Library/Application Support/ClaudeCode/otel-headers-helper.sh`), make
+it executable, and ensure `python3` + the `databricks` CLI are on PATH. Each
+developer needs `READ_SECRET` on the telemetry UC secret (grant a group via
+`telemetry_reader_groups`).
 
 ## Adding an agent
 

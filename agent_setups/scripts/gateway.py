@@ -40,11 +40,22 @@ class Endpoint:
 
 
 @dataclass(frozen=True)
+class Telemetry:
+    """The deployed OTEL ingestion stack (from the `telemetry` Terraform output)."""
+
+    schema_full_name: str
+    tables: dict[str, str]  # signal ("metrics"/"logs"/"traces") -> fq table name
+    secret_full_name: str  # UC secret the otelHeadersHelper reads (catalog.schema.secret)
+    service_principal_application_id: str  # SP client id (not sensitive)
+
+
+@dataclass(frozen=True)
 class GatewayContext:
     host: str  # https://<workspace-host> (no trailing slash)
     catalog_name: str
     provider_schemas: dict[str, str]  # provider -> catalog.schema
     endpoints: list[Endpoint]
+    telemetry: Telemetry | None = None  # None when telemetry_enabled = false
 
     def endpoints_for(self, schema: str) -> list[Endpoint]:
         return [e for e in self.endpoints if e.schema == schema]
@@ -155,9 +166,22 @@ def build_context(
         )
     endpoints.sort(key=lambda e: e.key)
 
+    tel_raw = value("telemetry")
+    telemetry = (
+        Telemetry(
+            schema_full_name=tel_raw.get("schema_full_name", ""),
+            tables=tel_raw.get("tables", {}) or {},
+            secret_full_name=tel_raw.get("secret_full_name", ""),
+            service_principal_application_id=tel_raw.get("service_principal_application_id", ""),
+        )
+        if isinstance(tel_raw, dict)
+        else None
+    )
+
     return GatewayContext(
         host=resolve_host(profile, explicit_host),
         catalog_name=value("catalog_name", ""),
         provider_schemas=value("provider_schemas", {}) or {},
         endpoints=endpoints,
+        telemetry=telemetry,
     )
