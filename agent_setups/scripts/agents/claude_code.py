@@ -78,9 +78,11 @@ OTEL_HEADERS_ENV = {
     "traces": "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 }
 # Content-logging vars: they capture prompts, tool I/O, and raw API bodies, so
-# they are OFF by default and gated behind --otel-log-content.
+# they are OFF by default and gated behind --otel-log-content. Note this does NOT
+# include CLAUDE_CODE_ENHANCED_TELEMETRY_BETA — that flag gates trace/span export
+# (a prerequisite for content logging too) and is enabled independently whenever
+# traces are exported; see _apply_telemetry.
 OTEL_CONTENT_ENV = (
-    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
     "OTEL_LOG_USER_PROMPTS",
     "OTEL_LOG_TOOL_DETAILS",
     "OTEL_LOG_TOOL_CONTENT",
@@ -275,8 +277,10 @@ class ClaudeCodeGenerator(AgentGenerator):
             action="store_true",
             help=(
                 "Also log prompts, tool details/content, and raw API bodies "
-                "(CLAUDE_CODE_ENHANCED_TELEMETRY_BETA + OTEL_LOG_* vars). Privacy-sensitive; "
-                "OFF by default so only metrics and non-content logs are exported."
+                "(the OTEL_LOG_* vars). Privacy-sensitive; OFF by default so only "
+                "metrics, non-content logs, and traces are exported. (Traces themselves "
+                "need no flag — CLAUDE_CODE_ENHANCED_TELEMETRY_BETA is set automatically "
+                "when a traces table exists.)"
             ),
         )
         parser.add_argument(
@@ -383,6 +387,12 @@ class ClaudeCodeGenerator(AgentGenerator):
             env["OTEL_METRIC_EXPORT_INTERVAL"] = str(args.otel_metric_interval_ms)
         if "logs" in signals:
             env["OTEL_LOGS_EXPORT_INTERVAL"] = str(args.otel_logs_interval_ms)
+        # Trace/span export is gated behind the enhanced-telemetry beta: OTEL_TRACES_EXPORTER
+        # alone is silently inert without it. It's also the prerequisite for content logging.
+        # Enable it whenever traces are exported (or content logging is on), independent of
+        # --otel-log-content — which now only adds the privacy-sensitive OTEL_LOG_* vars.
+        if "traces" in signals or args.otel_log_content:
+            env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] = "1"
         if args.otel_log_content:
             for key in OTEL_CONTENT_ENV:
                 env[key] = "1"
