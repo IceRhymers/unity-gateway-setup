@@ -9,6 +9,9 @@ that already has host-level managed settings — the container has its own
 
 - **Claude Code** + the **databricks CLI** + **python3** (for the api-key and
   otel-headers helpers).
+- **`ucode`** (Unity AI Gateway coding CLI), installed via `uv` and available on
+  `PATH` by default — used here to discover Databricks MCP services and register
+  them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
 - The generated config staged as Linux enterprise-managed settings at
   `/etc/claude-code/` (mounted read-only from `agent_setups/generated/container/`).
 - A fresh, isolated `~/.databrickscfg` written at start: both `DEFAULT` and the
@@ -58,6 +61,35 @@ Then confirm rows are landing (from the shell, or your workspace):
 ```bash
 databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","statement":"SELECT count(*) FROM <catalog>.telemetry.claude_otel_metrics","wait_timeout":"30s"}'
 ```
+
+## MCP servers
+
+`ucode` is baked into the image, so you can test MCP-service discovery and
+registration against the deployed MDM config. After authenticating
+(`make docker-login`):
+
+```bash
+make docker-mcp        # runs `ucode configure mcp` inside the container
+```
+
+It discovers the Databricks MCP servers your identity can see (external
+connections, Databricks SQL, managed MCPs, and `system.ai.*` services), lets you
+pick which to add, and writes them to Claude Code's **user-level** config
+(`~/.claude.json` inside the container) — separate from the MDM
+`managed-settings.json` this harness stages, which only handles gateway routing.
+Each server is registered as a local stdio bridge (`ucode mcp-proxy`) that mints
+a fresh OAuth token per request from the container's databricks profile.
+
+Then run `claude` (via `make docker-shell`) and the registered MCP tools are
+available. Pass extra flags through `ARGS`, e.g.:
+
+```bash
+make docker-mcp ARGS="--agents claude"
+```
+
+> The image installs `ucode` from `github.com/databricks/ucode` at build time.
+> If that repo needs auth or a mirror, override the source:
+> `make docker-build UCODE_SOURCE="git+https://<token>@github.com/databricks/ucode"`.
 
 ## Cleanup
 

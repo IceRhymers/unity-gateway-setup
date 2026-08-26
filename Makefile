@@ -94,10 +94,21 @@ WS_HOST := $(shell $(PYTHON) -c "import configparser,pathlib; c=configparser.Con
 # `npm install` works behind it; teammates on the public registry pass nothing.
 NPM_REGISTRY     := $(shell npm config get registry 2>/dev/null)
 NPM_REGISTRY_ARG := $(if $(filter-out https://registry.npmjs.org/,$(NPM_REGISTRY)),--build-arg NPM_REGISTRY=$(NPM_REGISTRY),)
+# Override the ucode install source (pinned ref, mirror, private URL with token,
+# or a local path); empty uses the Dockerfile default (github.com/databricks/ucode).
+UCODE_SOURCE     ?=
+UCODE_SOURCE_ARG := $(if $(UCODE_SOURCE),--build-arg UCODE_SOURCE=$(UCODE_SOURCE),)
+# Forward a PyPI proxy/mirror into the build so `uv tool install ucode` resolves
+# ucode's build deps (hatchling, uv-dynamic-versioning) behind it — the pip-side
+# counterpart to NPM_REGISTRY. Resolved from UV_DEFAULT_INDEX / UV_INDEX_URL, else
+# the first URL in uv's global config; override with `make ... PYPI_INDEX=<url>`.
+UV_CONFIG_FILE   := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/uv/uv.toml
+PYPI_INDEX       ?= $(shell if [ -n "$$UV_DEFAULT_INDEX" ]; then echo "$$UV_DEFAULT_INDEX"; elif [ -n "$$UV_INDEX_URL" ]; then echo "$$UV_INDEX_URL"; elif [ -f "$(UV_CONFIG_FILE)" ]; then grep -Eo 'https?://[^"'"'"' ]+' "$(UV_CONFIG_FILE)" | head -1; fi)
+PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 
 .PHONY: docker-build
-docker-build: ## Build the test-harness image (Claude Code + databricks CLI + python3)
-	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) docker/
+docker-build: ## Build the test-harness image (Claude Code + databricks CLI + python3 + ucode)
+	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) docker/
 
 .PHONY: docker-config
 docker-config: ## Generate Claude Code config for the container (Linux helper path + full model picker); needs applied telemetry infra
@@ -134,6 +145,12 @@ docker-up: ## Start the container (mounts config, maps OAuth port 8020, writes t
 .PHONY: docker-login
 docker-login: ## Run `databricks auth login` inside the container (default profile)
 	docker exec -it -u dev $(DOCKER_CONTAINER) databricks auth login --profile $(PROFILE)
+
+.PHONY: docker-mcp
+docker-mcp: ## Discover + register Databricks MCP servers into Claude Code's user config (runs `ucode configure mcp` inside; auth first via docker-login)
+	docker exec -it -u dev -w /home/dev/work \
+		-e DATABRICKS_CONFIG_PROFILE="$(PROFILE)" \
+		$(DOCKER_CONTAINER) ucode configure mcp $(ARGS)
 
 .PHONY: docker-shell
 docker-shell: ## Open an interactive shell in the container (as the dev user)

@@ -6,6 +6,7 @@ FROM node:22-bookworm-slim
 
 # Toolchain: databricks CLI (auth + otelHeadersHelper), python3 (helpers),
 # socat (bridges the OAuth loopback callback to the host), gosu (drop to non-root).
+# uv + ucode (below) provide MCP-service discovery/registration.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git python3 socat gosu unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -21,6 +22,33 @@ RUN curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/insta
 ARG NPM_REGISTRY=""
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
     && npm install -g @anthropic-ai/claude-code
+
+# uv (Astral) -> /usr/local/bin/uv, used to install ucode below.
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+      | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
+    && uv --version
+
+# ucode (Unity AI Gateway coding CLI): discovers Databricks MCP services and
+# registers them into a tool's user-level config, bridging each through the
+# bundled `ucode mcp-proxy` (no separate uvx uc-mcp-proxy needed). Requires
+# Python 3.12+, which uv fetches and manages itself (bookworm's python3 is 3.11).
+# Everything is installed into shared, world-readable /opt/uv with entry points
+# on PATH via /usr/local/bin, so the non-root `dev` user can run `ucode`.
+# UCODE_SOURCE is overridable (a pinned ref, a mirror, a private URL with token,
+# or a local path) — mirrors the NPM_REGISTRY override pattern.
+ARG UCODE_SOURCE="git+https://github.com/databricks/ucode"
+# PYPI_INDEX: if the build host resolves PyPI through a proxy/mirror, the Makefile
+# forwards it here (from uv's global config, mirroring NPM_REGISTRY) so uv can
+# fetch ucode's build backend. Empty (default) uses public PyPI, so builds on
+# unproxied machines are unaffected.
+ARG PYPI_INDEX=""
+ENV UV_TOOL_DIR=/opt/uv/tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python
+RUN if [ -n "$PYPI_INDEX" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi \
+    && uv tool install "$UCODE_SOURCE" \
+    && chmod -R a+rX /opt/uv \
+    && ucode --version
 
 # Non-root user for interactive sessions (Claude Code + auth). Managed settings
 # are written root-owned at container start; the shell runs as this user.
