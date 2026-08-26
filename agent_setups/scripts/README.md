@@ -56,6 +56,12 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
   (the `[1m]` suffix, e.g. `…claude-opus[1m]`; Claude Code strips it before the
   gateway call). `--small-context` reverts to native windows. Haiku/Fable always
   use their native window.
+- **Model discovery:** `availableModels` is **every** deployed endpoint — across
+  all provider schemas — that exposes the Anthropic API (`anthropic/v1/messages`),
+  discovered live per workspace via a GET on each model service. This sweeps in
+  Anthropic and any polyglot model (e.g. Gemini, where the gateway exposes the
+  Anthropic surface) and excludes OpenAI-only endpoints. `--skip-api-discovery`
+  falls back to a schema heuristic for offline use.
 - **Governance:** `enforceAvailableModels` + `availableModels`, and
   `permissions.deny: ["WebSearch"]` (built-in search can't reach
   api.anthropic.com through the gateway; replace with a ucode web_search MCP).
@@ -66,10 +72,11 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
 |---|---|---|
 | `--profile` | `fevm-west` | Databricks profile (host + auth). |
 | `--host` | (from profile) | Override the workspace URL. |
-| `--schema` | `anthropic` | Provider schema backing this agent. |
+| `--skip-api-discovery` | off | Skip live `supported_api_types` lookup; use `--fallback-schema` instead (offline). |
+| `--fallback-schema` | `anthropic` | Schema assumed Anthropic-capable when discovery is skipped. |
 | `--default-tier` | `sonnet` | Tier Claude Code starts on. |
 | `--small-context` | off | Use native context windows; default gives opus/sonnet the `[1m]` (1M) suffix. |
-| `--lock-models` | `catalog` | `catalog` (all endpoints, enforced) · `aliases` (aliases only) · `none`. |
+| `--lock-models` | `catalog` | `catalog` (all Anthropic-capable endpoints, enforced) · `aliases` (aliases only) · `none`. |
 | `--allow-websearch` | off | Keep the built-in WebSearch tool. |
 | `--declare-capabilities` | off | Emit per-tier `_NAME`/`_SUPPORTED_CAPABILITIES` env vars. Off by default — a drift-prone surface that mirrors model facts we don't own; enable only if effort/thinking toggles don't appear on their own. |
 | `--api-key-ttl-ms` | `900000` | apiKeyHelper cache TTL. |

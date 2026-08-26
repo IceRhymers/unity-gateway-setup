@@ -11,6 +11,7 @@ import configparser
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,6 +87,45 @@ def resolve_host(profile: str, explicit_host: str | None = None) -> str:
             "Pass --host, set DATABRICKS_HOST, or add the profile to ~/.databrickscfg."
         )
     return host.rstrip("/")
+
+
+def discover_api_types(
+    full_names: list[str],
+    profile: str,
+    databricks_bin: str = "databricks",
+    max_workers: int = 8,
+) -> dict[str, list[str]]:
+    """Map each model-service full name -> its `supported_api_types`.
+
+    `supported_api_types` is computed by the platform per underlying model and is
+    only returned on a single-object GET (not in LIST), so we fan out one GET per
+    service. Raises if *every* lookup fails (usually an auth/profile problem).
+    """
+
+    def one(full_name: str) -> tuple[str, list[str], bool]:
+        try:
+            proc = subprocess.run(
+                [databricks_bin, "api", "get",
+                 f"/api/2.1/unity-catalog/model-services/{full_name}", "--profile", profile],
+                check=True, capture_output=True, text=True,
+            )
+            return full_name, (json.loads(proc.stdout).get("supported_api_types") or []), True
+        except Exception:
+            return full_name, [], False
+
+    results: dict[str, list[str]] = {}
+    ok = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for full_name, types, success in pool.map(one, full_names):
+            results[full_name] = types
+            ok += int(success)
+
+    if full_names and ok == 0:
+        raise SystemExit(
+            f"Could not read supported_api_types for any model service (profile '{profile}'). "
+            "Check auth/profile, or pass --skip-api-discovery."
+        )
+    return results
 
 
 def build_context(

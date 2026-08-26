@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from agents.base import AgentGenerator
-from gateway import Endpoint, GatewayContext
+from gateway import Endpoint, GatewayContext, discover_api_types
+
+# Claude Code speaks the Anthropic Messages API; only model services that expose
+# this route through the gateway are usable by it.
+ANTHROPIC_API_TYPE = "anthropic/v1/messages"
 
 # macOS / Linux+WSL / Windows managed-settings.json locations.
 INSTALL_PATHS = {
@@ -77,9 +82,19 @@ class ClaudeCodeGenerator(AgentGenerator):
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--schema",
+            "--skip-api-discovery",
+            action="store_true",
+            help=(
+                "Skip live discovery of each model service's supported_api_types. By "
+                "default the generator queries the workspace and includes only endpoints "
+                "that expose the Anthropic API; --skip-api-discovery falls back to the "
+                "--fallback-schema heuristic (for offline/--tf-output-json use)."
+            ),
+        )
+        parser.add_argument(
+            "--fallback-schema",
             default="anthropic",
-            help="Provider schema whose endpoints back Claude Code (default: anthropic).",
+            help="Schema assumed Anthropic-capable when discovery is skipped (default: anthropic).",
         )
         parser.add_argument(
             "--default-tier",
@@ -149,13 +164,40 @@ class ClaudeCodeGenerator(AgentGenerator):
                 return endpoints[pref]
         return None
 
-    def generate(self, ctx: GatewayContext, args: argparse.Namespace) -> dict[str, str]:
-        eps = ctx.endpoints_for(args.schema)
+    def _select_anthropic_capable(self, ctx: GatewayContext, args: argparse.Namespace) -> list[Endpoint]:
+        """Endpoints Claude Code can use: those exposing the Anthropic API.
+
+        Discovered live per workspace (an endpoint's api types depend on the
+        underlying model and the workspace), or approximated by schema when
+        discovery is skipped.
+        """
+        candidates = ctx.endpoints
+        if not candidates:
+            raise SystemExit("No endpoints found in the Terraform outputs.")
+
+        if args.skip_api_discovery:
+            eps = [e for e in candidates if e.schema == args.fallback_schema]
+            print(f"[claude-code] discovery skipped; using schema '{args.fallback_schema}' "
+                  f"({len(eps)} endpoints).", file=sys.stderr)
+        else:
+            print(f"[claude-code] discovering supported_api_types for {len(candidates)} endpoints...",
+                  file=sys.stderr)
+            api_types = discover_api_types([e.full_name for e in candidates], args.profile)
+            eps = [e for e in candidates if ANTHROPIC_API_TYPE in api_types.get(e.full_name, [])]
+            skipped = sorted({e.schema for e in candidates} - {e.schema for e in eps})
+            print(f"[claude-code] {len(eps)}/{len(candidates)} endpoints expose {ANTHROPIC_API_TYPE}"
+                  + (f"; schemas without it: {', '.join(skipped)}" if skipped else ""),
+                  file=sys.stderr)
+
         if not eps:
             raise SystemExit(
-                f"No endpoints found in schema '{args.schema}'. "
-                f"Available schemas: {sorted(ctx.provider_schemas)}"
+                f"No endpoints expose the Anthropic API ({ANTHROPIC_API_TYPE}) in this workspace, "
+                "so Claude Code cannot route through this gateway."
             )
+        return eps
+
+    def generate(self, ctx: GatewayContext, args: argparse.Namespace) -> dict[str, str]:
+        eps = self._select_anthropic_capable(ctx, args)
         by_name = {e.name: e for e in eps}
 
         # Resolve each tier to a concrete endpoint (three-level UC name).
