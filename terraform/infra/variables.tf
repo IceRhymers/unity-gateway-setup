@@ -107,6 +107,19 @@ variable "model_providers" {
         "system.ai.databricks-gemini-3-6-flash",
       ]
     }
+
+    open_models = {
+      schema_comment = "Unity AI Gateway model services for open-weight / open models"
+      # Named explicitly (via aliases) so endpoint names stay clean — e.g. the
+      # deepseek build stamps (0813/0731) are dropped from the endpoint name.
+      aliases = {
+        "kimi-k3"           = "system.ai.databricks-kimi-k3"
+        "glm-5-2"           = "system.ai.databricks-glm-5-2"
+        "deepseek-v4-pro"   = "system.ai.databricks-deepseek-v4-pro-0813"
+        "deepseek-v4-flash" = "system.ai.databricks-deepseek-v4-flash-0731"
+      }
+      versioned_models = []
+    }
   }
 }
 
