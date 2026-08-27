@@ -15,10 +15,11 @@ its own `~/.codex/config.toml`, so the host's are never touched.
   them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
 - The generated **Claude Code** config staged as Linux enterprise-managed settings
   at `/etc/claude-code/` (the `managed-settings.json`, the `otel-headers-helper.sh`,
-  and the `emit_hook_events.sh` reporting hook), and the generated **Codex**
-  `config.toml` staged at the dev user's `~/.codex/config.toml` (Codex has no
-  system-managed path) — both mounted read-only from
-  `agent_setups/generated/container/`. `jq` is installed for the hook.
+  and the `emit_hook_events.sh` reporting hook) — the harness mounts the generator's
+  **`linux/` bundle** (`agent_setups/generated/container/claude-code/linux/`), so it
+  tests the same artifact a Linux deploy ships. The generated **Codex** `config.toml`
+  is staged at the dev user's `~/.codex/config.toml` (Codex has no system-managed
+  path). `jq` is installed for the hook.
 - A fresh, isolated `~/.databrickscfg` written at start: both `DEFAULT` and the
   named profile point at the workspace, so `databricks auth login` and the
   settings' `--profile` calls resolve. The profile is also the default

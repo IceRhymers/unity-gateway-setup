@@ -116,25 +116,30 @@ make agent-claude-code PROFILE=fevm-west   # Claude Code managed-settings.json
 make agent-codex PROFILE=fevm-west         # Codex config.toml
 ```
 
-Reads the Terraform outputs and writes
-`agent_setups/generated/claude-code/managed-settings.json` (plus
-`otel-headers-helper.sh` when telemetry is enabled) and/or
-`agent_setups/generated/codex/config.toml`. Every model pin, the allow-list, and
-the telemetry env block derive straight from the deployed gateway, so keeping them
-current costs nothing — just regenerate. See
+Reads the Terraform outputs and writes a **self-contained bundle per OS** —
+`agent_setups/generated/claude-code/{macos,linux,windows}/`, each with a
+`managed-settings.json` plus the `otel-headers-helper.sh` and `emit_hook_events.sh`
+scripts (when enabled) — and/or `agent_setups/generated/codex/config.toml`. The
+bundles are identical except the on-disk paths `managed-settings.json` references
+(keyed to each OS's ClaudeCode dir); deploy the bundle for each platform you
+manage. Every model pin, the allow-list, and the telemetry env block derive
+straight from the deployed gateway, so keeping them current costs nothing — just
+regenerate. See
 [`agent_setups/scripts/README.md`](agent_setups/scripts/README.md) for every flag
 and the Codex specifics (it has no MDM path — deploy per-user into `$CODEX_HOME`).
 
 ### 3. Deploy the baseline via MDM
 
-Push `managed-settings.json` (and the OTEL helper) to the OS path with your MDM
-tool (Jamf / Intune / GPO):
+Push each OS's bundle (`managed-settings.json` + the `otel-headers-helper.sh` and
+`emit_hook_events.sh` scripts) with your MDM tool (Jamf / Intune / GPO) to that
+OS's ClaudeCode directory — the helper/hook paths inside `managed-settings.json`
+already point there, so the whole bundle goes in one place:
 
-| OS | Path |
+| OS | Deploy the `<os>/` bundle to |
 |---|---|
-| macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` |
-| Linux/WSL | `/etc/claude-code/managed-settings.json` |
-| Windows | `C:\Program Files\ClaudeCode\managed-settings.json` |
+| macOS | `/Library/Application Support/ClaudeCode/` |
+| Linux/WSL | `/etc/claude-code/` |
+| Windows | `C:\Program Files\ClaudeCode\` |
 
 Each developer authenticates once
 (`databricks auth login --host <url> --profile <profile>`), and needs

@@ -10,6 +10,7 @@ Conventions follow the internal "Onboarding Coding Agents - AI Gateway" playbook
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 
@@ -88,8 +89,26 @@ OTEL_CONTENT_ENV = (
     "OTEL_LOG_TOOL_CONTENT",
     "OTEL_LOG_RAW_API_BODIES",
 )
-OTEL_HELPER_REL_PATH = "claude-code/otel-headers-helper.sh"
-DEFAULT_OTEL_HELPER_INSTALL_PATH = "/Library/Application Support/ClaudeCode/otel-headers-helper.sh"
+OTEL_HELPER_FILENAME = "otel-headers-helper.sh"
+
+# --- Per-platform output ----------------------------------------------------
+# One self-contained bundle per OS. The managed-settings.json is identical across
+# platforms EXCEPT the on-disk paths it references (otelHeadersHelper + the hooks
+# command) — which point at each OS's ClaudeCode install directory (the same dir
+# managed-settings.json itself is deployed to). The helper scripts are byte-for-
+# byte identical everywhere; only these referenced paths differ.
+PLATFORMS = ("macos", "linux", "windows")
+PLATFORM_INSTALL_DIRS = {
+    "macos": "/Library/Application Support/ClaudeCode",
+    "linux": "/etc/claude-code",
+    "windows": r"C:\Program Files\ClaudeCode",
+}
+
+
+def _platform_path(install_dir: str, filename: str, platform: str) -> str:
+    """Join an install dir + filename with the platform's path separator."""
+    sep = "\\" if platform == "windows" else "/"
+    return f"{install_dir}{sep}{filename}"
 
 # --- Hook telemetry (custom reporting events via Zerobus REST) --------------
 # Ports the reporting ideas from the internal llm-cli hooks (slash-command /
@@ -100,8 +119,7 @@ DEFAULT_OTEL_HELPER_INSTALL_PATH = "/Library/Application Support/ClaudeCode/otel
 # JSON array to the Zerobus REST insert endpoint, authenticating as the same
 # telemetry service principal (bearer minted from the UC secret, cached).
 HOOK_CATEGORIES = ("usage", "reliability", "governance", "adoption")
-HOOK_SCRIPT_REL_PATH = "claude-code/emit_hook_events.sh"
-DEFAULT_HOOK_SCRIPT_INSTALL_PATH = "/Library/Application Support/ClaudeCode/emit_hook_events.sh"
+HOOK_SCRIPT_FILENAME = "emit_hook_events.sh"
 
 # Dispatcher script. One file, one subcommand per hook event. Sentinels
 # (__NAME__) are replaced with baked defaults at generation time; each is
@@ -617,12 +635,16 @@ class ClaudeCodeGenerator(AgentGenerator):
             default=900000,
             help="CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS: token refresh interval (default: 900000 = 15 min).",
         )
+        # ---- platforms ----
         parser.add_argument(
-            "--otel-helper-install-path",
-            default=DEFAULT_OTEL_HELPER_INSTALL_PATH,
+            "--platforms",
+            default=",".join(PLATFORMS),
             help=(
-                "Absolute path the otel-headers-helper.sh is deployed to on each machine "
-                f"(default: {DEFAULT_OTEL_HELPER_INSTALL_PATH}). Set per-OS for non-macOS fleets."
+                "Comma-separated OSes to emit a self-contained bundle for (any of: "
+                f"{', '.join(PLATFORMS)}). Default: all three. Each bundle is written to "
+                "claude-code/<platform>/ with a managed-settings.json whose helper/hook "
+                "paths point at that OS's ClaudeCode install dir, plus the (identical) "
+                "helper scripts."
             ),
         )
         # ---- hook telemetry (custom reporting events via Zerobus REST) ----
@@ -679,14 +701,6 @@ class ClaudeCodeGenerator(AgentGenerator):
                 "endpoint). Format: https://<workspace-id>.zerobus.<region>.cloud.databricks.com"
             ),
         )
-        parser.add_argument(
-            "--hook-script-install-path",
-            default=DEFAULT_HOOK_SCRIPT_INSTALL_PATH,
-            help=(
-                "Absolute path emit_hook_events.sh is deployed to on each machine "
-                f"(default: {DEFAULT_HOOK_SCRIPT_INSTALL_PATH}). Set per-OS for non-macOS fleets."
-            ),
-        )
 
     def _resolve_tier(self, endpoints: dict[str, Endpoint], tier: str) -> Endpoint | None:
         for pref in TIER_PREFERENCES[tier]:
@@ -726,16 +740,18 @@ class ClaudeCodeGenerator(AgentGenerator):
             )
         return eps
 
-    def _apply_telemetry(self, ctx: GatewayContext, args: argparse.Namespace,
-                         env: dict[str, str], settings: dict) -> dict[str, str]:
-        """Add OTEL export env + otelHeadersHelper; return extra files (the helper).
+    def _telemetry_env(self, ctx: GatewayContext, args: argparse.Namespace,
+                       env: dict[str, str]) -> str | None:
+        """Add the OTEL export env (platform-independent) and return the helper script.
 
-        Splits the header set: the sensitive Authorization comes from the helper
-        script (minted per developer), while content-type and the per-signal UC
-        table names live in static env and are merged by Claude Code.
+        Mutates `env` with the OTLP exporter vars; returns the otel-headers-helper.sh
+        content (its `otelHeadersHelper` path is set per-platform by the caller), or
+        None when telemetry is off / not deployed. Splits the header set: the sensitive
+        Authorization comes from the helper (minted per developer), while content-type
+        and per-signal UC table names live in static env, merged by Claude Code.
         """
         if args.telemetry == "off":
-            return {}
+            return None
         tel = ctx.telemetry
         if tel is None:
             if args.telemetry == "on":
@@ -743,10 +759,10 @@ class ClaudeCodeGenerator(AgentGenerator):
                     "--telemetry on, but the Terraform 'telemetry' output is absent. "
                     "Set telemetry_enabled = true and apply, or use --telemetry off."
                 )
-            return {}  # auto + not deployed
+            return None  # auto + not deployed
         signals = [s for s in ("metrics", "logs", "traces") if s in tel.tables]
         if not signals:
-            return {}
+            return None
 
         base = f"{ctx.host}{OTEL_INGEST_PATH}"
         env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
@@ -776,25 +792,24 @@ class ClaudeCodeGenerator(AgentGenerator):
                 env[key] = "1"
         env["CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"] = str(args.otel_headers_helper_debounce_ms)
 
-        settings["otelHeadersHelper"] = args.otel_helper_install_path
-        script = _otel_headers_helper_script(
+        return _otel_headers_helper_script(
             host=ctx.host,
             profile=args.__dict__.get("profile", "DEFAULT"),
             secret_full_name=tel.secret_full_name,
             databricks_bin=args.databricks_bin,
         )
-        return {OTEL_HELPER_REL_PATH: script}
 
-    def _apply_hook_telemetry(self, ctx: GatewayContext, args: argparse.Namespace,
-                              settings: dict) -> dict[str, str]:
-        """Add the custom-reporting hook + a 'hooks' block; return the hook script file.
+    def _hook_parts(self, ctx: GatewayContext, args: argparse.Namespace) -> tuple[str | None, list[str]]:
+        """Return (emit_hook_events.sh content, enabled categories) — platform-independent.
 
+        The 'hooks' block (with the per-platform script path) is built by the caller.
         Reuses the telemetry service principal + UC secret (the hook mints the same
         M2M bearer the OTEL helper does) and streams events to Zerobus REST. No SDK
         or gRPC is deployed to developer machines — the hook is a curl of a JSON array.
+        Returns (None, []) when hook telemetry is off / not deployed.
         """
         if args.hook_telemetry == "off":
-            return {}
+            return None, []
         tel = ctx.telemetry
         he = tel.hook_events if tel else None
         table = (he or {}).get("table") if isinstance(he, dict) else None
@@ -805,7 +820,7 @@ class ClaudeCodeGenerator(AgentGenerator):
                     "absent. Set telemetry_hook_events_enabled = true and apply, or use "
                     "--hook-telemetry off."
                 )
-            return {}  # auto + not deployed
+            return None, []  # auto + not deployed
         # The endpoint is baked in but is NOT required at generation time. The hooks
         # are part of the managed-settings.json baseline regardless; the script
         # no-ops until a Zerobus endpoint is known (baked here, or the ZEROBUS_ENDPOINT
@@ -829,7 +844,7 @@ class ClaudeCodeGenerator(AgentGenerator):
                 f"Valid: {', '.join(HOOK_CATEGORIES)}."
             )
         if not categories:
-            return {}
+            return None, []
 
         script = _hook_dispatcher_script(
             endpoint=endpoint,
@@ -843,12 +858,21 @@ class ClaudeCodeGenerator(AgentGenerator):
             log_paths=args.hook_log_paths,
             token_ttl=args.hook_token_ttl_seconds,
         )
-        settings["hooks"] = _hook_settings_block(args.hook_script_install_path, categories)
         print(f"[claude-code] hook telemetry: {len(categories)} categor"
               f"{'y' if len(categories) == 1 else 'ies'} -> {table}", file=sys.stderr)
-        return {HOOK_SCRIPT_REL_PATH: script}
+        return script, categories
 
     def generate(self, ctx: GatewayContext, args: argparse.Namespace) -> dict[str, str]:
+        platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
+        unknown = [p for p in platforms if p not in PLATFORM_INSTALL_DIRS]
+        if unknown:
+            raise SystemExit(
+                f"--platforms has unknown value(s): {', '.join(unknown)}. "
+                f"Valid: {', '.join(PLATFORMS)}."
+            )
+        if not platforms:
+            raise SystemExit("--platforms selected no platforms.")
+
         eps = self._select_anthropic_capable(ctx, args)
         by_name = {e.name: e for e in eps}
 
@@ -922,20 +946,46 @@ class ClaudeCodeGenerator(AgentGenerator):
         if args.required_min_version:
             settings["requiredMinimumVersion"] = args.required_min_version
 
-        # Telemetry mutates env/settings and may add the helper script file.
-        extra_files = self._apply_telemetry(ctx, args, env, settings)
-        # Hook telemetry adds a 'hooks' block + the emit_hook_events.sh reporting hook.
-        extra_files.update(self._apply_hook_telemetry(ctx, args, settings))
+        # Telemetry + hook telemetry contribute platform-independent parts: env vars
+        # (mutated in place) and the two helper scripts (identical across platforms).
+        # Only the paths managed-settings.json references differ per OS, so we build
+        # the base settings once and stamp the per-platform paths in the loop below.
+        otel_script = self._telemetry_env(ctx, args, env)
+        hook_script, hook_categories = self._hook_parts(ctx, args)
 
-        content = json.dumps(settings, indent=2) + "\n"
-        return {"claude-code/managed-settings.json": content, **extra_files}
+        files: dict[str, str] = {}
+        for platform in platforms:
+            install_dir = PLATFORM_INSTALL_DIRS[platform]
+            plat_settings = copy.deepcopy(settings)
+            if otel_script is not None:
+                plat_settings["otelHeadersHelper"] = _platform_path(
+                    install_dir, OTEL_HELPER_FILENAME, platform
+                )
+            if hook_script is not None:
+                plat_settings["hooks"] = _hook_settings_block(
+                    _platform_path(install_dir, HOOK_SCRIPT_FILENAME, platform), hook_categories
+                )
+            files[f"claude-code/{platform}/managed-settings.json"] = (
+                json.dumps(plat_settings, indent=2) + "\n"
+            )
+            if otel_script is not None:
+                files[f"claude-code/{platform}/{OTEL_HELPER_FILENAME}"] = otel_script
+            if hook_script is not None:
+                files[f"claude-code/{platform}/{HOOK_SCRIPT_FILENAME}"] = hook_script
+        return files
 
     def install_notes(self, args: argparse.Namespace) -> str:
+        platforms = [p.strip() for p in args.platforms.split(",") if p.strip() in PLATFORM_INSTALL_DIRS]
         lines = [
-            "Deploy managed-settings.json to the OS-specific path (push via MDM):",
-            f"  macOS   : {INSTALL_PATHS['macos']}",
-            f"  Linux   : {INSTALL_PATHS['linux']}",
-            f"  Windows : {INSTALL_PATHS['windows']}",
+            "Per-platform bundles were written to claude-code/<platform>/. Deploy each",
+            "OS's managed-settings.json (push via MDM) to that OS's ClaudeCode path,",
+            "and copy the helper scripts from the SAME bundle into the SAME directory",
+            "(the paths inside managed-settings.json already point there):",
+        ]
+        for p in platforms:
+            lines.append(f"  {p:8}: {INSTALL_PATHS[p]}")
+            lines.append(f"  {'':8}  (+ helper scripts in {PLATFORM_INSTALL_DIRS[p]})")
+        lines += [
             "",
             "Each developer authenticates once:",
             "  databricks auth login --host <workspace-url> --profile <profile>",
@@ -946,9 +996,8 @@ class ClaudeCodeGenerator(AgentGenerator):
         if args.telemetry != "off":
             lines += [
                 "",
-                "Telemetry (if a otel-headers-helper.sh was generated alongside):",
-                f"  Deploy the helper to each machine at: {args.otel_helper_install_path}",
-                "  (chmod +x; the managed-settings.json 'otelHeadersHelper' points here.)",
+                "Telemetry (otel-headers-helper.sh ships in each bundle):",
+                "  chmod +x it after deploy; the managed-settings.json 'otelHeadersHelper' points at it.",
                 "  Requires python3 + the databricks CLI on PATH, and the developer must hold",
                 "  READ_SECRET on the telemetry UC secret (grant a group via telemetry_reader_groups).",
                 "  Verify OTLP export health in /status; errors also surface with --debug.",
@@ -956,13 +1005,14 @@ class ClaudeCodeGenerator(AgentGenerator):
         if args.hook_telemetry != "off":
             lines += [
                 "",
-                "Hook telemetry (if an emit_hook_events.sh was generated alongside):",
-                f"  Deploy it to each machine at: {args.hook_script_install_path}",
-                "  (chmod +x; the managed-settings.json 'hooks' block points here.)",
+                "Hook telemetry (emit_hook_events.sh ships in each bundle):",
+                "  chmod +x it after deploy; the managed-settings.json 'hooks' block points at it.",
                 "  Same deps as the OTEL helper (python3 + databricks CLI + READ_SECRET on the",
                 "  UC secret), plus jq + curl. Reuses the telemetry service principal; events",
                 "  land in the telemetry.hook_events table via Zerobus REST. Report-only —",
                 "  it never blocks a tool call. Confirm the Zerobus REST API is available in",
                 "  the customer's workspace region before rollout.",
+                "  Windows runs the .sh helper/hook via Claude Code's shell (Git Bash) — verify",
+                "  the C:\\ paths resolve there before a Windows rollout.",
             ]
         return "\n".join(lines)
