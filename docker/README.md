@@ -37,9 +37,9 @@ make docker-login       # runs `databricks auth login` inside — see browser no
 make docker-shell       # exec in as the dev user
 ```
 
-`make docker-test` runs build + both configs + up together. To iterate on a config
-without restarting (keeps auth): `make docker-reload` (Claude Code) or
-`make docker-reload-codex` (Codex).
+`make docker-test` runs build + both configs + up together. To iterate on the
+configs without restarting (keeps auth), `make docker-reload` regenerates **both**
+agent configs and pushes them into the running container in one step.
 
 ### Authenticating
 
@@ -81,7 +81,7 @@ Codex has no client-side OTEL, but its traffic is still captured server-side by
 each model service's inference-logging UC table. Switch models with
 `codex -m tanner_..._catalog.openai.gpt-5-6-sol` (any model listed in the config's
 comment header). To iterate on the config without restarting the container, run
-`make docker-reload-codex`.
+`make docker-reload` (reloads both agent configs).
 
 ## MCP servers
 

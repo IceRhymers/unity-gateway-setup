@@ -143,17 +143,15 @@ docker-config-codex: ## Generate Codex config.toml for the container (routes thr
 docker-config-all: docker-config docker-config-codex ## Generate both agent configs for the container
 
 .PHONY: docker-reload
-docker-reload: docker-config ## Regenerate Claude Code config and copy it into the RUNNING container (no restart, keeps auth)
+docker-reload: docker-config-all ## Regenerate BOTH agent configs and copy them into the RUNNING container (no restart, keeps auth)
 	docker cp $(CONTAINER_CFG)/claude-code/managed-settings.json $(DOCKER_CONTAINER):/etc/claude-code/managed-settings.json
-	docker cp $(CONTAINER_CFG)/claude-code/otel-headers-helper.sh $(DOCKER_CONTAINER):/etc/claude-code/otel-headers-helper.sh
-	docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/otel-headers-helper.sh
-	@echo "Config reloaded. Restart your \`claude\` session (exit and re-run) to pick it up."
-
-.PHONY: docker-reload-codex
-docker-reload-codex: docker-config-codex ## Regenerate Codex config and copy it into the RUNNING container (no restart, keeps auth)
+	@if [ -f "$(CONTAINER_CFG)/claude-code/otel-headers-helper.sh" ]; then \
+		docker cp $(CONTAINER_CFG)/claude-code/otel-headers-helper.sh $(DOCKER_CONTAINER):/etc/claude-code/otel-headers-helper.sh; \
+		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/otel-headers-helper.sh; \
+	fi
 	docker cp $(CONTAINER_CFG)/codex/config.toml $(DOCKER_CONTAINER):/home/dev/.codex/config.toml
 	docker exec -u root $(DOCKER_CONTAINER) chown dev:dev /home/dev/.codex/config.toml
-	@echo "Codex config reloaded. Restart your \`codex\` session (exit and re-run) to pick it up."
+	@echo "Harness reloaded (Claude Code + Codex). Restart your \`claude\` / \`codex\` session (exit and re-run) to pick it up."
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
