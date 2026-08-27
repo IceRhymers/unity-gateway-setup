@@ -10,6 +10,7 @@ agents authenticate with.
 |---|---|
 | `databricks_schema` (optional) | A dedicated `telemetry` schema. |
 | OTEL Delta tables | `claude_otel_metrics` / `_logs` / `_traces` — created via the Statement Execution API (see below). |
+| Hook-event Delta table (optional) | `claude_hook_events` — the landing table for custom Claude Code reporting hooks (Zerobus REST); created the same way. See below. |
 | `databricks_service_principal` | Databricks-managed SP; the identity telemetry is attributed to. |
 | `databricks_service_principal_secret` | Workspace-level OAuth (M2M) secret for that SP. |
 | `databricks_secret_uc` | Stores `{client_id, client_secret}` as JSON; read at runtime by each developer's `otelHeadersHelper`. |
@@ -33,6 +34,27 @@ agents authenticate with.
   runs the canonical DDL (`templates/otel_*.sql`) on `warehouse_id` through
   `scripts/create_otel_table.py`. `CREATE TABLE IF NOT EXISTS` is idempotent.
 
+## Hook events (`claude_hook_events`)
+
+Native OTEL captures what the Claude Code binary emits; it does **not** emit the
+per-hook reporting signals (slash-command / skill / subagent usage with plugin
+attribution, per-session plugin inventory, `StopFailure` mid-stream stalls,
+guardrail hits, workflow adoption). This module optionally provisions the landing
+table for those — a single wide managed Delta table (`templates/hook_events.sql`,
+one row per event, `category` + `event_name` + a VARIANT `attributes` bag,
+queryable as `attributes:field` — Zerobus carries VARIANT as a JSON-encoded string
+on the wire, which is what the hook sends), plus
+an **explicit table-level** `MODIFY`/`SELECT` grant on the telemetry SP (Zerobus's
+`authorization_details` flow needs it — schema-level grants alone fail with error
+4024). The generated `emit_hook_events.sh` hook (from `agent_setups`) ingests into
+it over the **Zerobus REST API** as that same SP, so developers still need only
+`READ_SECRET` on the UC secret — no table access, no dev-machine SDK.
+
+Set `zerobus_endpoint` (`https://<workspace-id>.zerobus.<region>.cloud.databricks.com`)
+so the generator can wire the hook; the table is created regardless, but the hook
+stays off until an endpoint is known. Zerobus does not create tables — that's why
+this runs the DDL up front. Set `hook_events_enabled = false` to skip entirely.
+
 ## Inputs
 
 | Variable | Default | Notes |
@@ -42,6 +64,9 @@ agents authenticate with.
 | `create_schema` | `true` | |
 | `warehouse_id` | — | **Required.** SQL warehouse for the table DDL. |
 | `signals` | `["metrics","logs","traces"]` | |
+| `hook_events_enabled` | `true` | Create `claude_hook_events` + the table-level SP grant. |
+| `hook_events_table_name` | `claude_hook_events` | Leaf name of the hook-event table. |
+| `zerobus_endpoint` | `""` | Zerobus REST base URL; empty leaves the generated hook off. |
 | `service_principal_display_name` | `unity-gateway-otel-telemetry` | |
 | `secret_name` | `otel_exporter_oauth` | |
 | `reader_groups` | `[]` | Groups granted `READ_SECRET` on the secret. |

@@ -85,6 +85,10 @@ module "telemetry" {
   secret_lifetime                = var.telemetry_secret_lifetime
   reader_groups                  = var.telemetry_reader_groups
 
+  hook_events_enabled    = var.telemetry_hook_events_enabled
+  hook_events_table_name = var.telemetry_hook_events_table_name
+  zerobus_endpoint       = var.telemetry_zerobus_endpoint
+
   databricks_profile = var.databricks_profile
 
   # Telemetry schema lives beside the model-provider schemas in the same catalog.
