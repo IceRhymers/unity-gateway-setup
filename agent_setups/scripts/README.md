@@ -219,8 +219,26 @@ Each developer runs `databricks auth login --host <url> --profile <profile>` onc
 with Claude Code, the intended launch surface is `ucode` (`ucode codex`), which
 adds MCP discovery and the per-request OAuth surface — see the repo
 [README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
-Codex has no client OTEL export in this setup; its gateway traffic is still
-captured server-side by each model service's **inference logging** UC table.
+
+### Telemetry — none client-side, by design
+
+The generator emits **no `[otel]` block**. Codex traffic is instead captured
+**server-side** by each model service's **inference-logging** UC Delta table (the
+Terraform `inference_table` per endpoint) — the same data plane, with no client
+dependency. This is a deliberate choice, not a gap:
+
+- Codex's `[otel]` exporter takes only **static headers** with `${ENV_VAR}`
+  interpolation resolved once at process start — there's no headers *command* like
+  Claude Code's `otelHeadersHelper`, so a launch-minted OAuth token would expire
+  mid-session (SP M2M tokens ~1h) with no way to refresh.
+- `ucode` (the intended launch surface) ships **no OTEL forwarder** either — it
+  treats Codex telemetry the same way.
+
+A refresh-safe client-OTEL path would require a local forwarder that injects a
+fresh token per request (as the separate `databricks-agents` Codex wrapper does),
+which is out of scope for a static config generator. If you want best-effort client
+spans anyway, mint an OAuth token into an env var at launch and add an `[otel]`
+block referencing it — accepting the ~1h token-TTL limitation.
 
 ## Adding an agent
 
