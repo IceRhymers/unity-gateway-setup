@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import subprocess
 import sys
+import urllib.request
 
 from agents.base import AgentGenerator
 from gateway import Endpoint, GatewayContext, discover_api_types
@@ -426,6 +428,53 @@ def _hook_settings_block(script_path: str, categories: list[str]) -> dict:
     return hooks
 
 
+def _zerobus_cloud_suffix(host: str) -> str:
+    """Zerobus host suffix for the workspace's cloud, inferred from the workspace host."""
+    h = host.lower()
+    if h.endswith(".azuredatabricks.net"):
+        return ".azuredatabricks.net"
+    if h.endswith(".gcp.databricks.com"):
+        return ".gcp.databricks.com"
+    return ".cloud.databricks.com"  # AWS (default)
+
+
+def _derive_zerobus_endpoint(host: str, profile: str, databricks_bin: str) -> str | None:
+    """Derive https://<workspace-id>.zerobus.<region><cloud-suffix> from workspace metadata.
+
+    Zerobus has no discovery endpoint, so build the host from three probes:
+      * workspace (org) id — the `x-databricks-org-id` response header (the value the
+        `<workspace-id>.zerobus.…` convention wants; not in any response body);
+      * region — the current UC metastore summary's `region` (works on serverless,
+        where the classic list-zones call does not);
+      * cloud suffix — from the workspace host.
+    Best-effort: returns None on any failure (offline, no auth, non-UC workspace) so
+    generation still succeeds — the hook just ships dormant.
+    """
+    try:
+        proc = subprocess.run(
+            [databricks_bin, "auth", "token", "--host", host, "--profile", profile, "--output", "json"],
+            check=True, capture_output=True, text=True, timeout=60,
+        )
+        token = json.loads(proc.stdout)["access_token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        me = urllib.request.Request(f"{host}/api/2.0/preview/scim/v2/Me", headers=auth)
+        with urllib.request.urlopen(me, timeout=15) as r:
+            org_id = r.headers.get("x-databricks-org-id")
+        if not org_id:
+            return None
+
+        ms = urllib.request.Request(f"{host}/api/2.0/unity-catalog/metastore_summary", headers=auth)
+        with urllib.request.urlopen(ms, timeout=15) as r:
+            region = json.loads(r.read()).get("region")
+        if not region:
+            return None
+
+        return f"https://{org_id}.zerobus.{region}{_zerobus_cloud_suffix(host)}"
+    except Exception:
+        return None
+
+
 def _otel_headers_helper_script(host: str, profile: str, secret_full_name: str, databricks_bin: str) -> str:
     """Bash script for `otelHeadersHelper`: emit {"Authorization": "Bearer <token>"}.
 
@@ -657,8 +706,9 @@ class ClaudeCodeGenerator(AgentGenerator):
                 "custom events (agent-usage, reliability, governance, adoption) to Zerobus "
                 "REST. 'auto' (default) enables it iff the Terraform telemetry.hook_events "
                 "table is present; 'on' requires it; 'off' skips. The Zerobus endpoint is "
-                "baked in when known but is NOT required — the hooks ship in the baseline "
-                "and stay dormant until ZEROBUS_ENDPOINT is set."
+                "auto-derived from workspace metadata (or --zerobus-endpoint / the TF output) "
+                "and baked in, but is NOT required — the hooks ship in the baseline and stay "
+                "dormant until ZEROBUS_ENDPOINT is known."
             ),
         )
         parser.add_argument(
@@ -697,8 +747,10 @@ class ClaudeCodeGenerator(AgentGenerator):
             "--zerobus-endpoint",
             default=None,
             help=(
-                "Override the Zerobus REST base URL (else the Terraform telemetry.hook_events "
-                "endpoint). Format: https://<workspace-id>.zerobus.<region>.cloud.databricks.com"
+                "Override the Zerobus REST base URL. Precedence: this flag > the Terraform "
+                "telemetry.hook_events endpoint > auto-derivation from workspace metadata "
+                "(x-databricks-org-id header + UC metastore region; skipped with "
+                "--skip-api-discovery). Format: https://<workspace-id>.zerobus.<region>.cloud.databricks.com"
             ),
         )
 
@@ -821,18 +873,31 @@ class ClaudeCodeGenerator(AgentGenerator):
                     "--hook-telemetry off."
                 )
             return None, []  # auto + not deployed
-        # The endpoint is baked in but is NOT required at generation time. The hooks
-        # are part of the managed-settings.json baseline regardless; the script
-        # no-ops until a Zerobus endpoint is known (baked here, or the ZEROBUS_ENDPOINT
-        # env var at runtime). This keeps the reporting hooks in the deployed config
-        # even before the operator wires the workspace's Zerobus URL.
+        # Resolve the Zerobus endpoint baked into the hook. Precedence:
+        #   1. --zerobus-endpoint (explicit override)
+        #   2. Terraform telemetry.hook_events.endpoint (operator set telemetry_zerobus_endpoint)
+        #   3. auto-derived from workspace metadata (org-id header + metastore region)
+        # Auto-derivation makes live workspace calls, so it is skipped in offline mode
+        # (--skip-api-discovery), matching how endpoint discovery is gated elsewhere.
+        # The endpoint is NOT required: the hooks ship in the baseline regardless and
+        # no-op until ZEROBUS_ENDPOINT is known (baked here, or set at runtime).
         endpoint = args.zerobus_endpoint or (he.get("endpoint") if isinstance(he, dict) else "") or ""
+        if not endpoint and not args.skip_api_discovery:
+            endpoint = _derive_zerobus_endpoint(
+                ctx.host, args.__dict__.get("profile", "DEFAULT"), args.databricks_bin
+            ) or ""
+            if endpoint:
+                print(
+                    f"[claude-code] hook telemetry: derived Zerobus endpoint {endpoint} "
+                    "from workspace metadata (x-databricks-org-id header + UC metastore region).",
+                    file=sys.stderr,
+                )
         if not endpoint:
             print(
                 "[claude-code] hook telemetry: wiring the reporting hooks into "
-                "managed-settings.json with NO Zerobus endpoint yet — they stay dormant "
-                "(no-op) until ZEROBUS_ENDPOINT is set (telemetry_zerobus_endpoint, "
-                "--zerobus-endpoint, or the env var on the machine).",
+                "managed-settings.json with NO Zerobus endpoint (auto-derivation "
+                "unavailable) — they stay dormant (no-op) until ZEROBUS_ENDPOINT is set "
+                "(telemetry_zerobus_endpoint, --zerobus-endpoint, or the env var).",
                 file=sys.stderr,
             )
 

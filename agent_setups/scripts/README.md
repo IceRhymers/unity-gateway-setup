@@ -112,10 +112,13 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   plugin attribution, per-session plugin inventory, `StopFailure` mid-stream
   stalls, guardrail hits, workflow adoption. When the infra `telemetry.hook_events`
   table is present (default), the generator emits `emit_hook_events.sh` and a
-  `hooks` block wiring it to the relevant events — part of the baseline regardless
-  of whether a Zerobus endpoint is set yet; the hook stays dormant (no-op) until
-  `ZEROBUS_ENDPOINT` is known (baked from `telemetry_zerobus_endpoint`, or the env
-  var at runtime). Each
+  `hooks` block wiring it to the relevant events. The Zerobus endpoint is
+  **auto-derived at generation time** from workspace metadata — the numeric
+  workspace id (`x-databricks-org-id` response header) + the UC metastore region +
+  the host's cloud suffix → `https://<id>.zerobus.<region>.<suffix>` — and baked
+  into the script (override via `--zerobus-endpoint` or `telemetry_zerobus_endpoint`;
+  derivation is skipped with `--skip-api-discovery`). If it can't be derived, the
+  hook still ships but stays dormant (no-op) until `ZEROBUS_ENDPOINT` is set. Each
   hook fires a backgrounded `curl` of a one-row JSON array to the **Zerobus REST**
   insert endpoint, authenticating as the **same telemetry service principal** (the
   bearer is minted from the UC secret and cached — no SDK/gRPC, nothing new on the
@@ -154,7 +157,7 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 | `--hook-doc-patterns` | `TESTING\.md` | grep -E of file basenames whose Read counts as a workflow-adoption event. |
 | `--hook-log-paths` | off | Include full file paths in adoption events (default: basename only). |
 | `--hook-token-ttl-seconds` | `600` | Refresh-hint TTL for the cached Zerobus bearer. |
-| `--zerobus-endpoint` | (from TF output) | Override the Zerobus REST base URL. |
+| `--zerobus-endpoint` | (auto-derived) | Override the Zerobus REST base URL. Default: TF output, else auto-derived from workspace metadata (org-id header + metastore region). |
 
 ## Deploying the output
 

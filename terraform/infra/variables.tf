@@ -237,8 +237,9 @@ variable "telemetry_zerobus_endpoint" {
     Zerobus REST ingest base URL for this workspace (baked into the generated hook).
     Format: https://<workspace-id>.zerobus.<region>.cloud.databricks.com
     (.gcp.databricks.com on GCP; .azuredatabricks.net on Azure). <workspace-id> is
-    the numeric ID from the workspace URL (`?o=` value). Empty (default) still ships
-    the hooks in managed-settings.json; they stay dormant (no-op) until this is set.
+    the numeric ID from the workspace URL (`?o=` value). Empty (default) is the norm:
+    the config generator auto-derives this from workspace metadata (org-id header +
+    UC metastore region). Set it only to override the derived value.
   EOT
   type        = string
   default     = ""

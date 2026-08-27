@@ -73,16 +73,11 @@ databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","stat
 ### Testing hook telemetry (custom reporting events)
 
 The generated `managed-settings.json` always carries the reporting `hooks` block,
-and the harness stages `emit_hook_events.sh` at `/etc/claude-code/`. The hooks are
-**dormant until a Zerobus endpoint is set**, so to exercise them end-to-end,
-generate the container config with one:
-
-```bash
-make docker-config ARGS="--zerobus-endpoint https://<workspace-id>.zerobus.<region>.cloud.databricks.com"
-make docker-reload   # (or docker-up if not running)
-```
-
-Inside `make docker-shell`, fire a hook directly (no need to drive Claude Code):
+and the harness stages `emit_hook_events.sh` at `/etc/claude-code/`. `make
+docker-config` **auto-derives** the workspace's Zerobus endpoint and bakes it into
+the script, so the hooks are live out of the box (pass
+`ARGS="--zerobus-endpoint <url>"` only to override). Inside `make docker-shell`,
+fire a hook directly (no need to drive Claude Code):
 
 ```bash
 # a skill-usage event; should insert one row (backgrounded curl):

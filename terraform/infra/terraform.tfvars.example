@@ -55,8 +55,9 @@ telemetry_warehouse_name = "Serverless Starter Warehouse" # looked up to an ID
 # The generated managed-settings.json registers a hook that streams these to the
 # claude_hook_events table via Zerobus REST, as the telemetry service principal.
 #
-# The table + the managed-settings.json hooks ship by default; the hooks stay
-# dormant (no-op) until you set the workspace's Zerobus endpoint here. Find
-# <workspace-id> in the workspace URL (`?o=`).
+# The table + the managed-settings.json hooks ship by default. The generator
+# AUTO-DERIVES the workspace's Zerobus endpoint from workspace metadata at
+# generation time, so you normally leave telemetry_zerobus_endpoint unset. Set it
+# only to override the derived value (e.g. a private-link host).
 # telemetry_hook_events_enabled = true
 # telemetry_zerobus_endpoint    = "https://1234567890.zerobus.us-west-2.cloud.databricks.com"
