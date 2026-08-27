@@ -177,11 +177,28 @@ _mint_token() {
   secret_json="$("$DATABRICKS_BIN" api get \
     "/api/2.1/unity-catalog/secrets/${SECRET_FULL_NAME}?include_value=true" \
     --profile "$PROFILE" 2>/dev/null)" || return 1
-  token="$(printf '%s' "$secret_json" | ZB_HOST="$TOKEN_HOST" python3 -c '
+  token="$(printf '%s' "$secret_json" | ZB_HOST="$TOKEN_HOST" ZB_ENDPOINT="$ZEROBUS_ENDPOINT" ZB_TABLE="$HOOK_EVENTS_TABLE" python3 -c '
 import base64, json, os, sys, urllib.parse, urllib.request
 obj = json.load(sys.stdin)
 creds = json.loads(obj["effective_value"])
-data = urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "all-apis"}).encode()
+# Zerobus REST rejects a plain all-apis token ("invalid token audience"): the token
+# must be minted for the Zerobus Direct Write API (resource = the workspace audience)
+# and down-scoped to the target UC objects via authorization_details. The numeric
+# workspace id is the first label of the Zerobus host.
+wsid = urllib.parse.urlparse(os.environ["ZB_ENDPOINT"]).hostname.split(".")[0]
+table = os.environ["ZB_TABLE"]
+parts = table.split(".")
+ad = [
+    {"type": "unity_catalog_privileges", "privileges": ["USE CATALOG"], "object_type": "CATALOG", "object_full_path": parts[0]},
+    {"type": "unity_catalog_privileges", "privileges": ["USE SCHEMA"], "object_type": "SCHEMA", "object_full_path": ".".join(parts[:2])},
+    {"type": "unity_catalog_privileges", "privileges": ["SELECT", "MODIFY"], "object_type": "TABLE", "object_full_path": table},
+]
+data = urllib.parse.urlencode({
+    "grant_type": "client_credentials",
+    "scope": "all-apis",
+    "resource": "api://databricks/workspaces/" + wsid + "/zerobusDirectWriteApi",
+    "authorization_details": json.dumps(ad),
+}).encode()
 req = urllib.request.Request(os.environ["ZB_HOST"].rstrip("/") + "/oidc/v1/token", data=data)
 basic = base64.b64encode((creds["client_id"] + ":" + creds["client_secret"]).encode()).decode()
 req.add_header("Authorization", "Basic " + basic)
