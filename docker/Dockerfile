@@ -1,7 +1,8 @@
-# Isolated test harness for the generated Claude Code managed-settings.json
-# (routing + OTEL telemetry). Runs on a machine that already has host-level
-# managed settings, without touching them — the config lives at the Linux
-# enterprise path (/etc/claude-code/managed-settings.json) inside the container.
+# Isolated test harness for the generated coding-agent configs (gateway routing
+# + OTEL telemetry). Runs on a machine that already has host-level settings,
+# without touching them — Claude Code's config lives at the Linux enterprise path
+# (/etc/claude-code/managed-settings.json) and Codex's at the dev user's
+# $CODEX_HOME (/home/dev/.codex/config.toml) inside the container.
 FROM node:22-bookworm-slim
 
 # Toolchain: databricks CLI (auth + otelHeadersHelper), python3 (helpers),
@@ -15,13 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh \
     && databricks --version
 
-# Claude Code. NPM_REGISTRY forwards a non-default registry (e.g. a corporate
-# mirror) from the builder's `npm config` — see the Makefile, which only passes
-# it when set. Empty (the default) uses the public npm registry, so builds on
-# machines without the mirror are unaffected.
+# Claude Code + Codex CLI (both npm-distributed). NPM_REGISTRY forwards a
+# non-default registry (e.g. a corporate mirror) from the builder's `npm config`
+# — see the Makefile, which only passes it when set. Empty (the default) uses the
+# public npm registry, so builds on machines without the mirror are unaffected.
 ARG NPM_REGISTRY=""
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
-    && npm install -g @anthropic-ai/claude-code
+    && npm install -g @anthropic-ai/claude-code @openai/codex \
+    && claude --version && codex --version
 
 # uv (Astral) -> /usr/local/bin/uv, used to install ucode below.
 RUN curl -LsSf https://astral.sh/uv/install.sh \

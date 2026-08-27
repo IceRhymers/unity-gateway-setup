@@ -10,12 +10,12 @@ It's three layers plus a launch surface:
 1. **Terraform** (`terraform/`) provisions the gateway — model services backed by
    Databricks FMAPI, inference logging to UC Delta tables, and the OTEL ingestion
    stack.
-2. **Config generator** (`agent_setups/`) reads the Terraform outputs and emits an
-   opinionated, fleet-deployable agent config (Claude Code
-   `managed-settings.json` + an OTEL headers helper) — the MDM baseline.
+2. **Config generator** (`agent_setups/`) reads the Terraform outputs and emits
+   opinionated, deployable agent configs — Claude Code `managed-settings.json`
+   (+ an OTEL headers helper) and a Codex `config.toml` — the routing baseline.
 3. **`ucode`** is the **intended entrypoint** developers use to launch agents. It
-   layers MCP discovery and a governed OAuth surface on top of the MDM baseline.
-4. **Docker harness** (`docker/`) tests the generated config — routing, telemetry,
+   layers MCP discovery and a governed OAuth surface on top of that baseline.
+4. **Docker harness** (`docker/`) tests the generated configs — routing, telemetry,
    and MCP — in an isolated container that never touches the host's real settings.
 
 ```
@@ -109,15 +109,18 @@ ingestion stack (schema, metrics/logs/traces tables, a managed service principal
 ### 2. Generate the agent config
 
 ```bash
-make agent-claude-code PROFILE=fevm-west
+make agent-claude-code PROFILE=fevm-west         # Claude Code managed-settings.json
+agent_setups/scripts/generate.py codex --profile fevm-west   # Codex config.toml
 ```
 
 Reads the Terraform outputs and writes
 `agent_setups/generated/claude-code/managed-settings.json` (plus
-`otel-headers-helper.sh` when telemetry is enabled). Every model pin, the
-allow-list, and the telemetry env block derive straight from the deployed
-gateway, so keeping them current costs nothing — just regenerate. See
-[`agent_setups/scripts/README.md`](agent_setups/scripts/README.md) for every flag.
+`otel-headers-helper.sh` when telemetry is enabled) and/or
+`agent_setups/generated/codex/config.toml`. Every model pin, the allow-list, and
+the telemetry env block derive straight from the deployed gateway, so keeping them
+current costs nothing — just regenerate. See
+[`agent_setups/scripts/README.md`](agent_setups/scripts/README.md) for every flag
+and the Codex specifics (it has no MDM path — deploy per-user into `$CODEX_HOME`).
 
 ### 3. Deploy the baseline via MDM
 
@@ -149,10 +152,10 @@ isolated container — gateway routing, OTEL export, and `ucode` MCP discovery �
 without touching the host's own managed settings:
 
 ```bash
-make docker-test     # build + generate config + start the container
+make docker-test     # build + generate both agent configs + start the container
 make docker-login    # databricks auth login inside (browser on host)
 make docker-mcp      # discover + register Databricks MCP servers via ucode
-make docker-shell    # exec in; run `ucode claude` (or `claude`) to generate traffic
+make docker-shell    # exec in; run `ucode claude` / `ucode codex` (or `claude` / `codex`)
 ```
 
 See [`docker/README.md`](docker/README.md).
@@ -166,9 +169,9 @@ terraform/          Provision the gateway
   infra/              Applyable deployment (defaults: fevm-west sandbox)
   modules/            unity-foundation · model-service · telemetry
 agent_setups/       Generate agent configs from the TF outputs
-  scripts/            The generator (Claude Code today; registry for more agents)
+  scripts/            The generator (Claude Code + Codex; registry for more agents)
   generated/          Output (gitignored — embeds a workspace host)
-docker/             Isolated test harness (Claude Code + databricks CLI + ucode)
+docker/             Isolated test harness (Claude Code + Codex + databricks CLI + ucode)
 Makefile            Task runner — `make help` lists targets
 ```
 

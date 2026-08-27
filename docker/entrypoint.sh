@@ -20,9 +20,10 @@ EOF
 chown dev:dev "$cfg"
 chmod 600 "$cfg"
 
-# 2. Stage the generated config as Linux enterprise-managed settings (root-owned,
-#    matching how MDM would deploy it). Mounted read-only at /opt/agent-config.
-if [ -d /opt/agent-config ]; then
+# 2a. Stage the generated Claude Code config as Linux enterprise-managed settings
+#     (root-owned, matching how MDM would deploy it). Mounted read-only at
+#     /opt/agent-config.
+if [ -f /opt/agent-config/managed-settings.json ]; then
   mkdir -p /etc/claude-code
   cp /opt/agent-config/managed-settings.json /etc/claude-code/managed-settings.json
   if [ -f /opt/agent-config/otel-headers-helper.sh ]; then
@@ -30,7 +31,18 @@ if [ -d /opt/agent-config ]; then
     chmod +x /etc/claude-code/otel-headers-helper.sh
   fi
 else
-  echo "[entrypoint] WARNING: /opt/agent-config not mounted — run 'make docker-config' and mount it." >&2
+  echo "[entrypoint] note: no Claude Code config at /opt/agent-config (run 'make docker-config')." >&2
+fi
+
+# 2b. Stage the generated Codex config. Codex has no OS-level managed path — it
+#     reads $CODEX_HOME/config.toml per user — so this lands in the dev user's
+#     home (dev-owned), mounted read-only at /opt/agent-config-codex.
+if [ -f /opt/agent-config-codex/config.toml ]; then
+  mkdir -p /home/dev/.codex
+  cp /opt/agent-config-codex/config.toml /home/dev/.codex/config.toml
+  chown -R dev:dev /home/dev/.codex
+else
+  echo "[entrypoint] note: no Codex config at /opt/agent-config-codex (run 'make docker-config-codex')." >&2
 fi
 
 # 3. Bridge the OAuth loopback callback. The databricks CLI's login listener binds

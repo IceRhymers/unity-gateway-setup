@@ -4,9 +4,10 @@ The entrypoint for **generating coding-agent configs** from the deployed Unity A
 Gateway. It reads the Terraform outputs of `terraform/infra` (the model services
 you provisioned) and emits opinionated, ready-to-deploy config for a coding agent.
 
-**First supported agent: Claude Code** (`managed-settings.json` for MDM/fleet
-deployment). The design is a registry, so Codex, Gemini CLI, OpenCode, etc. can
-be added as new generators.
+**Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
+deployment) **and Codex** (`config.toml` routed through the gateway's `codex/v1`
+Responses surface). The design is a registry, so Gemini CLI, OpenCode, etc. can be
+added as new generators.
 
 ## How it works
 
@@ -27,6 +28,9 @@ pin. The generator wires those into the agent's config.
 # Generate Claude Code managed-settings.json from the applied Terraform state.
 ./generate.py claude-code --profile fevm-west
 
+# Generate a Codex config.toml (gateway routing).
+./generate.py codex --profile fevm-west
+
 # Preview without writing.
 ./generate.py claude-code --profile fevm-west --stdout
 
@@ -35,8 +39,9 @@ terraform -chdir=../../terraform/infra output -json > /tmp/tf.json
 ./generate.py claude-code --tf-output-json /tmp/tf.json --host https://myws.cloud.databricks.com
 ```
 
-Output lands in `agent_setups/generated/claude-code/managed-settings.json`
-(gitignored — it embeds a workspace host, so regenerate per workspace).
+Output lands in `agent_setups/generated/<agent>/…`
+(`claude-code/managed-settings.json`, `codex/config.toml`) — gitignored, since it
+embeds a workspace host; regenerate per workspace.
 
 Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
 
@@ -133,6 +138,70 @@ When telemetry is enabled, also deploy the generated
 it executable, and ensure `python3` + the `databricks` CLI are on PATH. Each
 developer needs `READ_SECRET` on the telemetry UC secret (grant a group via
 `telemetry_reader_groups`).
+
+## Codex (`codex`)
+
+Emits a single self-contained `codex/config.toml` that routes the Codex CLI
+through the gateway. Unlike Claude Code, Codex has **no OS-level managed-config
+path** — it reads `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) per
+user — so the file is deployed into a developer's `$CODEX_HOME`, not pushed to a
+system path via MDM.
+
+### What the Codex config encodes
+
+- **Routing:** a `[model_providers.<name>]` block with
+  `base_url = <host>/ai-gateway/codex/v1`, `wire_api = "responses"`, and
+  `supports_websockets = false`. `model_provider` points at it and `model` pins a
+  default endpoint (the `gpt` alias by default).
+- **Auth:** an inline `[model_providers.<name>.auth]` command
+  (`command = "bash"`, `args = ["-c", …]`) that prints a **bare** short-lived
+  Databricks OAuth token — honoring `$DATABRICKS_BEARER`, else minting via
+  `databricks auth token --force-refresh`. Kept inline so the whole setup is one
+  file (no helper script to deploy alongside). Codex re-runs it every
+  `refresh_interval_ms`.
+- **Model surface:** every endpoint exposing the chosen `--api-type` becomes a
+  switchable model (listed as a comment; switch with `codex -m <full-name>`). The
+  default `mlflow/v1/responses` is the broad Responses surface — the `codex/v1`
+  route is a unified surface that translates, so GPT, Gemini, Claude, and the open
+  models are all reachable. Narrow to `openai/v1/responses` for OpenAI-native only.
+- **Not included — the ChatGPT desktop app.** A working local Codex install also
+  carries app machinery (plugins, marketplaces, `node_repl`, computer-use,
+  `CODEX_CLI_PATH`). That is installed by the ChatGPT app and is machine-specific;
+  the app need not even run for CLI gateway use, so none of it is reproduced here.
+
+### Key options (`codex`)
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--profile` | `fevm-west` | Databricks profile (host + auth). |
+| `--host` | (from profile) | Override the workspace URL. |
+| `--api-type` | `mlflow/v1/responses` | Endpoint filter; narrow to `openai/v1/responses` for OpenAI-native responses only. |
+| `--skip-api-discovery` | off | Skip live `supported_api_types` lookup; use `--fallback-schema` (offline). |
+| `--fallback-schema` | `openai` | Schema assumed responses-capable when discovery is skipped. |
+| `--default-model` | `gpt` alias | Model Codex starts on (endpoint leaf or full UC name). |
+| `--reasoning-effort` | `high` | `model_reasoning_effort` (`minimal`…`xhigh`). |
+| `--provider-name` | `databricks` | Key for `[model_providers.<name>]` / `model_provider`. |
+| `--codex-path` | `/ai-gateway/codex/v1` | Gateway route base appended to the host. |
+| `--refresh-interval-ms` | `900000` | `auth.refresh_interval_ms` (token re-mint interval). |
+| `--auth-timeout-ms` | `5000` | `auth.timeout_ms`. |
+| `--databricks-bin` | `databricks` | CLI path used in the auth command (absolute for minimal-PATH contexts). |
+
+### Deploying the output
+
+Copy `codex/config.toml` into a developer's `$CODEX_HOME`, one of two ways:
+
+- **Full config:** `→ $CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
+- **Non-destructive overlay:** `→ $CODEX_HOME/databricks.config.toml`, then launch
+  with `codex -p databricks` — layers the gateway provider on top of an existing
+  (e.g. ChatGPT-app) `config.toml`.
+
+Each developer runs `databricks auth login --host <url> --profile <profile>` once;
+`python3` + the `databricks` CLI must be on PATH. Verify with `codex doctor`. As
+with Claude Code, the intended launch surface is `ucode` (`ucode codex`), which
+adds MCP discovery and the per-request OAuth surface — see the repo
+[README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
+Codex has no client OTEL export in this setup; its gateway traffic is still
+captured server-side by each model service's **inference logging** UC table.
 
 ## Adding an agent
 
