@@ -79,6 +79,22 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   v2.1.242+) listing every Anthropic-capable endpoint (aliases first, then version
   pins). It replaces the built-in tier rows by default; `--model-picker-append`
   keeps them and appends instead.
+
+  It's **off by default** on purpose — this is an MDM-pushed file that lands on
+  every machine, so the baseline stays the minimal config that works on the widest
+  range of client versions:
+  1. **Version floor.** `modelPicker` needs Claude Code v2.1.242+; defaulting it on
+     would push a setting older installs in a fleet may not understand.
+  2. **Not part of governance.** The four tier pins plus
+     `enforceAvailableModels`/`availableModels` already define and enforce which
+     models are usable. The picker only changes what `/model` *displays* — a UX
+     nicety, not a governance control.
+  3. **It's a UI opinion.** By default it *replaces* the familiar built-in tier
+     rows, which is a bigger change to impose fleet-wide without being asked.
+
+  So it's a deliberate opt-in you enable once your fleet is current. (Note: the
+  Docker harness does **not** enable it either, so the container mirrors a default
+  deploy; pass `make docker-config ARGS="--model-picker"` to exercise it there.)
 - **Telemetry:** when the infra `telemetry` output is present (default), the
   generator adds the OTEL env block (metrics/logs/traces → `<host>/api/2.0/otel`),
   per-signal `X-Databricks-UC-Table-Name` static headers, and an
