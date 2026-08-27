@@ -64,7 +64,8 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
   falls back to a schema heuristic for offline use.
 - **Governance:** `enforceAvailableModels` + `availableModels`, and
   `permissions.deny: ["WebSearch"]` (built-in search can't reach
-  api.anthropic.com through the gateway; replace with a ucode web_search MCP).
+  api.anthropic.com through the gateway; replace with `ucode mcp web-search`, the
+  gateway-backed `web_search` MCP).
 - **Model picker (opt-in, `--model-picker`):** `availableModels` is only an
   allow-list — it does **not** add rows to the interactive `/model` picker, which
   otherwise shows just the four tier slots. `--model-picker` emits a `modelPicker`
@@ -119,6 +120,12 @@ Push `managed-settings.json` to the OS path via MDM (Jamf/Intune/GPO):
 
 Each developer runs `databricks auth login --host <url> --profile <profile>` once.
 Verify with `/status` in Claude Code.
+
+This `managed-settings.json` is the **inference baseline**: with it deployed,
+`claude` invoked directly routes through the gateway and emits telemetry on its
+own. The **intended launch surface is `ucode`**, which layers Databricks MCP
+discovery and a per-request OAuth surface on top — see the repo
+[README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
 
 When telemetry is enabled, also deploy the generated
 `claude-code/otel-headers-helper.sh` to the path in `--otel-helper-install-path`
