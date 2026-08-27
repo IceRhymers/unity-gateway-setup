@@ -126,12 +126,14 @@ docker-build: ## Build the test-harness image (Claude Code + Codex + databricks 
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) docker/
 
 # The docker-config* targets delegate to the same agent-* generation, only
-# redirecting OUT_DIR to the container dir and layering container-necessary
-# flags — so the harness tests exactly what the deploy targets produce.
+# redirecting OUT_DIR to the container dir and layering the one override forced
+# by the environment (the Linux OTEL helper path — the default is the macOS
+# path) — so the harness tests exactly what the deploy targets produce. Pass
+# other flags (e.g. --model-picker) via ARGS when you want to exercise them.
 .PHONY: docker-config
-docker-config: ## Generate Claude Code config for the container (Linux helper path + full model picker); needs applied telemetry infra
+docker-config: ## Generate Claude Code config for the container (Linux helper path); needs applied telemetry infra
 	$(MAKE) agent-claude-code PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) \
-		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh --model-picker $(ARGS)"
+		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh $(ARGS)"
 
 .PHONY: docker-config-codex
 docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway codex/v1 route)
