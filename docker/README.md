@@ -1,19 +1,22 @@
 # docker — isolated test harness
 
-A throwaway container for testing the generated Claude Code
-`managed-settings.json` (gateway routing **and** OTEL telemetry) on a machine
-that already has host-level managed settings — the container has its own
-`/etc/claude-code/managed-settings.json`, so the host's is never touched.
+A throwaway container for testing the generated agent configs — Claude Code's
+`managed-settings.json` (gateway routing **and** OTEL telemetry) and Codex's
+`config.toml` (gateway routing) — on a machine that already has host-level
+settings. The container has its own `/etc/claude-code/managed-settings.json` and
+its own `~/.codex/config.toml`, so the host's are never touched.
 
 ## What's inside
 
-- **Claude Code** + the **databricks CLI** + **python3** (for the api-key and
-  otel-headers helpers).
+- **Claude Code** + **Codex** + the **databricks CLI** + **python3** (for the
+  api-key, otel-headers, and Codex auth helpers).
 - **`ucode`** (Unity AI Gateway coding CLI), installed via `uv` and available on
   `PATH` by default — used here to discover Databricks MCP services and register
   them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
-- The generated config staged as Linux enterprise-managed settings at
-  `/etc/claude-code/` (mounted read-only from `agent_setups/generated/container/`).
+- The generated **Claude Code** config staged as Linux enterprise-managed settings
+  at `/etc/claude-code/`, and the generated **Codex** `config.toml` staged at the
+  dev user's `~/.codex/config.toml` (Codex has no system-managed path) — both
+  mounted read-only from `agent_setups/generated/container/`.
 - A fresh, isolated `~/.databrickscfg` written at start: both `DEFAULT` and the
   named profile point at the workspace, so `databricks auth login` and the
   settings' `--profile` calls resolve. The profile is also the default
@@ -26,15 +29,17 @@ that already has host-level managed settings — the container has its own
 ## Flow (Makefile targets)
 
 ```bash
-make tf-apply        # provision the telemetry infra first (creates tables, SP, secret)
-make docker-build    # build the image (once)
-make docker-config   # generate the config with the Linux helper path
-make docker-up       # start the container (maps 8020, writes the profile)
-make docker-login    # runs `databricks auth login` inside — see browser note below
-make docker-shell    # exec in as the dev user
+make tf-apply           # provision the telemetry infra first (creates tables, SP, secret)
+make docker-build       # build the image (once) — Claude Code + Codex
+make docker-config-all  # generate both agent configs (or docker-config / docker-config-codex)
+make docker-up          # start the container (maps 8020, mounts configs, writes the profile)
+make docker-login       # runs `databricks auth login` inside — see browser note below
+make docker-shell       # exec in as the dev user
 ```
 
-`make docker-test` runs build + config + up together.
+`make docker-test` runs build + both configs + up together. To iterate on the
+configs without restarting (keeps auth), `make docker-reload` regenerates **both**
+agent configs and pushes them into the running container in one step.
 
 ### Authenticating
 
@@ -62,6 +67,22 @@ Then confirm rows are landing (from the shell, or your workspace):
 databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","statement":"SELECT count(*) FROM <catalog>.telemetry.claude_otel_metrics","wait_timeout":"30s"}'
 ```
 
+### Testing Codex
+
+The Codex `config.toml` is staged at `~/.codex/config.toml` inside the container.
+Inside `make docker-shell`:
+
+```bash
+codex doctor      # checks config, auth, and runtime health against the gateway
+codex             # launches Codex, routed through <host>/ai-gateway/mlflow/v1 (+ /responses)
+```
+
+Codex has no client-side OTEL, but its traffic is still captured server-side by
+each model service's inference-logging UC table. Switch models with
+`codex -m tanner_..._catalog.openai.gpt-5-6-sol` (any model listed in the config's
+comment header). To iterate on the config without restarting the container, run
+`make docker-reload` (reloads both agent configs).
+
 ## MCP servers
 
 `ucode` is baked into the image, so you can test MCP-service discovery and
@@ -74,17 +95,18 @@ make docker-mcp        # runs `ucode configure mcp` inside the container
 
 It discovers the Databricks MCP servers your identity can see (external
 connections, Databricks SQL, managed MCPs, and `system.ai.*` services), lets you
-pick which to add, and writes them to Claude Code's **user-level** config
-(`~/.claude.json` inside the container) — separate from the MDM
-`managed-settings.json` this harness stages, which only handles gateway routing.
-Each server is registered as a local stdio bridge (`ucode mcp-proxy`) that mints
-a fresh OAuth token per request from the container's databricks profile.
+pick which to add, and writes them to the agent's **user-level** config
+(`~/.claude.json` for Claude Code, `~/.codex/config.toml`'s `[mcp_servers.*]` for
+Codex) — separate from the gateway-routing configs this harness stages. Each
+server is registered as a local stdio bridge (`ucode mcp-proxy`) that mints a
+fresh OAuth token per request from the container's databricks profile.
 
-Then run `claude` (via `make docker-shell`) and the registered MCP tools are
-available. Pass extra flags through `ARGS`, e.g.:
+Then run `claude` or `codex` (via `make docker-shell`) and the registered MCP
+tools are available. Target a specific agent through `ARGS`, e.g.:
 
 ```bash
 make docker-mcp ARGS="--agents claude"
+make docker-mcp ARGS="--agents codex"
 ```
 
 > The image installs `ucode` from `github.com/databricks/ucode` at build time.
