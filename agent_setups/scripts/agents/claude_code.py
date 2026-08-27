@@ -164,6 +164,7 @@ CACHE_DIR="${HOME}/.cache/unity-gateway"
 TOKEN_FILE="${CACHE_DIR}/zerobus_token"
 EXP_FILE="${CACHE_DIR}/zerobus_token.exp"
 SPOOL_DIR="${CACHE_DIR}/spool"
+WS_USER_FILE="${CACHE_DIR}/ws_user"
 
 # Per-session spool file. Events are appended here (instant, no network) and
 # drained by flush_spool at turn/session boundaries. Keyed by session so
@@ -245,6 +246,29 @@ _get_token() {
   cat "$TOKEN_FILE" 2>/dev/null
 }
 
+# Resolve the workspace identity (email) of the developer this session runs as —
+# e.g. tanner.wendland@databricks.com — NOT the OS login ($USER, which is often
+# unset in a hook's sandboxed process, hence the old "unknown"). Asks the Databricks
+# CLI once (`current-user me`, as the developer's own profile) and caches the answer;
+# identity is stable, so only the first hook that needs it touches the network and
+# every later emit reads the cache. HOOK_EVENTS_USER forces a value; on any failure we
+# fall back to the OS user, then "unknown", so telemetry still ships (report-only).
+_ws_user() {
+  if [ -n "${HOOK_EVENTS_USER:-}" ]; then printf '%s' "$HOOK_EVENTS_USER"; return 0; fi
+  if [ -s "$WS_USER_FILE" ]; then cat "$WS_USER_FILE" 2>/dev/null; return 0; fi
+  local email
+  email="$("$DATABRICKS_BIN" current-user me --profile "$PROFILE" -o json 2>/dev/null \
+    | jq -r '.userName // .emails[0].value // empty' 2>/dev/null)"
+  if [ -n "$email" ]; then
+    mkdir -p "$CACHE_DIR" 2>/dev/null || true
+    printf '%s' "$email" > "${WS_USER_FILE}.tmp" 2>/dev/null \
+      && mv -f "${WS_USER_FILE}.tmp" "$WS_USER_FILE" 2>/dev/null || true
+    printf '%s' "$email"
+    return 0
+  fi
+  printf '%s' "${USER:-unknown}"
+}
+
 # emit <category> <event_name> <plugin_name> <attributes_json>
 # Appends ONE event (a single-line JSON object) to the session spool. Instant and
 # local — no token, no network — so the hot path (PostToolUse) never blocks and
@@ -255,7 +279,7 @@ emit() {
   local category="$1" event_name="$2" plugin="$3" attrs="$4"
   local session user machine ts event_id record spool
   session="$(_session_id)"
-  user="${USER:-unknown}"
+  user="$(_ws_user)"
   machine="$(hostname 2>/dev/null || echo unknown)"
   ts="$(( $(date +%s) * 1000000 ))"
   event_id="$(uuidgen 2>/dev/null || printf '%s-%s-%s' "$session" "$ts" "${RANDOM:-0}")"

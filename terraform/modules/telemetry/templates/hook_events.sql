@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS {{TABLE}} (
   category     STRING    COMMENT 'usage | reliability | governance | adoption',
   event_name   STRING    COMMENT 'e.g. skill_used, stop_failure, secret_detected, doc_read',
   session_id   STRING    COMMENT 'Claude Code session; joins per-event rows to plugin_inventory',
-  user         STRING    COMMENT 'Developer identity (OS user, or overridden)',
+  user         STRING    COMMENT 'Workspace user identity (email) the session runs as; falls back to OS user, or overridden',
   machine      STRING    COMMENT 'Host name, for fleet-level rollups',
   agent        STRING    COMMENT 'Coding agent that emitted the event (claude-code)',
   plugin_name  STRING    COMMENT 'Owning plugin when the event carries one',

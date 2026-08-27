@@ -128,7 +128,11 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   path and batched — and authenticates as the **same telemetry service principal**
   (bearer minted from the UC secret and cached; no SDK/gRPC). The spool is
   persistent, so an interrupted flush loses nothing — the next flush retries it
-  (at-least-once; dedupe downstream on `event_id`). It is **report-only** (never
+  (at-least-once; dedupe downstream on `event_id`). Each event is attributed to the
+  developer's **workspace identity** — their `databricks current-user` email
+  (e.g. `tanner.wendland@databricks.com`), resolved once and cached, not the OS
+  login (override with `HOOK_EVENTS_USER`; falls back to the OS user if the lookup
+  fails). It is **report-only** (never
   blocks a tool call) and **content-free by default** (names/counts/IDs, not prompt
   or file content; `--hook-log-paths` opts paths in). Categories are selectable via
   `--hook-categories`; the adoption doc-matcher is `--hook-doc-patterns`
