@@ -118,14 +118,21 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   the host's cloud suffix → `https://<id>.zerobus.<region>.<suffix>` — and baked
   into the script (override via `--zerobus-endpoint` or `telemetry_zerobus_endpoint`;
   derivation is skipped with `--skip-api-discovery`). If it can't be derived, the
-  hook still ships but stays dormant (no-op) until `ZEROBUS_ENDPOINT` is set. Each
-  hook fires a backgrounded `curl` of a one-row JSON array to the **Zerobus REST**
-  insert endpoint, authenticating as the **same telemetry service principal** (the
-  bearer is minted from the UC secret and cached — no SDK/gRPC, nothing new on the
-  machine). It is **report-only** (never blocks a tool call) and **content-free by
-  default** (names/counts/IDs, not prompt or file content; `--hook-log-paths` opts
-  paths in). Categories are selectable via `--hook-categories`; the adoption
-  doc-matcher is `--hook-doc-patterns` (generalized from the internal `TESTING.md`).
+  hook still ships but stays dormant (no-op) until `ZEROBUS_ENDPOINT` is set.
+  **Delivery is spool-then-flush**, so the per-tool-call hot path never blocks and
+  nothing depends on a backgrounded process surviving: each producer hook
+  **appends** its event to a per-session spool file (instant, local — no network),
+  and a **`flush`** batches the spool into one **Zerobus REST** insert at
+  turn/session boundaries (`Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`, and
+  `SessionStart` to sweep leftovers). The flush is synchronous — but off the hot
+  path and batched — and authenticates as the **same telemetry service principal**
+  (bearer minted from the UC secret and cached; no SDK/gRPC). The spool is
+  persistent, so an interrupted flush loses nothing — the next flush retries it
+  (at-least-once; dedupe downstream on `event_id`). It is **report-only** (never
+  blocks a tool call) and **content-free by default** (names/counts/IDs, not prompt
+  or file content; `--hook-log-paths` opts paths in). Categories are selectable via
+  `--hook-categories`; the adoption doc-matcher is `--hook-doc-patterns`
+  (generalized from the internal `TESTING.md`).
 
 ## Key options (`claude-code`)
 

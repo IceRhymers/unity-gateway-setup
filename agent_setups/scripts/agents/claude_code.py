@@ -163,6 +163,17 @@ INPUT="$(cat)"
 CACHE_DIR="${HOME}/.cache/unity-gateway"
 TOKEN_FILE="${CACHE_DIR}/zerobus_token"
 EXP_FILE="${CACHE_DIR}/zerobus_token.exp"
+SPOOL_DIR="${CACHE_DIR}/spool"
+
+# Per-session spool file. Events are appended here (instant, no network) and
+# drained by flush_spool at turn/session boundaries. Keyed by session so
+# concurrent sessions don't interleave, and sanitized for the filesystem.
+_session_id() { printf '%s' "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null; }
+_spool_file() {
+  local s; s="$(_session_id)"
+  s="$(printf '%s' "${s:-unknown}" | tr -c 'A-Za-z0-9._-' '_')"
+  printf '%s/%s.jsonl' "$SPOOL_DIR" "${s:-unknown}"
+}
 
 # Is a reporting category enabled? (comma-membership test)
 cat_enabled() { case ",${ENABLED_CATEGORIES}," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
@@ -235,35 +246,60 @@ _get_token() {
 }
 
 # emit <category> <event_name> <plugin_name> <attributes_json>
-# Builds the common columns + the event-specific attributes bag and delivers the
-# insert. attributes_json must be a JSON object string.
+# Appends ONE event (a single-line JSON object) to the session spool. Instant and
+# local — no token, no network — so the hot path (PostToolUse) never blocks and
+# there is nothing a sandbox teardown can kill. flush_spool delivers the batch
+# later, at a turn/session boundary. attributes_json must be a JSON object string.
 emit() {
   cat_enabled "$1" || return 0
   local category="$1" event_name="$2" plugin="$3" attrs="$4"
-  local session user machine ts event_id token record
-  session="$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null)"
+  local session user machine ts event_id record spool
+  session="$(_session_id)"
   user="${USER:-unknown}"
   machine="$(hostname 2>/dev/null || echo unknown)"
   ts="$(( $(date +%s) * 1000000 ))"
   event_id="$(uuidgen 2>/dev/null || printf '%s-%s-%s' "$session" "$ts" "${RANDOM:-0}")"
-  token="$(_get_token)" || return 0
-  [ -n "$token" ] || return 0
   record="$(jq -cn \
     --arg id "$event_id" --argjson ts "$ts" --arg cat "$category" --arg ev "$event_name" \
     --arg s "$session" --arg u "$user" --arg m "$machine" --arg a "$AGENT" \
     --arg p "$plugin" --arg attrs "$attrs" \
-    '[{event_id:$id, event_time:$ts, category:$cat, event_name:$ev, session_id:$s, user:$u, machine:$m, agent:$a, plugin_name:$p, attributes:$attrs}]' 2>/dev/null)" || return 0
-  # Deliver SYNCHRONOUSLY (no trailing &). Claude Code waits for the hook to exit,
-  # then tears its process tree / sandbox down — a backgrounded curl would be killed
-  # before the POST completes, so no row lands. With the token cached this is a single
-  # fast POST; --connect-timeout + -m bound the worst case so a slow/unreachable
-  # endpoint can't stall the turn for long. || true: telemetry never fails the hook.
-  curl -sS --connect-timeout 3 -m 8 -X POST \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "$record" \
-    "${ZEROBUS_ENDPOINT%/}/zerobus/v1/tables/${HOOK_EVENTS_TABLE}/insert" \
-    >/dev/null 2>&1 || true
+    '{event_id:$id, event_time:$ts, category:$cat, event_name:$ev, session_id:$s, user:$u, machine:$m, agent:$a, plugin_name:$p, attributes:$attrs}' 2>/dev/null)" || return 0
+  [ -n "$record" ] || return 0
+  mkdir -p "$SPOOL_DIR" 2>/dev/null || return 0
+  spool="$(_spool_file)"
+  printf '%s\n' "$record" >> "$spool" 2>/dev/null || true
+}
+
+# flush_spool: deliver the session's spooled events as one batched insert. Runs at
+# turn/session boundaries (Stop, StopFailure, SubagentStop, SessionEnd) and on
+# SessionStart to sweep anything a prior run left behind. Synchronous — but off the
+# per-tool-call hot path and batched — so it can't be torn down mid-flight. The
+# spool is persistent: if delivery fails (or is interrupted), the events stay on
+# disk and the next flush retries them (at-least-once; dedupe on event_id).
+flush_spool() {
+  local spool sending token array
+  spool="$(_spool_file)"
+  [ -s "$spool" ] || return 0
+  # Rotate first so events appended during the POST land in a fresh spool (no loss).
+  sending="${spool}.sending.$$"
+  mv -f "$spool" "$sending" 2>/dev/null || return 0
+  token="$(_get_token)" || { cat "$sending" >> "$spool" 2>/dev/null; rm -f "$sending"; return 0; }
+  [ -n "$token" ] || { cat "$sending" >> "$spool" 2>/dev/null; rm -f "$sending"; return 0; }
+  # Slurp the newline-delimited event objects into a single JSON array.
+  array="$(jq -cs '.' "$sending" 2>/dev/null)" || { cat "$sending" >> "$spool" 2>/dev/null; rm -f "$sending"; return 0; }
+  if curl -fsS --connect-timeout 3 -m 15 -X POST \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -d "$array" \
+      "${ZEROBUS_ENDPOINT%/}/zerobus/v1/tables/${HOOK_EVENTS_TABLE}/insert" \
+      >/dev/null 2>&1; then
+    rm -f "$sending"
+  else
+    # Delivery failed — requeue for the next flush (order isn't significant; the
+    # consumer dedupes/sorts on event_id + event_time).
+    cat "$sending" >> "$spool" 2>/dev/null || true
+    rm -f "$sending"
+  fi
 }
 
 # split "plugin:name" -> sets SPLIT_PLUGIN / SPLIT_NAME; bare "name" -> "" / name.
@@ -394,6 +430,7 @@ case "$SUB" in
   pretool)   handle_pretool ;;
   posttool)  handle_posttool ;;
   stopfail)  handle_stopfail ;;
+  flush)     flush_spool ;;
 esac
 exit 0
 """
@@ -422,34 +459,57 @@ def _hook_dispatcher_script(endpoint: str, table: str, secret_full_name: str, ho
 
 
 def _hook_settings_block(script_path: str, categories: list[str]) -> dict:
-    """Map hook events -> the dispatcher subcommand, for managed-settings.json.
+    """Map hook events -> dispatcher subcommands, for managed-settings.json.
 
-    Only the events for enabled categories are registered. PostToolUse serves
-    both usage (Skill|Task) and adoption (Read|Bash); the matcher is the union.
+    Two roles per the spool/flush model:
+      * producers spool an event (SessionStart/UserPromptSubmit/PostToolUse/
+        PreToolUse/StopFailure) — only those for enabled categories are registered;
+      * flush drains the spool at turn/session boundaries (SessionStart, Stop,
+        SubagentStop, StopFailure, SessionEnd) — registered whenever anything is on.
+    Commands run in array order, so where a boundary is also a producer (SessionStart
+    inventory, StopFailure stopfail) the event is spooled before the flush.
     """
     q = f'"{script_path}"'
 
     def cmd(sub: str) -> dict:
         return {"type": "command", "command": f"{q} {sub}"}
 
-    hooks: dict[str, list] = {}
+    ordered: dict[str, list[str]] = {}
+    matchers: dict[str, str] = {}
+
+    def add(event: str, sub: str, matcher: str | None = None) -> None:
+        ordered.setdefault(event, []).append(sub)
+        if matcher:
+            matchers[event] = matcher
+
+    # Producers.
     if "usage" in categories:
-        hooks.setdefault("SessionStart", []).append({"hooks": [cmd("inventory")]})
-        hooks.setdefault("UserPromptSubmit", []).append({"hooks": [cmd("prompt")]})
+        add("SessionStart", "inventory")
+        add("UserPromptSubmit", "prompt")
     post_matchers: list[str] = []
     if "usage" in categories:
         post_matchers += ["Skill", "Task"]
     if "adoption" in categories:
         post_matchers += ["Read", "Bash"]
     if post_matchers:
-        hooks.setdefault("PostToolUse", []).append(
-            {"matcher": "|".join(post_matchers), "hooks": [cmd("posttool")]}
-        )
+        add("PostToolUse", "posttool", "|".join(post_matchers))
     if "governance" in categories:
-        hooks.setdefault("PreToolUse", []).append({"matcher": "Bash", "hooks": [cmd("pretool")]})
+        add("PreToolUse", "pretool", "Bash")
     if "reliability" in categories:
-        hooks.setdefault("StopFailure", []).append({"hooks": [cmd("stopfail")]})
-    return hooks
+        add("StopFailure", "stopfail")
+
+    # Drain at boundaries (flush handles all categories). SessionStart also sweeps
+    # anything a prior run left spooled.
+    for boundary in ("SessionStart", "Stop", "SubagentStop", "StopFailure", "SessionEnd"):
+        add(boundary, "flush")
+
+    block: dict[str, list] = {}
+    for event, subs in ordered.items():
+        entry: dict = {"hooks": [cmd(s) for s in subs]}
+        if event in matchers:
+            entry["matcher"] = matchers[event]
+        block[event] = [entry]
+    return block
 
 
 def _zerobus_cloud_suffix(host: str) -> str:
