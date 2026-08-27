@@ -75,6 +75,14 @@ agent-claude-code: ## Generate Claude Code managed-settings.json from TF outputs
 agent-claude-code-preview: ## Print the generated Claude Code managed-settings.json without writing
 	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) --stdout $(ARGS)
 
+.PHONY: agent-codex
+agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) $(ARGS)
+
+.PHONY: agent-codex-preview
+agent-codex-preview: ## Print the generated Codex config.toml without writing
+	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) --stdout $(ARGS)
+
 # ---- docker test harness ----
 # Isolated container to test the generated agent configs (Claude Code routing +
 # OTEL telemetry, and Codex gateway routing) without touching the host's own

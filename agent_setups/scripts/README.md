@@ -43,7 +43,8 @@ Output lands in `agent_setups/generated/<agent>/…`
 (`claude-code/managed-settings.json`, `codex/config.toml`) — gitignored, since it
 embeds a workspace host; regenerate per workspace.
 
-Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west`.
+Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
+`make agent-codex PROFILE=fevm-west` (append `-preview` to print without writing).
 
 ## What the Claude Code config encodes
 

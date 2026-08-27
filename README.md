@@ -109,8 +109,8 @@ ingestion stack (schema, metrics/logs/traces tables, a managed service principal
 ### 2. Generate the agent config
 
 ```bash
-make agent-claude-code PROFILE=fevm-west         # Claude Code managed-settings.json
-agent_setups/scripts/generate.py codex --profile fevm-west   # Codex config.toml
+make agent-claude-code PROFILE=fevm-west   # Claude Code managed-settings.json
+make agent-codex PROFILE=fevm-west         # Codex config.toml
 ```
 
 Reads the Terraform outputs and writes
