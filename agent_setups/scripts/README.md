@@ -39,9 +39,13 @@ terraform -chdir=../../terraform/infra output -json > /tmp/tf.json
 ./generate.py claude-code --tf-output-json /tmp/tf.json --host https://myws.cloud.databricks.com
 ```
 
-Output lands in `agent_setups/generated/<agent>/…`
-(`claude-code/managed-settings.json`, `codex/config.toml`) — gitignored, since it
-embeds a workspace host; regenerate per workspace.
+Output lands in `agent_setups/generated/<agent>/…` — gitignored, since it embeds a
+workspace host; regenerate per workspace. Claude Code writes a **self-contained
+bundle per OS**: `claude-code/{macos,linux,windows}/`, each with a
+`managed-settings.json` plus the `otel-headers-helper.sh` and `emit_hook_events.sh`
+scripts (when enabled). The bundles differ only in the on-disk paths
+`managed-settings.json` references (keyed to each OS's ClaudeCode dir); the scripts
+are byte-identical. Codex writes a single `codex/config.toml`.
 
 Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 `make agent-codex PROFILE=fevm-west` (append `-preview` to print without writing).
@@ -103,6 +107,32 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   ingestion service principal's OAuth token for the `Authorization` header, so
   the bearer token is never baked into settings. Prompt/tool/API-body content
   logging is **off** unless `--otel-log-content` is passed.
+- **Hook telemetry (custom reporting):** native OTEL doesn't emit the per-hook
+  signals internal teams report on — slash-command / skill / subagent usage with
+  plugin attribution, per-session plugin inventory, `StopFailure` mid-stream
+  stalls, guardrail hits, workflow adoption. When the infra `telemetry.hook_events`
+  table is present (default), the generator emits `emit_hook_events.sh` and a
+  `hooks` block wiring it to the relevant events. The Zerobus endpoint is
+  **auto-derived at generation time** from workspace metadata — the numeric
+  workspace id (`x-databricks-org-id` response header) + the UC metastore region +
+  the host's cloud suffix → `https://<id>.zerobus.<region>.<suffix>` — and baked
+  into the script (override via `--zerobus-endpoint` or `telemetry_zerobus_endpoint`;
+  derivation is skipped with `--skip-api-discovery`). If it can't be derived, the
+  hook still ships but stays dormant (no-op) until `ZEROBUS_ENDPOINT` is set.
+  **Delivery is spool-then-flush**, so the per-tool-call hot path never blocks and
+  nothing depends on a backgrounded process surviving: each producer hook
+  **appends** its event to a per-session spool file (instant, local — no network),
+  and a **`flush`** batches the spool into one **Zerobus REST** insert at
+  turn/session boundaries (`Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`, and
+  `SessionStart` to sweep leftovers). The flush is synchronous — but off the hot
+  path and batched — and authenticates as the **same telemetry service principal**
+  (bearer minted from the UC secret and cached; no SDK/gRPC). The spool is
+  persistent, so an interrupted flush loses nothing — the next flush retries it
+  (at-least-once; dedupe downstream on `event_id`). It is **report-only** (never
+  blocks a tool call) and **content-free by default** (names/counts/IDs, not prompt
+  or file content; `--hook-log-paths` opts paths in). Categories are selectable via
+  `--hook-categories`; the adoption doc-matcher is `--hook-doc-patterns`
+  (generalized from the internal `TESTING.md`).
 
 ## Key options (`claude-code`)
 
@@ -128,20 +158,30 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 | `--otel-metric-interval-ms` | `60000` | `OTEL_METRIC_EXPORT_INTERVAL`. |
 | `--otel-logs-interval-ms` | `5000` | `OTEL_LOGS_EXPORT_INTERVAL`. |
 | `--otel-headers-helper-debounce-ms` | `900000` | Token refresh interval for the headers helper. |
-| `--otel-helper-install-path` | macOS ClaudeCode path | Where `otel-headers-helper.sh` is deployed on each machine. |
+| `--platforms` | `macos,linux,windows` | OSes to emit a self-contained bundle for; each `claude-code/<platform>/` gets paths keyed to that OS's ClaudeCode dir. |
+| `--hook-telemetry` | `auto` | Custom reporting hook + `hooks` block via Zerobus REST: `auto` (on iff the `telemetry.hook_events` table exists) · `on` (require it) · `off`. Endpoint baked when known but not required — the hook ships dormant until `ZEROBUS_ENDPOINT` is set. |
+| `--hook-categories` | all four | Comma list of `usage,reliability,governance,adoption`; only the selected categories' hook events are registered. |
+| `--hook-doc-patterns` | `TESTING\.md` | grep -E of file basenames whose Read counts as a workflow-adoption event. |
+| `--hook-log-paths` | off | Include full file paths in adoption events (default: basename only). |
+| `--hook-token-ttl-seconds` | `600` | Refresh-hint TTL for the cached Zerobus bearer. |
+| `--zerobus-endpoint` | (auto-derived) | Override the Zerobus REST base URL. Default: TF output, else auto-derived from workspace metadata (org-id header + metastore region). |
 
 ## Deploying the output
 
-Push `managed-settings.json` to the OS path via MDM (Jamf/Intune/GPO):
+Deploy the **whole `claude-code/<os>/` bundle** for each OS you manage, via MDM
+(Jamf/Intune/GPO), into that OS's ClaudeCode directory — `managed-settings.json`
+and both helper scripts go in the same place, because the paths inside
+`managed-settings.json` already point there:
 
-| OS | Path |
+| OS | Deploy the `<os>/` bundle to |
 |---|---|
-| macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` |
-| Linux/WSL | `/etc/claude-code/managed-settings.json` |
-| Windows | `C:\Program Files\ClaudeCode\managed-settings.json` |
+| macOS | `/Library/Application Support/ClaudeCode/` |
+| Linux/WSL | `/etc/claude-code/` |
+| Windows | `C:\Program Files\ClaudeCode\` |
 
-Each developer runs `databricks auth login --host <url> --profile <profile>` once.
-Verify with `/status` in Claude Code.
+`chmod +x` the helper scripts after deploy. Each developer runs
+`databricks auth login --host <url> --profile <profile>` once. Verify with
+`/status` in Claude Code.
 
 This `managed-settings.json` is the **inference baseline**: with it deployed,
 `claude` invoked directly routes through the gateway and emits telemetry on its
@@ -149,12 +189,14 @@ own. The **intended launch surface is `ucode`**, which layers Databricks MCP
 discovery and a per-request OAuth surface on top — see the repo
 [README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
 
-When telemetry is enabled, also deploy the generated
-`claude-code/otel-headers-helper.sh` to the path in `--otel-helper-install-path`
-(default `/Library/Application Support/ClaudeCode/otel-headers-helper.sh`), make
-it executable, and ensure `python3` + the `databricks` CLI are on PATH. Each
-developer needs `READ_SECRET` on the telemetry UC secret (grant a group via
-`telemetry_reader_groups`).
+- **OTEL helper** (`otel-headers-helper.sh`, when telemetry is on): needs `python3`
+  + the `databricks` CLI on PATH, and `READ_SECRET` on the telemetry UC secret
+  (grant a group via `telemetry_reader_groups`).
+- **Reporting hook** (`emit_hook_events.sh`, when hook telemetry is on): same deps
+  plus `jq` + `curl`; reuses the same UC secret / `READ_SECRET` grant. Confirm the
+  **Zerobus REST API is available in the workspace region** before fleet rollout.
+- **Windows** runs the `.sh` helper/hook through Claude Code's shell (Git Bash);
+  verify the `C:\` paths resolve there before a Windows rollout.
 
 ## Codex (`codex`)
 

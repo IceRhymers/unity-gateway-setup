@@ -212,3 +212,35 @@ variable "telemetry_secret_lifetime" {
   type        = string
   default     = null
 }
+
+# ---- hook events (custom Claude Code reporting via Zerobus REST) ----
+#
+# Complements native OTEL: a Delta table for the hook-only events native OTEL
+# does not emit (agent-usage attribution, reliability stalls, governance signals,
+# workflow adoption). The generated managed-settings.json registers a hook that
+# streams these to Zerobus REST as the telemetry service principal.
+
+variable "telemetry_hook_events_enabled" {
+  description = "Provision the claude_hook_events table + grant for hook-based reporting (agent-usage, reliability, governance, adoption)."
+  type        = bool
+  default     = true
+}
+
+variable "telemetry_hook_events_table_name" {
+  description = "Leaf name of the hook-event table inside the telemetry schema."
+  type        = string
+  default     = "claude_hook_events"
+}
+
+variable "telemetry_zerobus_endpoint" {
+  description = <<-EOT
+    Zerobus REST ingest base URL for this workspace (baked into the generated hook).
+    Format: https://<workspace-id>.zerobus.<region>.cloud.databricks.com
+    (.gcp.databricks.com on GCP; .azuredatabricks.net on Azure). <workspace-id> is
+    the numeric ID from the workspace URL (`?o=` value). Empty (default) is the norm:
+    the config generator auto-derives this from workspace metadata (org-id header +
+    UC metastore region). Set it only to override the derived value.
+  EOT
+  type        = string
+  default     = ""
+}

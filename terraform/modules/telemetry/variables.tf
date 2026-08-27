@@ -44,6 +44,33 @@ variable "table_names" {
   default     = {}
 }
 
+# ---- hook events (custom Claude Code reporting via Zerobus REST) ----
+
+variable "hook_events_enabled" {
+  description = "Provision the claude_hook_events Delta table + table-level SP grant that the generated emit_hook_events.sh hook ingests into via Zerobus REST."
+  type        = bool
+  default     = true
+}
+
+variable "hook_events_table_name" {
+  description = "Leaf name of the hook-event table (inside the telemetry schema)."
+  type        = string
+  default     = "claude_hook_events"
+}
+
+variable "zerobus_endpoint" {
+  description = <<-EOT
+    Zerobus REST ingest base URL for this workspace, baked into the generated hook.
+    Format: https://<workspace-id>.zerobus.<region>.cloud.databricks.com
+    (.gcp.databricks.com on GCP; .azuredatabricks.net on Azure). The <workspace-id>
+    is the numeric ID from the workspace URL (the `?o=` value). Empty is normal —
+    the config generator auto-derives the endpoint from workspace metadata; set this
+    only to override (surfaced to the generator via the hook_events output).
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "warehouse_id" {
   description = "SQL warehouse ID used to run the CREATE TABLE DDL (serverless recommended; it auto-starts on demand)."
   type        = string

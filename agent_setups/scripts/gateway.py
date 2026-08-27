@@ -47,6 +47,9 @@ class Telemetry:
     tables: dict[str, str]  # signal ("metrics"/"logs"/"traces") -> fq table name
     secret_full_name: str  # UC secret the otelHeadersHelper reads (catalog.schema.secret)
     service_principal_application_id: str  # SP client id (not sensitive)
+    # Hook-event ingestion facts: {"table": fq, "endpoint": zerobus url}. None when
+    # hook_events_enabled = false; "endpoint" may be "" until zerobus_endpoint is set.
+    hook_events: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +176,7 @@ def build_context(
             tables=tel_raw.get("tables", {}) or {},
             secret_full_name=tel_raw.get("secret_full_name", ""),
             service_principal_application_id=tel_raw.get("service_principal_application_id", ""),
+            hook_events=(tel_raw.get("hook_events") if isinstance(tel_raw.get("hook_events"), dict) else None),
         )
         if isinstance(tel_raw, dict)
         else None

@@ -14,9 +14,12 @@ its own `~/.codex/config.toml`, so the host's are never touched.
   `PATH` by default — used here to discover Databricks MCP services and register
   them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
 - The generated **Claude Code** config staged as Linux enterprise-managed settings
-  at `/etc/claude-code/`, and the generated **Codex** `config.toml` staged at the
-  dev user's `~/.codex/config.toml` (Codex has no system-managed path) — both
-  mounted read-only from `agent_setups/generated/container/`.
+  at `/etc/claude-code/` (the `managed-settings.json`, the `otel-headers-helper.sh`,
+  and the `emit_hook_events.sh` reporting hook) — the harness mounts the generator's
+  **`linux/` bundle** (`agent_setups/generated/container/claude-code/linux/`), so it
+  tests the same artifact a Linux deploy ships. The generated **Codex** `config.toml`
+  is staged at the dev user's `~/.codex/config.toml` (Codex has no system-managed
+  path). `jq` is installed for the hook.
 - A fresh, isolated `~/.databrickscfg` written at start: both `DEFAULT` and the
   named profile point at the workspace, so `databricks auth login` and the
   settings' `--profile` calls resolve. The profile is also the default
@@ -66,6 +69,37 @@ Then confirm rows are landing (from the shell, or your workspace):
 ```bash
 databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","statement":"SELECT count(*) FROM <catalog>.telemetry.claude_otel_metrics","wait_timeout":"30s"}'
 ```
+
+### Testing hook telemetry (custom reporting events)
+
+The generated `managed-settings.json` always carries the reporting `hooks` block,
+and the harness stages `emit_hook_events.sh` at `/etc/claude-code/`. `make
+docker-config` **auto-derives** the workspace's Zerobus endpoint and bakes it into
+the script, so the hooks are live out of the box (pass
+`ARGS="--zerobus-endpoint <url>"` only to override).
+
+Delivery is **spool-then-flush**: producer hooks append events to a per-session
+spool (`~/.cache/unity-gateway/spool/`), and `flush` batches them to Zerobus at
+turn/session boundaries. In a real `claude` session the flush happens on `Stop`;
+to test by hand, spool an event then flush:
+
+```bash
+# 1. spool a skill-usage event (instant, no network — just appends to the spool):
+echo '{"session_id":"harness","tool_name":"Skill","tool_input":{"skill":"databricks:databricks-jobs"}}' \
+  | /etc/claude-code/emit_hook_events.sh posttool
+ls ~/.cache/unity-gateway/spool/                     # -> harness.jsonl
+
+# 2. flush the batch (mints + caches the SP bearer on first use; drains the spool):
+echo '{"session_id":"harness"}' | /etc/claude-code/emit_hook_events.sh flush
+
+# 3. confirm it landed (Zerobus ingest is streaming — allow a few seconds):
+databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","statement":"SELECT category,event_name,attributes FROM <catalog>.telemetry.claude_hook_events ORDER BY event_time DESC LIMIT 5","wait_timeout":"30s"}'
+```
+
+The flush needs `READ_SECRET` on the UC secret (same as OTEL) to mint the bearer.
+With no endpoint set, events still spool but the flush no-ops — wired but dormant,
+exactly as a default deploy ships. Rows become queryable a few seconds after the
+flush returns 200 (streaming ingest), so don't judge success by an instant query.
 
 ### Testing Codex
 

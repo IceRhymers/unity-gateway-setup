@@ -6,10 +6,11 @@
 FROM node:22-bookworm-slim
 
 # Toolchain: databricks CLI (auth + otelHeadersHelper), python3 (helpers),
+# jq (the emit_hook_events.sh reporting hook builds its JSON payloads with it),
 # socat (bridges the OAuth loopback callback to the host), gosu (drop to non-root).
 # uv + ucode (below) provide MCP-service discovery/registration.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git python3 socat gosu unzip \
+      ca-certificates curl git jq python3 socat gosu unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Databricks CLI (latest) -> /usr/local/bin/databricks

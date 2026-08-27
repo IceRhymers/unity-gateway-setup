@@ -31,5 +31,6 @@ output "telemetry" {
     tables                           = module.telemetry[0].tables
     secret_full_name                 = module.telemetry[0].secret_full_name
     service_principal_application_id = module.telemetry[0].service_principal_application_id
+    hook_events                      = module.telemetry[0].hook_events
   } : null
 }

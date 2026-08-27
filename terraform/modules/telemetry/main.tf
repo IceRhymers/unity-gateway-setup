@@ -25,6 +25,9 @@ locals {
   leaf_tables         = { for s in var.signals : s => lookup(var.table_names, s, local.default_table_names[s]) }
   schema_full         = "${var.catalog_name}.${var.schema_name}"
   fq_tables           = { for s, leaf in local.leaf_tables : s => "${local.schema_full}.${leaf}" }
+
+  # Hook-event table: custom Claude Code reporting events (see templates/hook_events.sql).
+  hook_events_table_fq = "${local.schema_full}.${var.hook_events_table_name}"
 }
 
 # --- 1. telemetry schema ---------------------------------------------------
@@ -69,6 +72,37 @@ resource "null_resource" "otel_table" {
       "${path.module}/scripts/create_otel_table.py",
       "--ddl-file", "${path.module}/templates/otel_${each.key}.sql",
       "--table", each.value,
+      "--warehouse-id", var.warehouse_id,
+      "--profile", var.databricks_profile,
+      "--databricks-bin", var.databricks_bin,
+    ])
+  }
+
+  depends_on = [databricks_schema.this]
+}
+
+# --- 2b. hook-event table --------------------------------------------------
+#
+# The Zerobus REST ingest API (used by the generated emit_hook_events.sh hook)
+# does NOT create tables — the target managed Delta table must pre-exist. Same
+# Statement-Execution runner and IF NOT EXISTS idempotency as the OTEL tables.
+
+resource "null_resource" "hook_events_table" {
+  count = var.hook_events_enabled ? 1 : 0
+
+  triggers = {
+    ddl_sha   = filesha256("${path.module}/templates/hook_events.sql")
+    table     = local.hook_events_table_fq
+    warehouse = var.warehouse_id
+    profile   = var.databricks_profile
+  }
+
+  provisioner "local-exec" {
+    command = join(" ", [
+      "python3",
+      "${path.module}/scripts/create_otel_table.py",
+      "--ddl-file", "${path.module}/templates/hook_events.sql",
+      "--table", local.hook_events_table_fq,
       "--warehouse-id", var.warehouse_id,
       "--profile", var.databricks_profile,
       "--databricks-bin", var.databricks_bin,
@@ -138,6 +172,20 @@ resource "databricks_grant" "sp_schema" {
   privileges = ["USE_SCHEMA", "MODIFY", "SELECT"]
 
   depends_on = [databricks_schema.this]
+}
+
+# Zerobus's authorization_details OAuth flow requires an EXPLICIT table-level
+# grant on the ingest SP — the schema-level MODIFY above is not sufficient and
+# ingest fails with error 4024. This grant is redundant for the OTLP tables (the
+# /api/2.0/otel path is satisfied by the schema grant) but mandatory for Zerobus.
+resource "databricks_grant" "sp_hook_events_table" {
+  count = var.hook_events_enabled ? 1 : 0
+
+  table      = local.hook_events_table_fq
+  principal  = databricks_service_principal.otel.application_id
+  privileges = ["MODIFY", "SELECT"]
+
+  depends_on = [null_resource.hook_events_table]
 }
 
 # READ_SECRET has no securable in databricks_grant(s) as of provider 1.129.0, so

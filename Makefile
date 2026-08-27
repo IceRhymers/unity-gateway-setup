@@ -125,15 +125,14 @@ PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 docker-build: ## Build the test-harness image (Claude Code + Codex + databricks CLI + python3 + ucode)
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) docker/
 
-# The docker-config* targets delegate to the same agent-* generation, only
-# redirecting OUT_DIR to the container dir and layering the one override forced
-# by the environment (the Linux OTEL helper path — the default is the macOS
-# path) — so the harness tests exactly what the deploy targets produce. Pass
-# other flags (e.g. --model-picker) via ARGS when you want to exercise them.
+# The docker-config* targets delegate to the SAME agent-* generation, only
+# redirecting OUT_DIR to the container dir — no docker-specific overrides. The
+# generator emits a per-OS bundle (claude-code/{macos,linux,windows}/); the harness
+# simply mounts the linux/ one, so it tests exactly what the deploy targets produce.
+# Pass other flags (e.g. --model-picker) via ARGS when you want to exercise them.
 .PHONY: docker-config
-docker-config: ## Generate Claude Code config for the container (Linux helper path); needs applied telemetry infra
-	$(MAKE) agent-claude-code PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) \
-		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh $(ARGS)"
+docker-config: ## Generate Claude Code config bundles for the container; needs applied telemetry infra
+	$(MAKE) agent-claude-code PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
 .PHONY: docker-config-codex
 docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway mlflow/v1 responses route)
@@ -144,10 +143,14 @@ docker-config-all: docker-config docker-config-codex ## Generate both agent conf
 
 .PHONY: docker-reload
 docker-reload: docker-config-all ## Regenerate BOTH agent configs and copy them into the RUNNING container (no restart, keeps auth)
-	docker cp $(CONTAINER_CFG)/claude-code/managed-settings.json $(DOCKER_CONTAINER):/etc/claude-code/managed-settings.json
-	@if [ -f "$(CONTAINER_CFG)/claude-code/otel-headers-helper.sh" ]; then \
-		docker cp $(CONTAINER_CFG)/claude-code/otel-headers-helper.sh $(DOCKER_CONTAINER):/etc/claude-code/otel-headers-helper.sh; \
+	docker cp $(CONTAINER_CFG)/claude-code/linux/managed-settings.json $(DOCKER_CONTAINER):/etc/claude-code/managed-settings.json
+	@if [ -f "$(CONTAINER_CFG)/claude-code/linux/otel-headers-helper.sh" ]; then \
+		docker cp $(CONTAINER_CFG)/claude-code/linux/otel-headers-helper.sh $(DOCKER_CONTAINER):/etc/claude-code/otel-headers-helper.sh; \
 		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/otel-headers-helper.sh; \
+	fi
+	@if [ -f "$(CONTAINER_CFG)/claude-code/linux/emit_hook_events.sh" ]; then \
+		docker cp $(CONTAINER_CFG)/claude-code/linux/emit_hook_events.sh $(DOCKER_CONTAINER):/etc/claude-code/emit_hook_events.sh; \
+		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/emit_hook_events.sh; \
 	fi
 	docker cp $(CONTAINER_CFG)/codex/config.toml $(DOCKER_CONTAINER):/home/dev/.codex/config.toml
 	docker exec -u root $(DOCKER_CONTAINER) chown dev:dev /home/dev/.codex/config.toml
@@ -155,7 +158,7 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and copy them 
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
-	@test -f "$(CONTAINER_CFG)/claude-code/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" \
+	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" \
 		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config' and/or 'make docker-config-codex' first."; exit 1; }
 	@test -n "$(WS_HOST)" \
 		|| { echo "Could not resolve host for profile '$(PROFILE)' in ~/.databrickscfg."; exit 1; }
@@ -164,7 +167,7 @@ docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes 
 		-e DATABRICKS_WS_HOST="$(WS_HOST)" \
 		-e DATABRICKS_PROFILE_NAME="$(PROFILE)" \
 		-e DATABRICKS_CONFIG_PROFILE="$(PROFILE)" \
-		-v "$(abspath $(CONTAINER_CFG)/claude-code)":/opt/agent-config:ro \
+		-v "$(abspath $(CONTAINER_CFG)/claude-code/linux)":/opt/agent-config:ro \
 		$(CODEX_CFG_MOUNT) \
 		$(DOCKER_IMAGE)
 	@echo ""
