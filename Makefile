@@ -136,7 +136,7 @@ docker-config: ## Generate Claude Code config for the container (Linux helper pa
 		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh $(ARGS)"
 
 .PHONY: docker-config-codex
-docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway codex/v1 route)
+docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway mlflow/v1 responses route)
 	$(MAKE) agent-codex PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
 .PHONY: docker-config-all

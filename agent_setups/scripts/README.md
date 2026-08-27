@@ -5,9 +5,9 @@ Gateway. It reads the Terraform outputs of `terraform/infra` (the model services
 you provisioned) and emits opinionated, ready-to-deploy config for a coding agent.
 
 **Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
-deployment) **and Codex** (`config.toml` routed through the gateway's `codex/v1`
-Responses surface). The design is a registry, so Gemini CLI, OpenCode, etc. can be
-added as new generators.
+deployment) **and Codex** (`config.toml` routed through the gateway's MLflow
+serving route — `mlflow/v1/responses`). The design is a registry, so Gemini CLI,
+OpenCode, etc. can be added as new generators.
 
 ## How it works
 
@@ -167,9 +167,11 @@ system path via MDM.
 ### What the Codex config encodes
 
 - **Routing:** a `[model_providers.<name>]` block with
-  `base_url = <host>/ai-gateway/codex/v1`, `wire_api = "responses"`, and
-  `supports_websockets = false`. `model_provider` points at it and `model` pins a
-  default endpoint (the `gpt` alias by default).
+  `base_url = <host>/ai-gateway/mlflow/v1`, `wire_api = "responses"`, and
+  `supports_websockets = false`. Codex appends `/responses` to `base_url`, so it
+  lands on `mlflow/v1/responses` — the MLflow serving route is the actual
+  model-inference surface. `model_provider` points at it and `model` pins a default
+  endpoint (the `gpt` alias by default).
 - **Auth:** an inline `[model_providers.<name>.auth]` command
   (`command = "bash"`, `args = ["-c", …]`) that prints a **bare** short-lived
   Databricks OAuth token — honoring `$DATABRICKS_BEARER`, else minting via
@@ -178,9 +180,9 @@ system path via MDM.
   `refresh_interval_ms`.
 - **Model surface:** every endpoint exposing the chosen `--api-type` becomes a
   switchable model (listed as a comment; switch with `codex -m <full-name>`). The
-  default `mlflow/v1/responses` is the broad Responses surface — the `codex/v1`
-  route is a unified surface that translates, so GPT, Gemini, Claude, and the open
-  models are all reachable. Narrow to `openai/v1/responses` for OpenAI-native only.
+  default `mlflow/v1/responses` is the broad Responses surface served by the MLflow
+  route, so GPT, Gemini, Claude, and the open models are all reachable. Narrow to
+  `openai/v1/responses` for OpenAI-native only.
 - **Not included — the ChatGPT desktop app.** A working local Codex install also
   carries app machinery (plugins, marketplaces, `node_repl`, computer-use,
   `CODEX_CLI_PATH`). That is installed by the ChatGPT app and is machine-specific;
@@ -198,7 +200,7 @@ system path via MDM.
 | `--default-model` | `gpt` alias | Model Codex starts on (endpoint leaf or full UC name). |
 | `--reasoning-effort` | `high` | `model_reasoning_effort` (`minimal`…`xhigh`). |
 | `--provider-name` | `databricks` | Key for `[model_providers.<name>]` / `model_provider`. |
-| `--codex-path` | `/ai-gateway/codex/v1` | Gateway route base appended to the host. |
+| `--gateway-path` | `/ai-gateway/mlflow/v1` | Gateway route base appended to the host; Codex appends `/responses`. Override to route elsewhere (e.g. `/ai-gateway/codex/v1`). |
 | `--refresh-interval-ms` | `900000` | `auth.refresh_interval_ms` (token re-mint interval). |
 | `--auth-timeout-ms` | `5000` | `auth.timeout_ms`. |
 | `--databricks-bin` | `databricks` | CLI path used in the auth command (absolute for minimal-PATH contexts). |

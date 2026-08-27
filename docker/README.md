@@ -74,7 +74,7 @@ Inside `make docker-shell`:
 
 ```bash
 codex doctor      # checks config, auth, and runtime health against the gateway
-codex             # launches Codex, routed through <host>/ai-gateway/codex/v1
+codex             # launches Codex, routed through <host>/ai-gateway/mlflow/v1 (+ /responses)
 ```
 
 Codex has no client-side OTEL, but its traffic is still captured server-side by
