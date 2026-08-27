@@ -30,6 +30,11 @@ if [ -f /opt/agent-config/managed-settings.json ]; then
     cp /opt/agent-config/otel-headers-helper.sh /etc/claude-code/otel-headers-helper.sh
     chmod +x /etc/claude-code/otel-headers-helper.sh
   fi
+  # The custom-reporting hook (emit_hook_events.sh), when hook telemetry is on.
+  if [ -f /opt/agent-config/emit_hook_events.sh ]; then
+    cp /opt/agent-config/emit_hook_events.sh /etc/claude-code/emit_hook_events.sh
+    chmod +x /etc/claude-code/emit_hook_events.sh
+  fi
 else
   echo "[entrypoint] note: no Claude Code config at /opt/agent-config (run 'make docker-config')." >&2
 fi

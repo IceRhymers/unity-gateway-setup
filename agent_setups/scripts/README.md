@@ -107,8 +107,11 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   signals internal teams report on — slash-command / skill / subagent usage with
   plugin attribution, per-session plugin inventory, `StopFailure` mid-stream
   stalls, guardrail hits, workflow adoption. When the infra `telemetry.hook_events`
-  table **and** a Zerobus endpoint are present, the generator emits
-  `emit_hook_events.sh` and a `hooks` block wiring it to the relevant events. Each
+  table is present (default), the generator emits `emit_hook_events.sh` and a
+  `hooks` block wiring it to the relevant events — part of the baseline regardless
+  of whether a Zerobus endpoint is set yet; the hook stays dormant (no-op) until
+  `ZEROBUS_ENDPOINT` is known (baked from `telemetry_zerobus_endpoint`, or the env
+  var at runtime). Each
   hook fires a backgrounded `curl` of a one-row JSON array to the **Zerobus REST**
   insert endpoint, authenticating as the **same telemetry service principal** (the
   bearer is minted from the UC secret and cached — no SDK/gRPC, nothing new on the
@@ -142,7 +145,7 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 | `--otel-logs-interval-ms` | `5000` | `OTEL_LOGS_EXPORT_INTERVAL`. |
 | `--otel-headers-helper-debounce-ms` | `900000` | Token refresh interval for the headers helper. |
 | `--otel-helper-install-path` | macOS ClaudeCode path | Where `otel-headers-helper.sh` is deployed on each machine. |
-| `--hook-telemetry` | `auto` | Custom reporting hook + `hooks` block via Zerobus REST: `auto` (on iff the `telemetry.hook_events` table **and** an endpoint exist) · `on` (require them) · `off`. |
+| `--hook-telemetry` | `auto` | Custom reporting hook + `hooks` block via Zerobus REST: `auto` (on iff the `telemetry.hook_events` table exists) · `on` (require it) · `off`. Endpoint baked when known but not required — the hook ships dormant until `ZEROBUS_ENDPOINT` is set. |
 | `--hook-categories` | all four | Comma list of `usage,reliability,governance,adoption`; only the selected categories' hook events are registered. |
 | `--hook-doc-patterns` | `TESTING\.md` | grep -E of file basenames whose Read counts as a workflow-adoption event. |
 | `--hook-log-paths` | off | Include full file paths in adoption events (default: basename only). |

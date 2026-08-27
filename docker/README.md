@@ -14,9 +14,11 @@ its own `~/.codex/config.toml`, so the host's are never touched.
   `PATH` by default — used here to discover Databricks MCP services and register
   them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
 - The generated **Claude Code** config staged as Linux enterprise-managed settings
-  at `/etc/claude-code/`, and the generated **Codex** `config.toml` staged at the
-  dev user's `~/.codex/config.toml` (Codex has no system-managed path) — both
-  mounted read-only from `agent_setups/generated/container/`.
+  at `/etc/claude-code/` (the `managed-settings.json`, the `otel-headers-helper.sh`,
+  and the `emit_hook_events.sh` reporting hook), and the generated **Codex**
+  `config.toml` staged at the dev user's `~/.codex/config.toml` (Codex has no
+  system-managed path) — both mounted read-only from
+  `agent_setups/generated/container/`. `jq` is installed for the hook.
 - A fresh, isolated `~/.databrickscfg` written at start: both `DEFAULT` and the
   named profile point at the workspace, so `databricks auth login` and the
   settings' `--profile` calls resolve. The profile is also the default
@@ -66,6 +68,33 @@ Then confirm rows are landing (from the shell, or your workspace):
 ```bash
 databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","statement":"SELECT count(*) FROM <catalog>.telemetry.claude_otel_metrics","wait_timeout":"30s"}'
 ```
+
+### Testing hook telemetry (custom reporting events)
+
+The generated `managed-settings.json` always carries the reporting `hooks` block,
+and the harness stages `emit_hook_events.sh` at `/etc/claude-code/`. The hooks are
+**dormant until a Zerobus endpoint is set**, so to exercise them end-to-end,
+generate the container config with one:
+
+```bash
+make docker-config ARGS="--zerobus-endpoint https://<workspace-id>.zerobus.<region>.cloud.databricks.com"
+make docker-reload   # (or docker-up if not running)
+```
+
+Inside `make docker-shell`, fire a hook directly (no need to drive Claude Code):
+
+```bash
+# a skill-usage event; should insert one row (backgrounded curl):
+echo '{"session_id":"harness","tool_name":"Skill","tool_input":{"skill":"databricks:databricks-jobs"}}' \
+  | /etc/claude-code/emit_hook_events.sh posttool
+
+# then confirm it landed:
+databricks api post /api/2.0/sql/statements --json '{"warehouse_id":"<id>","statement":"SELECT category,event_name,attributes FROM <catalog>.telemetry.claude_hook_events ORDER BY event_time DESC LIMIT 5","wait_timeout":"30s"}'
+```
+
+The first fire mints + caches the SP bearer (needs `READ_SECRET` on the UC secret,
+same as OTEL); subsequent fires reuse it. With no endpoint set, the hook exits 0
+without sending — wired but dormant, exactly as a default deploy ships.
 
 ### Testing Codex
 

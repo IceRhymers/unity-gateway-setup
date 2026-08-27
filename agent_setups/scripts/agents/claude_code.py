@@ -634,7 +634,9 @@ class ClaudeCodeGenerator(AgentGenerator):
                 "Emit the emit_hook_events.sh reporting hook + a 'hooks' block that streams "
                 "custom events (agent-usage, reliability, governance, adoption) to Zerobus "
                 "REST. 'auto' (default) enables it iff the Terraform telemetry.hook_events "
-                "table AND a Zerobus endpoint are present; 'on' requires them; 'off' skips."
+                "table is present; 'on' requires it; 'off' skips. The Zerobus endpoint is "
+                "baked in when known but is NOT required — the hooks ship in the baseline "
+                "and stay dormant until ZEROBUS_ENDPOINT is set."
             ),
         )
         parser.add_argument(
@@ -804,17 +806,20 @@ class ClaudeCodeGenerator(AgentGenerator):
                     "--hook-telemetry off."
                 )
             return {}  # auto + not deployed
+        # The endpoint is baked in but is NOT required at generation time. The hooks
+        # are part of the managed-settings.json baseline regardless; the script
+        # no-ops until a Zerobus endpoint is known (baked here, or the ZEROBUS_ENDPOINT
+        # env var at runtime). This keeps the reporting hooks in the deployed config
+        # even before the operator wires the workspace's Zerobus URL.
         endpoint = args.zerobus_endpoint or (he.get("endpoint") if isinstance(he, dict) else "") or ""
         if not endpoint:
-            msg = (
-                "hook telemetry: the events table exists but no Zerobus endpoint is set. "
-                "Set telemetry_zerobus_endpoint (https://<workspace-id>.zerobus.<region>."
-                "cloud.databricks.com) and apply, or pass --zerobus-endpoint."
+            print(
+                "[claude-code] hook telemetry: wiring the reporting hooks into "
+                "managed-settings.json with NO Zerobus endpoint yet — they stay dormant "
+                "(no-op) until ZEROBUS_ENDPOINT is set (telemetry_zerobus_endpoint, "
+                "--zerobus-endpoint, or the env var on the machine).",
+                file=sys.stderr,
             )
-            if args.hook_telemetry == "on":
-                raise SystemExit("--hook-telemetry on, but " + msg)
-            print(f"[claude-code] {msg} Skipping (auto).", file=sys.stderr)
-            return {}
 
         categories = [c.strip() for c in args.hook_categories.split(",") if c.strip()]
         unknown = [c for c in categories if c not in HOOK_CATEGORIES]

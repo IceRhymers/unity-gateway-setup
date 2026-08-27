@@ -50,10 +50,12 @@ an **explicit table-level** `MODIFY`/`SELECT` grant on the telemetry SP (Zerobus
 it over the **Zerobus REST API** as that same SP, so developers still need only
 `READ_SECRET` on the UC secret — no table access, no dev-machine SDK.
 
-Set `zerobus_endpoint` (`https://<workspace-id>.zerobus.<region>.cloud.databricks.com`)
-so the generator can wire the hook; the table is created regardless, but the hook
-stays off until an endpoint is known. Zerobus does not create tables — that's why
-this runs the DDL up front. Set `hook_events_enabled = false` to skip entirely.
+The generated `managed-settings.json` ships the reporting hooks regardless; set
+`zerobus_endpoint` (`https://<workspace-id>.zerobus.<region>.cloud.databricks.com`)
+to activate them — until then they're wired but dormant (the script no-ops on an
+empty endpoint, which is also `ZEROBUS_ENDPOINT`-overridable at runtime). Zerobus
+does not create tables — that's why this runs the DDL up front. Set
+`hook_events_enabled = false` to skip the table and grant entirely.
 
 ## Inputs
 

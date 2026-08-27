@@ -126,14 +126,14 @@ docker-build: ## Build the test-harness image (Claude Code + Codex + databricks 
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) docker/
 
 # The docker-config* targets delegate to the same agent-* generation, only
-# redirecting OUT_DIR to the container dir and layering the one override forced
-# by the environment (the Linux OTEL helper path — the default is the macOS
-# path) — so the harness tests exactly what the deploy targets produce. Pass
-# other flags (e.g. --model-picker) via ARGS when you want to exercise them.
+# redirecting OUT_DIR to the container dir and layering the overrides forced by
+# the environment (the Linux OTEL-helper and hook-script paths — the defaults are
+# the macOS paths) — so the harness tests exactly what the deploy targets produce.
+# Pass other flags (e.g. --model-picker) via ARGS when you want to exercise them.
 .PHONY: docker-config
-docker-config: ## Generate Claude Code config for the container (Linux helper path); needs applied telemetry infra
+docker-config: ## Generate Claude Code config for the container (Linux helper paths); needs applied telemetry infra
 	$(MAKE) agent-claude-code PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) \
-		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh $(ARGS)"
+		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh --hook-script-install-path /etc/claude-code/emit_hook_events.sh $(ARGS)"
 
 .PHONY: docker-config-codex
 docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway mlflow/v1 responses route)
@@ -148,6 +148,10 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and copy them 
 	@if [ -f "$(CONTAINER_CFG)/claude-code/otel-headers-helper.sh" ]; then \
 		docker cp $(CONTAINER_CFG)/claude-code/otel-headers-helper.sh $(DOCKER_CONTAINER):/etc/claude-code/otel-headers-helper.sh; \
 		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/otel-headers-helper.sh; \
+	fi
+	@if [ -f "$(CONTAINER_CFG)/claude-code/emit_hook_events.sh" ]; then \
+		docker cp $(CONTAINER_CFG)/claude-code/emit_hook_events.sh $(DOCKER_CONTAINER):/etc/claude-code/emit_hook_events.sh; \
+		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/emit_hook_events.sh; \
 	fi
 	docker cp $(CONTAINER_CFG)/codex/config.toml $(DOCKER_CONTAINER):/home/dev/.codex/config.toml
 	docker exec -u root $(DOCKER_CONTAINER) chown dev:dev /home/dev/.codex/config.toml
