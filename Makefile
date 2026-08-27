@@ -11,6 +11,9 @@ ARGS      ?=
 PYTHON    ?= python3
 PROFILE   ?= fevm-west
 AGENT_GEN ?= agent_setups/scripts/generate.py
+# Where generated configs land. The docker-config* targets override this to the
+# container dir so the harness tests exactly what `agent-*` generates.
+OUT_DIR   ?= agent_setups/generated
 
 .DEFAULT_GOAL := help
 
@@ -68,16 +71,16 @@ tf-clean: ## Remove local Terraform working artifacts (.terraform, lock, plan fi
 # ---- agent configs ----
 
 .PHONY: agent-claude-code
-agent-claude-code: ## Generate Claude Code managed-settings.json from TF outputs (PROFILE=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) $(ARGS)
+agent-claude-code: ## Generate Claude Code managed-settings.json from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-claude-code-preview
 agent-claude-code-preview: ## Print the generated Claude Code managed-settings.json without writing
 	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agent-codex
-agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) $(ARGS)
+agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-codex-preview
 agent-codex-preview: ## Print the generated Codex config.toml without writing
@@ -122,17 +125,17 @@ PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 docker-build: ## Build the test-harness image (Claude Code + Codex + databricks CLI + python3 + ucode)
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) docker/
 
+# The docker-config* targets delegate to the same agent-* generation, only
+# redirecting OUT_DIR to the container dir and layering container-necessary
+# flags — so the harness tests exactly what the deploy targets produce.
 .PHONY: docker-config
 docker-config: ## Generate Claude Code config for the container (Linux helper path + full model picker); needs applied telemetry infra
-	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) \
-		--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh \
-		--model-picker \
-		--out-dir $(CONTAINER_CFG) $(ARGS)
+	$(MAKE) agent-claude-code PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) \
+		ARGS="--otel-helper-install-path /etc/claude-code/otel-headers-helper.sh --model-picker $(ARGS)"
 
 .PHONY: docker-config-codex
 docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway codex/v1 route)
-	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) \
-		--out-dir $(CONTAINER_CFG) $(ARGS)
+	$(MAKE) agent-codex PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
 .PHONY: docker-config-all
 docker-config-all: docker-config docker-config-codex ## Generate both agent configs for the container
