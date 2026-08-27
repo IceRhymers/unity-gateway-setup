@@ -212,29 +212,31 @@ with urllib.request.urlopen(req, timeout=30) as r:
   return 0
 }
 
-# Serve a bearer without blocking hooks: mint synchronously ONLY on first run
-# (no token yet). Otherwise serve the cached token and, if past the refresh
-# hint, refresh in the background — the token itself long outlives the hint, so
-# the hot path is a sub-ms file read.
+# Serve a bearer. Mint synchronously when there is no token yet, OR when the cached
+# token is past its refresh hint. We do NOT refresh in the background: Claude Code
+# waits for the hook to exit and then tears the hook process (and any children/
+# sandbox) down, so a backgrounded mint would be killed mid-flight and the cache
+# would never reseed — over ~1h the token would truly expire and inserts would 401.
+# A stale-but-not-expired token is still fine (refresh_at is a proactive hint, not
+# the real expiry), so a failed re-mint falls back to serving the cached token.
 _get_token() {
   if [ ! -s "$TOKEN_FILE" ]; then
     _mint_token || return 1
-    cat "$TOKEN_FILE" 2>/dev/null
-    return 0
-  fi
-  local exp now
-  exp="$(cat "$EXP_FILE" 2>/dev/null || echo 0)"
-  now="$(date +%s)"
-  case "$exp" in ''|*[!0-9]*) exp=0 ;; esac
-  if [ "$now" -ge "$exp" ]; then
-    ( _mint_token >/dev/null 2>&1 & ) >/dev/null 2>&1
+  else
+    local exp now
+    exp="$(cat "$EXP_FILE" 2>/dev/null || echo 0)"
+    now="$(date +%s)"
+    case "$exp" in ''|*[!0-9]*) exp=0 ;; esac
+    if [ "$now" -ge "$exp" ]; then
+      _mint_token >/dev/null 2>&1 || true
+    fi
   fi
   cat "$TOKEN_FILE" 2>/dev/null
 }
 
 # emit <category> <event_name> <plugin_name> <attributes_json>
-# Builds the common columns + the event-specific attributes bag and fires the
-# insert in the background. attributes_json must be a JSON object string.
+# Builds the common columns + the event-specific attributes bag and delivers the
+# insert. attributes_json must be a JSON object string.
 emit() {
   cat_enabled "$1" || return 0
   local category="$1" event_name="$2" plugin="$3" attrs="$4"
@@ -251,12 +253,17 @@ emit() {
     --arg s "$session" --arg u "$user" --arg m "$machine" --arg a "$AGENT" \
     --arg p "$plugin" --arg attrs "$attrs" \
     '[{event_id:$id, event_time:$ts, category:$cat, event_name:$ev, session_id:$s, user:$u, machine:$m, agent:$a, plugin_name:$p, attributes:$attrs}]' 2>/dev/null)" || return 0
-  curl -sS -m 8 -X POST \
+  # Deliver SYNCHRONOUSLY (no trailing &). Claude Code waits for the hook to exit,
+  # then tears its process tree / sandbox down — a backgrounded curl would be killed
+  # before the POST completes, so no row lands. With the token cached this is a single
+  # fast POST; --connect-timeout + -m bound the worst case so a slow/unreachable
+  # endpoint can't stall the turn for long. || true: telemetry never fails the hook.
+  curl -sS --connect-timeout 3 -m 8 -X POST \
     -H "Authorization: Bearer ${token}" \
     -H "Content-Type: application/json" \
     -d "$record" \
     "${ZEROBUS_ENDPOINT%/}/zerobus/v1/tables/${HOOK_EVENTS_TABLE}/insert" \
-    >/dev/null 2>&1 &
+    >/dev/null 2>&1 || true
 }
 
 # split "plugin:name" -> sets SPLIT_PLUGIN / SPLIT_NAME; bare "name" -> "" / name.
