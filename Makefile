@@ -102,7 +102,7 @@ DOCKER_CONTAINER ?= unity-gateway-test
 CONTAINER_CFG    ?= agent_setups/generated/container
 # Mount the Codex config only when it has been generated (docker-config-codex),
 # so the harness works with either or both agents present.
-CODEX_CFG_MOUNT  := $(if $(wildcard $(CONTAINER_CFG)/codex/config.toml),-v "$(abspath $(CONTAINER_CFG)/codex)":/opt/agent-config-codex:ro,)
+CODEX_CFG_MOUNT  := $(if $(or $(wildcard $(CONTAINER_CFG)/codex/config.toml),$(wildcard $(CONTAINER_CFG)/codex/etc/managed_config.toml)),-v "$(abspath $(CONTAINER_CFG)/codex)":/opt/agent-config-codex:ro,)
 # Workspace host for PROFILE, read from ~/.databrickscfg at parse time.
 WS_HOST := $(shell $(PYTHON) -c "import configparser,pathlib; c=configparser.ConfigParser(); c.read(str(pathlib.Path.home()/'.databrickscfg')); print(c.get('$(PROFILE)','host',fallback=''))")
 # Forward a non-default npm registry (e.g. a corporate mirror) into the build so
@@ -152,13 +152,28 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and copy them 
 		docker cp $(CONTAINER_CFG)/claude-code/linux/emit_hook_events.sh $(DOCKER_CONTAINER):/etc/claude-code/emit_hook_events.sh; \
 		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/emit_hook_events.sh; \
 	fi
-	docker cp $(CONTAINER_CFG)/codex/config.toml $(DOCKER_CONTAINER):/home/dev/.codex/config.toml
-	docker exec -u root $(DOCKER_CONTAINER) chown dev:dev /home/dev/.codex/config.toml
+	@if [ -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" ]; then \
+		docker exec -u root $(DOCKER_CONTAINER) mkdir -p /etc/codex; \
+		docker cp $(CONTAINER_CFG)/codex/etc/managed_config.toml $(DOCKER_CONTAINER):/etc/codex/managed_config.toml; \
+		docker cp $(CONTAINER_CFG)/codex/etc/requirements.toml $(DOCKER_CONTAINER):/etc/codex/requirements.toml; \
+		if [ -f "$(CONTAINER_CFG)/codex/etc/emit_hook_events.sh" ]; then \
+			docker cp $(CONTAINER_CFG)/codex/etc/emit_hook_events.sh $(DOCKER_CONTAINER):/etc/codex/emit_hook_events.sh; \
+		fi; \
+		docker exec -u root $(DOCKER_CONTAINER) sh -c 'chmod 644 /etc/codex/*.toml; [ -f /etc/codex/emit_hook_events.sh ] && chmod 755 /etc/codex/emit_hook_events.sh; chown -R root:root /etc/codex'; \
+	elif [ -f "$(CONTAINER_CFG)/codex/config.toml" ]; then \
+		docker cp $(CONTAINER_CFG)/codex/config.toml $(DOCKER_CONTAINER):/home/dev/.codex/config.toml; \
+		if [ -f "$(CONTAINER_CFG)/codex/hooks.json" ]; then \
+			docker cp $(CONTAINER_CFG)/codex/hooks.json $(DOCKER_CONTAINER):/home/dev/.codex/hooks.json; \
+			docker cp $(CONTAINER_CFG)/codex/emit_hook_events.sh $(DOCKER_CONTAINER):/home/dev/.codex/emit_hook_events.sh; \
+			docker exec -u root $(DOCKER_CONTAINER) chmod +x /home/dev/.codex/emit_hook_events.sh; \
+		fi; \
+		docker exec -u root $(DOCKER_CONTAINER) chown -R dev:dev /home/dev/.codex; \
+	fi
 	@echo "Harness reloaded (Claude Code + Codex). Restart your \`claude\` / \`codex\` session (exit and re-run) to pick it up."
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
-	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" \
+	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" \
 		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config' and/or 'make docker-config-codex' first."; exit 1; }
 	@test -n "$(WS_HOST)" \
 		|| { echo "Could not resolve host for profile '$(PROFILE)' in ~/.databrickscfg."; exit 1; }
