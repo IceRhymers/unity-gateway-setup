@@ -42,9 +42,31 @@ fi
 # 2b. Stage the generated Codex config. Codex has no OS-level managed path — it
 #     reads $CODEX_HOME/config.toml per user — so this lands in the dev user's
 #     home (dev-owned), mounted read-only at /opt/agent-config-codex.
-if [ -f /opt/agent-config-codex/config.toml ]; then
+if [ -f /opt/agent-config-codex/etc/managed_config.toml ]; then
+  # MANAGED mode (default): root-owned /etc/codex bundle. managed_config.toml overrides
+  # each user's ~/.codex/config.toml, so it enforces routing + default model fleet-wide;
+  # requirements.toml carries the policy; the emitter (if present) is referenced by its
+  # absolute /etc/codex path from the managed [hooks].
+  mkdir -p /etc/codex
+  cp /opt/agent-config-codex/etc/managed_config.toml /etc/codex/managed_config.toml
+  cp /opt/agent-config-codex/etc/requirements.toml   /etc/codex/requirements.toml
+  chmod 644 /etc/codex/managed_config.toml /etc/codex/requirements.toml
+  if [ -f /opt/agent-config-codex/etc/emit_hook_events.sh ]; then
+    cp /opt/agent-config-codex/etc/emit_hook_events.sh /etc/codex/emit_hook_events.sh
+    chmod 755 /etc/codex/emit_hook_events.sh
+  fi
+  chown -R root:root /etc/codex
+elif [ -f /opt/agent-config-codex/config.toml ]; then
+  # USER-CONFIG mode (--user-config): per-user files in $CODEX_HOME.
   mkdir -p /home/dev/.codex
   cp /opt/agent-config-codex/config.toml /home/dev/.codex/config.toml
+  if [ -f /opt/agent-config-codex/hooks.json ]; then
+    cp /opt/agent-config-codex/hooks.json /home/dev/.codex/hooks.json
+  fi
+  if [ -f /opt/agent-config-codex/emit_hook_events.sh ]; then
+    cp /opt/agent-config-codex/emit_hook_events.sh /home/dev/.codex/emit_hook_events.sh
+    chmod +x /home/dev/.codex/emit_hook_events.sh
+  fi
   chown -R dev:dev /home/dev/.codex
 else
   echo "[entrypoint] note: no Codex config at /opt/agent-config-codex (run 'make docker-config-codex')." >&2

@@ -204,11 +204,31 @@ discovery and a per-request OAuth surface on top — see the repo
 
 ## Codex (`codex`)
 
-Emits a single self-contained `codex/config.toml` that routes the Codex CLI
-through the gateway. Unlike Claude Code, Codex has **no OS-level managed-config
-path** — it reads `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) per
-user — so the file is deployed into a developer's `$CODEX_HOME`, not pushed to a
-system path via MDM.
+Emits an **enforced, root-owned `/etc/codex` bundle** by default (the Codex
+analogue of Claude Code's managed settings), or a per-user `$CODEX_HOME` bundle
+with `--user-config`.
+
+Codex reads three system-level files under `/etc/codex` — `config.toml`,
+`managed_config.toml`, and `requirements.toml` (verified against codex-cli 0.150.1).
+**`managed_config.toml` overrides each user's `~/.codex/config.toml`** (confirmed
+empirically: a managed `model`/`base_url` wins over the user's), so it enforces
+gateway routing and the default model/provider fleet-wide. `requirements.toml`
+carries the enforcement policy. There's no cloud MDM push in this tool — deploy the
+bundle to `/etc/codex/` on each machine via your MDM / config-management, the same
+way `managed-settings.json` is pushed for Claude Code.
+
+The generator writes the managed bundle to `codex/etc/`:
+
+| File | Role |
+|---|---|
+| `managed_config.toml` | Gateway routing + default model/provider + inline `[hooks]`; overrides user config. |
+| `requirements.toml` | Enforcement policy (`allow_managed_hooks_only = true`; commented model/provider-lock stub). |
+| `emit_hook_events.sh` | The hook dispatcher, invoked by absolute path `/etc/codex/emit_hook_events.sh`. |
+
+With `--user-config` it instead emits the non-enforced per-user layout
+(`codex/config.toml` [+ `hooks.json` + `emit_hook_events.sh`] for `$CODEX_HOME`) —
+useful for laptops without root, or to overlay the gateway provider on top of an
+existing (e.g. ChatGPT-app) `config.toml` via `codex -p <name>`.
 
 ### What the Codex config encodes
 
@@ -250,23 +270,39 @@ system path via MDM.
 | `--refresh-interval-ms` | `900000` | `auth.refresh_interval_ms` (token re-mint interval). |
 | `--auth-timeout-ms` | `5000` | `auth.timeout_ms`. |
 | `--databricks-bin` | `databricks` | CLI path used in the auth command (absolute for minimal-PATH contexts). |
+| `--user-config` | off | Emit the per-user `$CODEX_HOME` bundle instead of the default enforced `/etc/codex` bundle. |
+| `--hook-telemetry` | `auto` | Emit the hook telemetry (managed `[hooks]` in `managed_config.toml`, or `hooks.json` with `--user-config`) that streams reporting events via Zerobus REST. `auto` = on iff the Terraform `telemetry.hook_events` table exists; `on` requires it; `off` skips. |
+| `--hook-categories` | `usage,governance,adoption` | Reporting categories to wire up. (No `reliability` — Codex has no error/failure hook.) |
+| `--hook-token-ttl-seconds` | `600` | Refresh-hint TTL for the cached Zerobus bearer. |
+| `--hook-script-path` | `/etc/codex/emit_hook_events.sh` (managed) · `${CODEX_HOME:-$HOME/.codex}/emit_hook_events.sh` (`--user-config`) | Path the hook command invokes the emitter from. |
+| `--zerobus-endpoint` | (auto-derived) | Override the Zerobus REST base URL (else the TF output, else derived from workspace metadata). |
 
 ### Deploying the output
 
-Copy `codex/config.toml` into a developer's `$CODEX_HOME`, one of two ways:
+**Managed (default):** deploy the `codex/etc/` bundle to **`/etc/codex/`** on each
+machine (via MDM / config-management), root-owned:
 
-- **Full config:** `→ $CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
-- **Non-destructive overlay:** `→ $CODEX_HOME/databricks.config.toml`, then launch
-  with `codex -p databricks` — layers the gateway provider on top of an existing
-  (e.g. ChatGPT-app) `config.toml`.
+```
+install -o root -g root -m 644 managed_config.toml requirements.toml /etc/codex/
+install -o root -g root -m 755 emit_hook_events.sh                   /etc/codex/
+```
 
-Each developer runs `databricks auth login --host <url> --profile <profile>` once;
-`python3` + the `databricks` CLI must be on PATH. Verify with `codex doctor`. As
-with Claude Code, the intended launch surface is `ucode` (`ucode codex`), which
-adds MCP discovery and the per-request OAuth surface — see the repo
+`managed_config.toml` overrides each user's `~/.codex/config.toml`, so routing and
+the default model/provider are enforced fleet-wide. Confirm the parse + effective
+provider with `codex --strict-config doctor`.
+
+**User (`--user-config`):** copy `codex/config.toml` into a developer's `$CODEX_HOME`
+— either as `$CODEX_HOME/config.toml`, or as `$CODEX_HOME/databricks.config.toml`
+launched with `codex -p databricks` to overlay the gateway provider on an existing
+(e.g. ChatGPT-app) config.
+
+Either way, each developer runs `databricks auth login --host <url> --profile <profile>`
+once; `python3` + the `databricks` CLI must be on PATH. As with Claude Code, the
+intended launch surface is `ucode` (`ucode codex`), which adds MCP discovery and the
+per-request OAuth surface — see the repo
 [README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
 
-### Telemetry — none client-side, by design
+### OTEL telemetry — none client-side, by design
 
 The generator emits **no `[otel]` block**. Codex traffic is instead captured
 **server-side** by each model service's **inference-logging** UC Delta table (the
@@ -285,6 +321,50 @@ fresh token per request (as the separate `databricks-agents` Codex wrapper does)
 which is out of scope for a static config generator. If you want best-effort client
 spans anyway, mint an OAuth token into an env var at launch and add an `[otel]`
 block referencing it — accepting the ~1h token-TTL limitation.
+
+### Hook-event telemetry (custom reporting events)
+
+Separately from OTEL, Codex ships a **`[hooks]` system** that is a near-clone of
+Claude Code's (stdin-JSON in, stdout-JSON out, a regex `matcher` on the tool name,
+the same `snake_case` payload fields). So when `telemetry.hook_events` is deployed,
+the generator wires it up — as inline `[hooks]` in `managed_config.toml` (managed
+default) or a standalone `hooks.json` (`--user-config`) plus the `emit_hook_events.sh`
+dispatcher — reusing the **same** UC table, service principal, and secret as the
+Claude Code hook. Events stream to Zerobus REST; it's **report-only** (never blocks a
+tool call).
+
+Three of Claude Code's four categories map cleanly:
+
+| Category | Codex event | Emits |
+|---|---|---|
+| `governance` | `PreToolUse` (matcher `^(Bash\|shell\|local_shell\|exec_command\|unified_exec)$`) | `command_flagged` (risk-pattern), `secret_detected` |
+| `adoption` | `PostToolUse` (same matcher) | `pr_pushed` |
+| `usage` | `SubagentStart` | `subagent_used` |
+| *(delivery)* | `SessionStart`/`Stop`/`SubagentStop`/`SessionEnd` | batched spool flush |
+
+The matcher covers every shell-exec tool name in the codex-cli 0.150.1 binary — the
+runtime tool is **`shell`** (137 refs), not `Bash` (1, a compat alias), so a `^Bash$`
+matcher would have fired on nothing.
+
+**Not ported:** `reliability` (`stop_failure`) — Codex has **no error/failure
+hook**; turn failures surface only in `codex exec --json`, not the interactive TUI.
+Claude-only tool signals `skill_used` (no Skill tool) and `doc_read` (no Read tool
+surfaced to hooks) are also dropped.
+
+**Enforcement:** in the managed bundle the hooks live in `managed_config.toml`
+(invoked by absolute path `/etc/codex/emit_hook_events.sh` — no shell-expansion
+ambiguity), and `requirements.toml` sets **`allow_managed_hooks_only = true`** so a
+user can't disable or replace them. (Managed hooks are trusted; user hooks otherwise
+require per-user trust or `--dangerously-bypass-hook-trust`.) Runtime needs `jq` +
+`curl` + `python3` + the `databricks` CLI on PATH, and `READ_SECRET` on the telemetry
+UC secret. No new Terraform — the table/SP/secret/grants from the `telemetry` module
+are shared with Claude Code.
+
+`requirements.toml` also ships a **commented model/provider-lock stub**: the routing
+lock is already enforced by `managed_config.toml`'s override, and the deeper
+`[models]` (`ModelsRequirementsToml`) schema isn't pinned for this Codex version — a
+wrong shape makes Codex fail to load config entirely, so validate any additions with
+`codex --strict-config doctor` before enabling them.
 
 ## Adding an agent
 
