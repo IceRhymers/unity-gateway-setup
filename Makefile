@@ -15,6 +15,14 @@ AGENT_GEN ?= agent_setups/scripts/generate.py
 # container dir so the harness tests exactly what `agent-*` generates.
 OUT_DIR   ?= agent_setups/generated
 
+# Computed once so the tarball filename and embedded VERSION file are identical
+# (no double git-describe drift). Format: <describe-or-sha>-<YYYYMMDD>.
+VERSION   := $(shell git describe --tags --always 2>/dev/null || printf 'nogit')-$(shell date +%Y%m%d)
+# Output directory for deploy-package tarballs.
+DIST_DIR  ?= dist
+# Path to the single placement installer, baked into the image and packaged.
+INSTALL_SH := agent_setups/deploy/install.sh
+
 .DEFAULT_GOAL := help
 
 # ---- meta ----
@@ -86,6 +94,47 @@ agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, OUT_DIR=, 
 agent-codex-preview: ## Print the generated Codex config.toml without writing
 	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) --stdout $(ARGS)
 
+# ---- deployment packaging ----
+
+.PHONY: deploy-package
+deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generate the bundles first)
+	@mkdir -p "$(DIST_DIR)"
+	@echo "[deploy-package] VERSION=$(VERSION)"
+	@# Fail loud on a mis-generated codex bundle: install.sh SILENTLY skips a user-mode
+	@# codex (config.toml at root, no etc/managed_config.toml), which would ship a tarball
+	@# whose Codex is quietly dropped at deploy time with a green exit. Require managed mode.
+	@if [ -d "$(OUT_DIR)/codex" ] && [ ! -f "$(OUT_DIR)/codex/etc/managed_config.toml" ]; then \
+	  echo "[deploy-package] ERROR: $(OUT_DIR)/codex is user-mode (no etc/managed_config.toml)."; \
+	  echo "                 install.sh would skip it. Regenerate codex in managed mode:"; \
+	  echo "                   make agent-codex OUT_DIR=$(OUT_DIR)"; \
+	  exit 1; \
+	fi
+	@for os in macos linux; do \
+	  tarball="$(DIST_DIR)/unity-gateway-agents-$(VERSION)-$${os}.tar.gz"; \
+	  echo "[deploy-package] Building $${tarball} ..."; \
+	  if [ ! -f "$(OUT_DIR)/claude-code/$${os}/managed-settings.json" ]; then \
+	    echo "[deploy-package] ERROR: $(OUT_DIR)/claude-code/$${os}/managed-settings.json not found."; \
+	    echo "                 Generate the bundle first: make agent-claude-code OUT_DIR=$(OUT_DIR)"; \
+	    exit 1; \
+	  fi; \
+	  tmpdir="$$(mktemp -d)"; \
+	  mkdir -p "$${tmpdir}/claude-code/$${os}"; \
+	  cp -r "$(OUT_DIR)/claude-code/$${os}/." "$${tmpdir}/claude-code/$${os}/"; \
+	  if [ -d "$(OUT_DIR)/codex" ]; then \
+	    mkdir -p "$${tmpdir}/codex"; \
+	    cp -r "$(OUT_DIR)/codex/." "$${tmpdir}/codex/"; \
+	  fi; \
+	  cp $(INSTALL_SH) "$${tmpdir}/install.sh"; \
+	  printf '%s' "$(VERSION)" > "$${tmpdir}/VERSION"; \
+	  if ls agent_setups/deploy/runbooks/*.md >/dev/null 2>&1; then \
+	    cp agent_setups/deploy/runbooks/*.md "$${tmpdir}/" 2>/dev/null || true; \
+	  fi; \
+	  tar -czf "$${tarball}" -C "$${tmpdir}" .; \
+	  rm -rf "$${tmpdir}"; \
+	  echo "[deploy-package] Built $${tarball}"; \
+	done
+	@echo "[deploy-package] Done. Tarballs in $(DIST_DIR)/"
+
 # ---- docker test harness ----
 # Isolated container to test the generated agent configs (Claude Code routing +
 # OTEL telemetry, and Codex gateway routing) without touching the host's own
@@ -123,7 +172,7 @@ PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 
 .PHONY: docker-build
 docker-build: ## Build the test-harness image (Claude Code + Codex + databricks CLI + python3 + ucode)
-	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) docker/
+	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) -f docker/Dockerfile .
 
 # The docker-config* targets delegate to the SAME agent-* generation, only
 # redirecting OUT_DIR to the container dir — no docker-specific overrides. The
@@ -142,33 +191,39 @@ docker-config-codex: ## Generate Codex config.toml for the container (routes thr
 docker-config-all: docker-config docker-config-codex ## Generate both agent configs for the container
 
 .PHONY: docker-reload
-docker-reload: docker-config-all ## Regenerate BOTH agent configs and copy them into the RUNNING container (no restart, keeps auth)
-	docker cp $(CONTAINER_CFG)/claude-code/linux/managed-settings.json $(DOCKER_CONTAINER):/etc/claude-code/managed-settings.json
-	@if [ -f "$(CONTAINER_CFG)/claude-code/linux/otel-headers-helper.sh" ]; then \
-		docker cp $(CONTAINER_CFG)/claude-code/linux/otel-headers-helper.sh $(DOCKER_CONTAINER):/etc/claude-code/otel-headers-helper.sh; \
-		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/otel-headers-helper.sh; \
+docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload into the RUNNING container via install.sh (no restart)
+	@# Create a writable temp staging area inside the container.
+	@# The /opt/agent-config* mounts are :ro so we cannot write there directly.
+	docker exec -u root $(DOCKER_CONTAINER) sh -c \
+	  'rm -rf /tmp/ugw-reload && mkdir -p /tmp/ugw-reload'
+	@# Push the current install.sh into the container.
+	docker cp $(INSTALL_SH) $(DOCKER_CONTAINER):/tmp/ugw-reload/install.sh
+	docker exec -u root $(DOCKER_CONTAINER) chmod +x /tmp/ugw-reload/install.sh
+	@# Copy each config bundle to the writable temp area, then delegate ALL
+	@# placement decisions (paths, perms, owner) exclusively to install.sh.
+	@# AC7 hard gate: no independent copy/chmod matrix in this recipe.
+	@set -e; \
+	_agents=""; \
+	if [ -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" ]; then \
+	  docker exec -u root $(DOCKER_CONTAINER) mkdir -p /tmp/ugw-reload/claude; \
+	  docker cp "$(CONTAINER_CFG)/claude-code/linux/." $(DOCKER_CONTAINER):/tmp/ugw-reload/claude/; \
+	  _agents="claude-code"; \
+	fi; \
+	if [ -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" ]; then \
+	  docker exec -u root $(DOCKER_CONTAINER) mkdir -p /tmp/ugw-reload/codex; \
+	  docker cp "$(CONTAINER_CFG)/codex/." $(DOCKER_CONTAINER):/tmp/ugw-reload/codex/; \
+	  _agents="$${_agents:+$${_agents},}codex"; \
+	fi; \
+	if [ -n "$${_agents}" ]; then \
+	  docker exec -u root $(DOCKER_CONTAINER) /tmp/ugw-reload/install.sh \
+	    --agents "$${_agents}" \
+	    --claude-source /tmp/ugw-reload/claude \
+	    --codex-source /tmp/ugw-reload/codex \
+	    --os linux; \
+	else \
+	  echo "[docker-reload] No configs found in $(CONTAINER_CFG). Run make docker-config-all first."; \
 	fi
-	@if [ -f "$(CONTAINER_CFG)/claude-code/linux/emit_hook_events.sh" ]; then \
-		docker cp $(CONTAINER_CFG)/claude-code/linux/emit_hook_events.sh $(DOCKER_CONTAINER):/etc/claude-code/emit_hook_events.sh; \
-		docker exec -u root $(DOCKER_CONTAINER) chmod +x /etc/claude-code/emit_hook_events.sh; \
-	fi
-	@if [ -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" ]; then \
-		docker exec -u root $(DOCKER_CONTAINER) mkdir -p /etc/codex; \
-		docker cp $(CONTAINER_CFG)/codex/etc/managed_config.toml $(DOCKER_CONTAINER):/etc/codex/managed_config.toml; \
-		docker cp $(CONTAINER_CFG)/codex/etc/requirements.toml $(DOCKER_CONTAINER):/etc/codex/requirements.toml; \
-		if [ -f "$(CONTAINER_CFG)/codex/etc/emit_hook_events.sh" ]; then \
-			docker cp $(CONTAINER_CFG)/codex/etc/emit_hook_events.sh $(DOCKER_CONTAINER):/etc/codex/emit_hook_events.sh; \
-		fi; \
-		docker exec -u root $(DOCKER_CONTAINER) sh -c 'chmod 644 /etc/codex/*.toml; [ -f /etc/codex/emit_hook_events.sh ] && chmod 755 /etc/codex/emit_hook_events.sh; chown -R root:root /etc/codex'; \
-	elif [ -f "$(CONTAINER_CFG)/codex/config.toml" ]; then \
-		docker cp $(CONTAINER_CFG)/codex/config.toml $(DOCKER_CONTAINER):/home/dev/.codex/config.toml; \
-		if [ -f "$(CONTAINER_CFG)/codex/hooks.json" ]; then \
-			docker cp $(CONTAINER_CFG)/codex/hooks.json $(DOCKER_CONTAINER):/home/dev/.codex/hooks.json; \
-			docker cp $(CONTAINER_CFG)/codex/emit_hook_events.sh $(DOCKER_CONTAINER):/home/dev/.codex/emit_hook_events.sh; \
-			docker exec -u root $(DOCKER_CONTAINER) chmod +x /home/dev/.codex/emit_hook_events.sh; \
-		fi; \
-		docker exec -u root $(DOCKER_CONTAINER) chown -R dev:dev /home/dev/.codex; \
-	fi
+	@docker exec -u root $(DOCKER_CONTAINER) rm -rf /tmp/ugw-reload
 	@echo "Harness reloaded (Claude Code + Codex). Restart your \`claude\` / \`codex\` session (exit and re-run) to pick it up."
 
 .PHONY: docker-up

@@ -62,8 +62,14 @@ RUN useradd -m -u 1001 -s /bin/bash dev \
 ENV HOME=/home/dev
 WORKDIR /home/dev/work
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# install.sh: single placement authority for agent configs, called by entrypoint
+# and by docker-reload (see Makefile). Baked into the image so the harness always
+# exercises the real installer (plan P5 — the harness is the test).
+COPY agent_setups/deploy/install.sh /usr/local/lib/unity-gateway/install.sh
+RUN chmod +x /usr/local/lib/unity-gateway/install.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["sleep", "infinity"]

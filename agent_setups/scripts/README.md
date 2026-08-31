@@ -172,20 +172,42 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 
 ## Deploying the output
 
-Deploy the **whole `claude-code/<os>/` bundle** for each OS you manage, via MDM
-(Jamf/Intune/GPO), into that OS's ClaudeCode directory — `managed-settings.json`
-and both helper scripts go in the same place, because the paths inside
-`managed-settings.json` already point there:
+**File placement is handled by `agent_setups/deploy/install.sh`** — the single
+placement authority for both agents. Do not copy files by hand. The deployment
+workflow is:
 
-| OS | Deploy the `<os>/` bundle to |
+```bash
+# 0. Generate the bundles (requires Terraform outputs + network access).
+#    Codex must be generated in managed mode (default; do NOT pass --user-config).
+make agent-claude-code   # → claude-code/{macos,linux,windows}/ per-OS bundles
+make agent-codex         # → codex/etc/ managed bundle
+
+# 1. Build per-OS tarballs (includes install.sh + runbooks + VERSION).
+#    deploy-package hard-errors if a claude-code bundle or managed codex bundle is absent.
+make deploy-package
+
+# 2. Distribute and run on each machine (see MDM runbooks below).
+#    install.sh places files with correct modes and writes a version marker.
+```
+
+MDM runbooks for fleet deployment:
+
+- **macOS (Jamf):** `agent_setups/deploy/runbooks/jamf.md`
+- **Linux/servers (Ansible):** `agent_setups/deploy/runbooks/ansible.md`
+
+The path matrix for reference (install.sh encodes this; no manual path construction
+needed):
+
+| OS | `claude-code/<os>/` bundle installs to |
 |---|---|
 | macOS | `/Library/Application Support/ClaudeCode/` |
 | Linux/WSL | `/etc/claude-code/` |
 | Windows | `C:\Program Files\ClaudeCode\` |
 
-`chmod +x` the helper scripts after deploy. Each developer runs
-`databricks auth login --host <url> --profile <profile>` once. Verify with
-`/status` in Claude Code.
+**Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
+Each developer must run Phase B once — `databricks auth login --host <url>
+--profile <profile>` — interactively. This is a permanent boundary; browser OAuth
+(U2M) cannot be pushed. Verify with `/status` in Claude Code.
 
 This `managed-settings.json` is the **inference baseline**: with it deployed,
 `claude` invoked directly routes through the gateway and emits telemetry on its
@@ -279,27 +301,40 @@ existing (e.g. ChatGPT-app) `config.toml` via `codex -p <name>`.
 
 ### Deploying the output
 
-**Managed (default):** deploy the `codex/etc/` bundle to **`/etc/codex/`** on each
-machine (via MDM / config-management), root-owned:
+**File placement is handled by `agent_setups/deploy/install.sh`** — the single
+placement authority for both agents. Do not copy files by hand. The deployment
+workflow is:
 
-```
-install -o root -g root -m 644 managed_config.toml requirements.toml /etc/codex/
-install -o root -g root -m 755 emit_hook_events.sh                   /etc/codex/
+```bash
+# 1. Build per-OS tarballs.
+make deploy-package
+
+# 2. Distribute and run on each machine (see MDM runbooks below).
+#    install.sh detects managed vs. user-mode Codex and places files accordingly.
 ```
 
-`managed_config.toml` overrides each user's `~/.codex/config.toml`, so routing and
-the default model/provider are enforced fleet-wide. Confirm the parse + effective
-provider with `codex --strict-config doctor`.
+MDM runbooks for fleet deployment:
+
+- **macOS (Jamf):** `agent_setups/deploy/runbooks/jamf.md`
+- **Linux/servers (Ansible):** `agent_setups/deploy/runbooks/ansible.md`
+
+**Managed (default):** `install.sh` places the `codex/etc/` bundle into **`/etc/codex/`**,
+root-owned, with correct modes (644 configs / 755 scripts). `managed_config.toml`
+overrides each user's `~/.codex/config.toml`, so routing and the default
+model/provider are enforced fleet-wide. Confirm the parse + effective provider with
+`codex --strict-config doctor`.
 
 **User (`--user-config`):** copy `codex/config.toml` into a developer's `$CODEX_HOME`
 — either as `$CODEX_HOME/config.toml`, or as `$CODEX_HOME/databricks.config.toml`
 launched with `codex -p databricks` to overlay the gateway provider on an existing
 (e.g. ChatGPT-app) config.
 
+**Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
 Either way, each developer runs `databricks auth login --host <url> --profile <profile>`
-once; `python3` + the `databricks` CLI must be on PATH. As with Claude Code, the
-intended launch surface is `ucode` (`ucode codex`), which adds MCP discovery and the
-per-request OAuth surface — see the repo
+once, interactively — browser OAuth (U2M), cannot be pushed. `python3` + the
+`databricks` CLI must be on PATH. As with Claude Code, the intended launch surface
+is `ucode` (`ucode codex`), which adds MCP discovery and the per-request OAuth
+surface — see the repo
 [README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
 
 ### OTEL telemetry — none client-side, by design

@@ -16,5 +16,7 @@ override.tf.json
 
 # Generated agent configs (workspace-specific; regenerate from TF outputs)
 agent_setups/generated/
+# Deploy packages (build output from `make deploy-package`)
+dist/
 __pycache__/
 *.pyc
