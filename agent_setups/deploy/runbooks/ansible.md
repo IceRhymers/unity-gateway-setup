@@ -5,19 +5,19 @@
 | Phase | Who | What | Automatable via Ansible? |
 |---|---|---|---|
 | **A — Config placement** | Ansible (root) | Copy tarball, unpack, run `install.sh` | **Yes** — this playbook snippet |
-| **B — User auth** | Each developer | `databricks auth login --host <host> --profile <profile>` | **No** — browser OAuth (U2M); must be interactive, out-of-band |
+| **B — User auth** | Each developer | `databricks auth login --host <host> --profile <profile>` | **No** — browser OAuth (U2M). Must be interactive and out-of-band. |
 
-Phase B cannot be driven by Ansible. After Phase A completes, communicate the Phase-B
-instructions to developers separately (internal wiki, Slack, onboarding docs).
+Ansible cannot drive Phase B. After Phase A completes, tell developers the Phase-B
+instructions separately (internal wiki, Slack, onboarding docs).
 
 ---
 
 ## Reference playbook snippet
 
 This is a thin-glue snippet, not a full role. Add it to the appropriate play in your
-inventory. It assumes the tarball has been built via `make deploy-package` and staged
-somewhere reachable by the control node (local path, S3, artifact store — adapt
-`local_tarball_path` and the copy task accordingly).
+inventory. The snippet assumes that `make deploy-package` built the tarball. The snippet
+also assumes the tarball is staged somewhere reachable by the control node (local path,
+S3, artifact store). Adapt `local_tarball_path` and the copy task accordingly.
 
 ```yaml
 ---
@@ -116,14 +116,14 @@ somewhere reachable by the control node (local path, S3, artifact store — adap
 
 ## Exit code reference
 
-`install.sh` returns a structured exit code; the play surfaces it in the assert message:
+`install.sh` returns a structured exit code. The play shows this code in the assert message:
 
 | Code | Meaning |
 |---|---|
 | 0 | Success (or `--dry-run` / `--print-target-dir`) |
 | 1 | Usage error |
 | 2 | Not root and no `--target-root` set |
-| 3 | Critical prereq missing (`databricks` or `python3` always; `jq`/`curl` when emitter present) |
+| 3 | Critical prereq missing. `databricks` and `python3` are always critical. `jq` and `curl` are critical when the emitter is present. |
 | 4 | Required source file missing (`managed-settings.json`) |
 | 5 | Copy or permission failure |
 
@@ -132,12 +132,12 @@ somewhere reachable by the control node (local path, S3, artifact store — adap
 ## Notes
 
 - **Idempotency:** `install.sh` always re-copies files and updates the version marker.
-  Re-running the play on an already-configured machine is safe.
+  You can safely re-run the play on an already-configured machine.
 - **`--target-root`:** do not pass this flag here. It is for unprivileged staging
-  and unit tests only; a fleet play should use real system paths.
+  and unit tests only. A fleet play should use real system paths.
 - **Version variable:** set `unity_gateway_version` in your inventory or as an
-  extra var (`-e unity_gateway_version=abc1234-20260101`). The version string is
-  printed by `make deploy-package` and embedded in the tarball filename.
-- **Phase B:** after the play succeeds, notify developers to run
+  extra var (`-e unity_gateway_version=abc1234-20260101`). `make deploy-package` prints
+  the version string and embeds it in the tarball filename.
+- **Phase B:** after the play succeeds, tell developers to run
   `databricks auth login --host <host> --profile fevm-west` once, interactively.
-  Verify with `/status` in Claude Code or `codex --strict-config doctor` for Codex.
+  Check with `/status` in Claude Code or `codex --strict-config doctor` for Codex.

@@ -1,23 +1,24 @@
 # Module: `unity-foundation`
 
-Provisions the Unity Catalog container for a Unity AI Gateway deployment: a
-catalog (optionally) and the schemas that hold model services and their
-inference-logging tables.
+This module provisions the Unity Catalog container for a Unity AI Gateway
+deployment. The container is a catalog (optional) and the schemas that hold model
+services and their inference-logging tables.
 
 ## Why two modes?
 
-Many enterprise environments (and the reference sandbox this repo targets) do
-**not** grant principals the right to create catalogs, but **do** allow creating
-schemas and everything beneath an existing catalog. This module encodes both
-realities behind a single `create_catalog` switch.
+Many enterprise environments do **not** grant principals the right to create
+catalogs. (The reference sandbox this repo targets is one of them.) These
+environments **do** allow creating schemas and everything beneath an existing
+catalog. This module encodes both realities behind a single `create_catalog`
+switch.
 
 | `create_catalog` | Behavior | Use when |
 |---|---|---|
 | `false` (default) | Looks up an existing catalog with `data.databricks_catalog` and creates only the schemas. Fails fast if the catalog does not exist. | You cannot create catalogs (restricted workspace, shared catalog owned by platform team). |
 | `true` | Creates and manages the catalog with `databricks_catalog`, then the schemas. | You own catalog creation (greenfield workspace, full admin). |
 
-The schema resources reference the resolved catalog name from the active path,
-so ordering and dependency tracking are correct in both modes.
+The schema resources reference the resolved catalog name from the active path.
+So ordering and dependency tracking are correct in both modes.
 
 ## Usage
 
