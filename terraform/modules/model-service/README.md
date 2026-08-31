@@ -1,21 +1,22 @@
 # Module: `model-service`
 
-Creates a Unity Catalog **model service** — a first-class `MODEL_SERVICE`
-securable that routes to a Databricks **Foundation Model API (FMAPI)** model and
-(by default) logs all traffic to a UC Delta inference table.
+Creates a Unity Catalog **model service**. A model service is a `MODEL_SERVICE`
+securable that routes to a Databricks **Foundation Model API (FMAPI)** model. By
+default, it logs all traffic to a UC Delta inference table.
 
-Backed by the native `databricks_ai_gateway_model_service` resource
-(provider ≥ 1.129.0), which wraps the UC AI Gateway API at
+This module uses the native `databricks_ai_gateway_model_service` resource
+(provider ≥ 1.129.0). That resource wraps the UC AI Gateway API at
 `/api/2.1/unity-catalog/model-services`.
 
 ## Model services vs. serving endpoints / external models
 
-- A **model service** is its own UC securable (not a `databricks_model_serving`
-  endpoint) and routes to **FMAPI** Databricks-hosted models.
+- A **model service** is its own UC securable. It is not a
+  `databricks_model_serving` endpoint. It routes to **FMAPI** Databricks-hosted
+  models.
 - **External** providers are a separate securable
   (`databricks_ai_gateway_model_provider_service`) that a model service can
-  reference. This module targets the FMAPI (pay-per-token) path — the opinionated
-  default for capturing first-party agentic traffic under UC governance.
+  reference. This module targets the FMAPI (pay-per-token) path. This path is
+  the default to capture first-party agentic traffic under UC governance.
 
 ## Usage
 
@@ -62,13 +63,15 @@ module "gateway_service" {
 
 ## Permissions
 
-Creating the service needs `CREATE_SERVICE` + `USE SCHEMA` + `USE CATALOG` on the
-parent, `EXECUTE` on the referenced FMAPI model, and `CREATE TABLE` on the
-inference-table schema when logging is enabled.
+To create the service, you need these permissions:
+
+- `CREATE_SERVICE` + `USE SCHEMA` + `USE CATALOG` on the parent.
+- `EXECUTE` on the referenced FMAPI model.
+- `CREATE TABLE` on the inference-table schema when logging is enabled.
 
 ## Extending
 
 The underlying resource also supports traffic splitting, a `fallback` routing
 block, provisioned-throughput destinations, and external-model destinations (via
-a model-provider-service). This module intentionally ships the single-FMAPI-
-destination path; add those blocks as your governance needs grow.
+a model-provider-service). This module ships only the single-FMAPI-destination
+path. Add those blocks as your governance needs grow.

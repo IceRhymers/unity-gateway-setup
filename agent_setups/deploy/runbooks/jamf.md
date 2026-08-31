@@ -7,7 +7,7 @@ Every machine deployment has two phases with a hard boundary between them:
 | Phase | Who | What | Can it be MDM-pushed? |
 |---|---|---|---|
 | **A — Config placement** | IT / Jamf admin | Unpack tarball, run `install.sh` as root | **Yes** — this runbook |
-| **B — User auth** | Each developer | `databricks auth login --host <host> --profile <profile>` | **No** — browser OAuth (U2M); must be interactive |
+| **B — User auth** | Each developer | `databricks auth login --host <host> --profile <profile>` | **No** — browser OAuth (U2M). Must be interactive. |
 
 Phase A places the managed-settings files. Phase B binds each developer's Databricks identity. Neither phase is optional.
 
@@ -15,7 +15,7 @@ Phase A places the managed-settings files. Phase B binds each developer's Databr
 
 ## Prerequisites
 
-`install.sh` checks prereqs and reports them; it does **not** install anything. IT is
+`install.sh` checks prereqs and reports them. It does **not** install anything. IT is
 responsible for these as part of the macOS MDM baseline:
 
 | Tool | Criticality |
@@ -25,13 +25,14 @@ responsible for these as part of the macOS MDM baseline:
 | `jq` | Critical only when hook-event telemetry is enabled (emitter uses it) |
 | `curl` | Critical only when hook-event telemetry is enabled (emitter uses it) |
 
-If a critical prereq is absent, `install.sh` exits 3 and Jamf marks the policy failed.
-Ensure these tools are on PATH for all session types (login shell, non-interactive)
-before scoping the policy to machines.
+If a critical prereq is absent, `install.sh` exits 3. Jamf then marks the policy failed.
+Check that these tools are on PATH for all session types (login shell, non-interactive)
+before you scope the policy to machines.
 
-> **Exception:** a `DATABRICKS_BEARER`-only deployment (where every developer sets
-> `DATABRICKS_BEARER` in their environment and no CLI token refresh is ever needed) can
-> omit `databricks` and `python3`. This is unusual and not the default.
+> **Exception:** a `DATABRICKS_BEARER`-only deployment can omit `databricks` and
+> `python3`. In this deployment, every developer sets `DATABRICKS_BEARER` in their
+> environment. The CLI then never needs a token refresh. This deployment is unusual and
+> not the default.
 
 ---
 
@@ -44,8 +45,8 @@ make deploy-package
 ```
 
 This produces `dist/unity-gateway-agents-<version>-macos.tar.gz`. The tarball is
-self-contained: bundle files, `install.sh`, runbooks, and a `VERSION` file. No network
-access is required on the target machine.
+self-contained: bundle files, `install.sh`, runbooks, and a `VERSION` file. The target
+machine needs no network access.
 
 Upload `dist/unity-gateway-agents-<version>-macos.tar.gz` to your Jamf distribution
 point (or a Jamf Pro package).
@@ -91,11 +92,11 @@ echo "Each developer must complete Phase B — see the Self Service item."
 ```
 
 > **Note on `--target-root`:** the script above uses real system paths (no
-> `--target-root`), which is correct for a fleet push. `--target-root` is for
+> `--target-root`). This is correct for a fleet push. `--target-root` is for
 > unprivileged staging and unit tests only.
 
 Attach the script to a **Policy** scoped to your target machines (see Step 3).
-Set the **Execution Frequency** to "Once per computer" for initial rollout; change to
+Set the **Execution Frequency** to "Once per computer" for initial rollout. Change it to
 "Once per computer per user" or "Ongoing" for re-rollout when the config version
 changes.
 
@@ -107,11 +108,11 @@ Jamf executes this script as **root without notarization or code-signing checks*
 Treat it accordingly:
 
 - Store the tarball at rest on your Jamf distribution point under access controls.
-- Verify the SHA-256 of the tarball before upload (CI produces a checksum alongside
+- Check the SHA-256 of the tarball before you upload it (CI produces a checksum alongside
   the tarball in `dist/`).
-- `install.sh` itself is POSIX `sh` — review it before deploying to a new macOS
+- `install.sh` itself is POSIX `sh`. Review it before you deploy it to a new macOS
   major version.
-- IT owns prereqs (`databricks`, `python3`, `jq`, `curl`) as a managed baseline;
+- IT owns prereqs (`databricks`, `python3`, `jq`, `curl`) as a managed baseline.
   `install.sh` only checks and reports them (exit 3 on critical missing dep).
 
 ---
@@ -121,11 +122,11 @@ Treat it accordingly:
 Suggested scope for the Phase-A policy:
 
 - **Targets:** Smart Group based on macOS version + `databricks` CLI managed
-  (confirm the MDM baseline is present before targeting).
+  (check the MDM baseline is present before you target machines).
 - **Exclusions:** Machines already running the target version (check
   `/Library/Application Support/ClaudeCode/.unity-gateway-version` if you want to
   be explicit, or rely on `install.sh`'s idempotent re-copy behaviour).
-- **Trigger:** Check-in + Enrollment Complete; or manual trigger for initial rollout.
+- **Trigger:** Check-in + Enrollment Complete, or a manual trigger for initial rollout.
 
 ---
 
@@ -150,4 +151,4 @@ You only need to do this once per machine.
 Replace `<host>` with your Databricks workspace URL (e.g.
 `https://myworkspace.cloud.databricks.com`).
 
-This step **cannot be automated** — it requires interactive browser OAuth (U2M).
+You **cannot automate** this step. It requires interactive browser OAuth (U2M).
