@@ -6,48 +6,69 @@
 #   - Compare with: install.sh --os <os> --agent <agent> --print-target-dir
 #   - Fail loudly on mismatch.
 #
-# Fixture source: existing repo fixtures under agent_setups/generated/ (telemetry+hooks ON).
-#   Claude:  generated/claude-code/{linux,macos}/managed-settings.json
+# Fixtures are GENERATED here, offline (no network, no Terraform, no pre-built
+# bundles), from a telemetry-ON tf-output fixture (see _fixtures.sh). A
+# hand-crafted managed-settings.json would be a vacuous pass, so this test drives
+# the REAL generator and asserts its baked paths match install.sh.
+#   Claude:  <gen>/claude-code/{linux,macos}/managed-settings.json
 #             -> otelHeadersHelper path + first emit_hook_events hook command
-#   Codex:   generated/container/codex/etc/managed_config.toml
+#   Codex:   <gen>/codex/etc/managed_config.toml
 #             -> first hooks command containing emit_hook_events.sh
 #
 # Claude parsing: strip surrounding \" and trailing subcommand before dirname.
 # Codex  parsing: strip trailing subcommand before dirname.
 # No whitespace-split: dirname works correctly on space-containing macOS path.
-#
-# We use the EXISTING repo fixtures (telemetry-on, both agents, both OSes).
-# Regeneration was not required: the fixtures already contain otelHeadersHelper
-# and emit_hook_events.sh references, satisfying the non-vacuous-pass requirement.
 set -eu
 
 # shellcheck disable=SC2164
 TESTS_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="${TESTS_DIR}/../install.sh"
-GENERATED_DIR="${TESTS_DIR}/../../generated"
+GENERATE_PY="${TESTS_DIR}/../../scripts/generate.py"
 T="assert_matrix_agreement"
 
-CC_LINUX_JSON="${GENERATED_DIR}/claude-code/linux/managed-settings.json"
-CC_MACOS_JSON="${GENERATED_DIR}/claude-code/macos/managed-settings.json"
-CX_MANAGED_TOML="${GENERATED_DIR}/container/codex/etc/managed_config.toml"
+. "${TESTS_DIR}/_fixtures.sh"
+
+_work=""
+_cleanup() { rm -rf "${_work}" 2>/dev/null || true; }
+trap '_cleanup' EXIT INT TERM
+_work=$(mktemp -d)
+
+# Generate REAL telemetry-ON fixtures offline (no network, no Terraform).
+_tf="${_work}/tf.json"
+mk_tf_fixture "${_tf}"
+_gen="${_work}/gen"
+_host="https://ex.cloud.databricks.com"
+
+if ! python3 "${GENERATE_PY}" claude-code --skip-api-discovery --tf-output-json "${_tf}" \
+     --host "${_host}" --out-dir "${_gen}" > "${_work}/gen_cc.txt" 2>&1; then
+  printf 'FAIL: %s — claude-code generation failed\n' "${T}"; cat "${_work}/gen_cc.txt"; exit 1
+fi
+if ! python3 "${GENERATE_PY}" codex --skip-api-discovery --tf-output-json "${_tf}" \
+     --host "${_host}" --out-dir "${_gen}" > "${_work}/gen_cx.txt" 2>&1; then
+  printf 'FAIL: %s — codex generation failed\n' "${T}"; cat "${_work}/gen_cx.txt"; exit 1
+fi
+
+CC_LINUX_JSON="${_gen}/claude-code/linux/managed-settings.json"
+CC_MACOS_JSON="${_gen}/claude-code/macos/managed-settings.json"
+CX_MANAGED_TOML="${_gen}/codex/etc/managed_config.toml"
 
 # Verify fixtures exist and are telemetry-ON (contain emit_hook_events references)
 for _f in "${CC_LINUX_JSON}" "${CC_MACOS_JSON}" "${CX_MANAGED_TOML}"; do
   if [ ! -f "${_f}" ]; then
-    printf 'FAIL: %s — fixture not found: %s\n' "${T}" "${_f}"
+    printf 'FAIL: %s — generated fixture not found: %s\n' "${T}" "${_f}"
     exit 1
   fi
 done
 if ! grep -q 'emit_hook_events' "${CC_LINUX_JSON}"; then
-  printf 'FAIL: %s — linux fixture is telemetry-OFF (vacuous pass); regenerate with --telemetry on\n' "${T}"
+  printf 'FAIL: %s — linux fixture is telemetry-OFF (vacuous pass)\n' "${T}"
   exit 1
 fi
 if ! grep -q 'emit_hook_events' "${CC_MACOS_JSON}"; then
-  printf 'FAIL: %s — macos fixture is telemetry-OFF (vacuous pass); regenerate with --telemetry on\n' "${T}"
+  printf 'FAIL: %s — macos fixture is telemetry-OFF (vacuous pass)\n' "${T}"
   exit 1
 fi
 if ! grep -q 'emit_hook_events' "${CX_MANAGED_TOML}"; then
-  printf 'FAIL: %s — codex fixture has no emit_hook_events hooks; regenerate with --hook-telemetry on\n' "${T}"
+  printf 'FAIL: %s — codex fixture has no emit_hook_events hooks\n' "${T}"
   exit 1
 fi
 

@@ -8,7 +8,7 @@ set -eu
 # shellcheck disable=SC2164
 TESTS_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="${TESTS_DIR}/../install.sh"
-GENERATED_DIR="${TESTS_DIR}/../../generated"
+. "${TESTS_DIR}/_fixtures.sh"
 T="test_07_idempotent_upgrade"
 
 _work=""
@@ -23,9 +23,7 @@ _work=$(mktemp -d)
 #          <bundle_root>/VERSION
 # ---------------------------------------------------------------------------
 _bundle="${_work}/bundle"
-mkdir -p "${_bundle}/claude-code/linux"
-cp "${GENERATED_DIR}/claude-code/linux/managed-settings.json" \
-   "${_bundle}/claude-code/linux/"
+mk_claude_bundle "${_bundle}/claude-code/linux" off
 printf 'v1\n' > "${_bundle}/VERSION"
 
 _staging="${_work}/staging"

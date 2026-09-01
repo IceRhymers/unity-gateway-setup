@@ -6,7 +6,7 @@ set -eu
 # shellcheck disable=SC2164
 TESTS_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="${TESTS_DIR}/../install.sh"
-GENERATED_DIR="${TESTS_DIR}/../../generated"
+. "${TESTS_DIR}/_fixtures.sh"
 T="test_03_staged_install"
 
 _work=""
@@ -31,7 +31,9 @@ else
   printf '#!/bin/sh\nexit 0\n' > "${_stub_bin}/python3" && chmod +x "${_stub_bin}/python3"
 fi
 
-_cc_src="${GENERATED_DIR}/claude-code/linux"
+# Synthetic telemetry-ON claude-code bundle (managed-settings.json + both scripts).
+_cc_src="${_work}/cc_src"
+mk_claude_bundle "${_cc_src}" on
 
 _exit=0
 PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \

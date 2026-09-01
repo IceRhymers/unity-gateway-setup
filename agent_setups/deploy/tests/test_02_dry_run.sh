@@ -5,7 +5,7 @@ set -eu
 # shellcheck disable=SC2164
 TESTS_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="${TESTS_DIR}/../install.sh"
-GENERATED_DIR="${TESTS_DIR}/../../generated"
+. "${TESTS_DIR}/_fixtures.sh"
 T="test_02_dry_run"
 
 _work=""
@@ -31,8 +31,9 @@ else
   printf '#!/bin/sh\nexit 0\n' > "${_stub_bin}/python3" && chmod +x "${_stub_bin}/python3"
 fi
 
-# Use real claude-code linux fixture (has managed-settings.json — required even in dry-run)
-_cc_src="${GENERATED_DIR}/claude-code/linux"
+# Synthetic claude-code bundle (managed-settings.json is required even in dry-run).
+_cc_src="${_work}/cc_src"
+mk_claude_bundle "${_cc_src}" off
 
 _exit=0
 PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \

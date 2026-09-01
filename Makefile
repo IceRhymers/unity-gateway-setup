@@ -113,7 +113,7 @@ opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/
 # ---- tests ----
 
 .PHONY: test
-test: ## Run the deploy install.sh test suite (generate bundles first: make agents; full green also needs telemetry + make docker-config-all)
+test: ## Run the deploy install.sh test suite (self-contained: no infra, no network, no pre-generated bundles)
 	sh agent_setups/deploy/tests/run.sh
 
 # ---- deployment packaging ----
