@@ -110,6 +110,20 @@ opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/
 	$(PYTHON) $(AGENT_GEN) opencode --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-opencode-local.sh --source $(OUT_DIR)/opencode/opencode.json
 
+.PHONY: claude-code-install-local
+claude-code-install-local: ## Generate settings.json (user mode) + install it to ~/.claude for a local, non-managed install (PROFILE=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) claude-code --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	sh agent_setups/deploy/install-claude-code-local.sh --source $(OUT_DIR)/claude-code/user/settings.json
+
+.PHONY: codex-install-local
+codex-install-local: ## Generate config.toml (user mode) + install it to ~/.codex for a local, non-managed install (PROFILE=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) codex --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	sh agent_setups/deploy/install-codex-local.sh --source $(OUT_DIR)/codex/config.toml
+
+.PHONY: agents-install-local
+agents-install-local: claude-code-install-local codex-install-local opencode-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
+	@echo "[agents-install-local] Claude Code, Codex, and opencode installed locally."
+
 # ---- tests ----
 
 .PHONY: test

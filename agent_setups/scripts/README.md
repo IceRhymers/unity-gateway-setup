@@ -162,6 +162,7 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 | `--databricks-bin` | `databricks` | CLI path (use absolute for launchd/MDM). |
 | `--ssl-cert-file` | – | Per-machine CA bundle (`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`). |
 | `--required-min-version` | – | Enforce a Claude Code version floor. |
+| `--user-config` | off | Emit a per-user `settings.json` bundle (for `~/.claude/`) instead of the per-OS managed bundle. See "User (local, non-managed)" below. |
 | `--telemetry` | `auto` | OTEL export: `auto` (on iff the `telemetry` output exists) · `on` (require it) · `off`. |
 | `--otel-log-content` | off | Also log prompts, tool details/content, and raw API bodies. Privacy-sensitive. |
 | `--otel-metric-interval-ms` | `60000` | `OTEL_METRIC_EXPORT_INTERVAL`. |
@@ -213,6 +214,19 @@ construction is needed):
 Each developer must run Phase B once — `databricks auth login --host <url>
 --profile <profile>` — interactively. This is a permanent boundary. Browser OAuth
 (U2M) cannot be pushed. Verify with `/status` in Claude Code.
+
+**User (local, non-managed):** for a per-user install without root or MDM, run
+`make claude-code-install-local`. It generates a user-mode bundle
+(`--user-config`) and installs `settings.json` (plus any helper scripts) to
+`$HOME/.claude/`. The placement script
+`agent_setups/deploy/install-claude-code-local.sh` does the copy. It saves a
+timestamped backup of any existing `settings.json` first. The user-mode
+`settings.json` accepts the same keys as `managed-settings.json`, except
+`requiredMinimumVersion` (managed-only), which the generator drops. The generator
+bakes the helper paths (`otelHeadersHelper`, the hook command) as absolute
+`~/.claude` paths, so you must generate and install on the same machine. This mode
+has no enforcement. Run the script directly with `--dry-run` to preview,
+`--target-dir <dir>` to write elsewhere, or `--no-backup` to overwrite in place.
 
 This `managed-settings.json` is the **inference baseline**. With it deployed, a
 direct `claude` call routes through the gateway and emits telemetry on its own. The
@@ -330,10 +344,20 @@ overrides each user's `~/.codex/config.toml`, so it enforces routing and the def
 model/provider fleet-wide. Confirm the parse + effective provider with
 `codex --strict-config doctor`.
 
-**User (`--user-config`):** copy `codex/config.toml` into a developer's `$CODEX_HOME`
-— either as `$CODEX_HOME/config.toml`, or as `$CODEX_HOME/databricks.config.toml`
-launched with `codex -p databricks` to overlay the gateway provider on an existing
-(for example ChatGPT-app) config.
+**User (local, non-managed):** for a per-user install without root or MDM, run
+`make codex-install-local`. It generates a user-mode bundle (`--user-config`) and
+installs `config.toml` (plus `hooks.json` + `emit_hook_events.sh` when hook
+telemetry is on) to `${CODEX_HOME:-$HOME/.codex}/`. The placement script
+`agent_setups/deploy/install-codex-local.sh` does the copy. It saves a timestamped
+backup of any existing `config.toml` first. Codex user hooks require per-user
+trust, so trust them in Codex (or launch with `--dangerously-bypass-hook-trust`)
+for the reporting hooks to run. Run the script directly with `--dry-run` to
+preview, `--target-dir <dir>` to write elsewhere, or `--no-backup` to overwrite in
+place.
+
+To overlay the gateway provider on an existing (for example ChatGPT-app)
+`config.toml` instead, copy `codex/config.toml` to
+`$CODEX_HOME/databricks.config.toml` and launch with `codex -p databricks`.
 
 **Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
 Either way, each developer runs `databricks auth login --host <url> --profile <profile>`
@@ -527,6 +551,11 @@ timestamped backup of any existing config first. Run the script directly with
 `--no-backup` to overwrite in place. This mode has no enforcement. The managed
 `install.sh` warns and skips a user-mode bundle, because it is not a root-managed
 system placement.
+
+**All three at once:** `make agents-install-local` runs the Claude Code, Codex,
+and opencode local installs together. Each install backs up its existing config
+file with a timestamp first, so it keeps a history. Each target also takes
+`PROFILE=` and `ARGS=`.
 
 **Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
 Each developer runs `databricks auth login --host <url> --profile <profile>` once,

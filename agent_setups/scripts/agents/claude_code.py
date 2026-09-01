@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -105,6 +106,17 @@ PLATFORM_INSTALL_DIRS = {
     "linux": "/etc/claude-code",
     "windows": r"C:\Program Files\ClaudeCode",
 }
+
+# --- Per-user (local, non-managed) output -----------------------------------
+# Claude Code reads a per-user settings.json from ~/.claude/settings.json. It
+# accepts the same schema as managed-settings.json, EXCEPT requiredMinimumVersion
+# (managed-only). --user-config emits one bundle to claude-code/user/ — a
+# settings.json plus the (identical) helper scripts — for a developer who wants a
+# local gateway route without root or MDM. The helper paths inside settings.json
+# are baked as ABSOLUTE ~/.claude paths: otelHeadersHelper's shell-expansion is not
+# documented, and a local install generates and installs on the same machine, so
+# the expanded home is exactly right (and unambiguous).
+USER_CONFIG_DIR = "~/.claude"
 
 
 def _platform_path(install_dir: str, filename: str, platform: str) -> str:
@@ -792,6 +804,19 @@ class ClaudeCodeGenerator(AgentGenerator):
             default=900000,
             help="CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS: token refresh interval (default: 900000 = 15 min).",
         )
+        # ---- deployment model ----
+        parser.add_argument(
+            "--user-config",
+            action="store_true",
+            help=(
+                "Emit a per-user, non-enforced bundle (settings.json + the helper "
+                f"scripts) for {USER_CONFIG_DIR}/, instead of the default per-OS managed "
+                "bundle. The helper paths inside settings.json are baked as absolute "
+                f"{USER_CONFIG_DIR} paths, so generate and install on the same machine "
+                "(use `make claude-code-install-local`). Ignores --platforms; "
+                "requiredMinimumVersion is dropped (it is managed-only)."
+            ),
+        )
         # ---- platforms ----
         parser.add_argument(
             "--platforms",
@@ -1036,15 +1061,18 @@ class ClaudeCodeGenerator(AgentGenerator):
         return script, categories
 
     def generate(self, ctx: GatewayContext, args: argparse.Namespace) -> dict[str, str]:
-        platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
-        unknown = [p for p in platforms if p not in PLATFORM_INSTALL_DIRS]
-        if unknown:
-            raise SystemExit(
-                f"--platforms has unknown value(s): {', '.join(unknown)}. "
-                f"Valid: {', '.join(PLATFORMS)}."
-            )
-        if not platforms:
-            raise SystemExit("--platforms selected no platforms.")
+        # --platforms drives the managed per-OS bundles only; user mode emits a
+        # single claude-code/user/ bundle for the local machine, so skip it there.
+        if not args.user_config:
+            platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
+            unknown = [p for p in platforms if p not in PLATFORM_INSTALL_DIRS]
+            if unknown:
+                raise SystemExit(
+                    f"--platforms has unknown value(s): {', '.join(unknown)}. "
+                    f"Valid: {', '.join(PLATFORMS)}."
+                )
+            if not platforms:
+                raise SystemExit("--platforms selected no platforms.")
 
         eps = self._select_anthropic_capable(ctx, args)
         by_name = {e.name: e for e in eps}
@@ -1126,6 +1154,32 @@ class ClaudeCodeGenerator(AgentGenerator):
         otel_script = self._telemetry_env(ctx, args, env)
         hook_script, hook_categories = self._hook_parts(ctx, args)
 
+        # --- user (local, non-managed) mode: a single claude-code/user/ bundle ----
+        # settings.json for ~/.claude, with helper paths baked as absolute ~/.claude
+        # paths (same-machine install). requiredMinimumVersion is managed-only, so
+        # drop it here.
+        if args.user_config:
+            user_dir = os.path.expanduser(USER_CONFIG_DIR)
+            user_settings = copy.deepcopy(settings)
+            if user_settings.pop("requiredMinimumVersion", None) is not None:
+                print("[claude-code] --user-config: dropping requiredMinimumVersion "
+                      "(it is managed-only and has no effect in user settings.json).",
+                      file=sys.stderr)
+            if otel_script is not None:
+                user_settings["otelHeadersHelper"] = f"{user_dir}/{OTEL_HELPER_FILENAME}"
+            if hook_script is not None:
+                user_settings["hooks"] = _hook_settings_block(
+                    f"{user_dir}/{HOOK_SCRIPT_FILENAME}", hook_categories
+                )
+            files: dict[str, str] = {
+                "claude-code/user/settings.json": json.dumps(user_settings, indent=2) + "\n",
+            }
+            if otel_script is not None:
+                files[f"claude-code/user/{OTEL_HELPER_FILENAME}"] = otel_script
+            if hook_script is not None:
+                files[f"claude-code/user/{HOOK_SCRIPT_FILENAME}"] = hook_script
+            return files
+
         files: dict[str, str] = {}
         for platform in platforms:
             install_dir = PLATFORM_INSTALL_DIRS[platform]
@@ -1148,6 +1202,32 @@ class ClaudeCodeGenerator(AgentGenerator):
         return files
 
     def install_notes(self, args: argparse.Namespace) -> str:
+        if args.user_config:
+            lines = [
+                "USER-CONFIG mode (--user-config): per-user, non-enforced. One bundle was",
+                "written to claude-code/user/ (settings.json + any helper scripts). Deploy it:",
+                f"  Copy settings.json (+ helper scripts) -> {USER_CONFIG_DIR}/",
+                "  (or run: make claude-code-install-local)",
+                "",
+                f"The helper paths inside settings.json are baked as absolute {USER_CONFIG_DIR}",
+                "paths, so generate and install on the same machine.",
+                "",
+                "Each developer authenticates once:",
+                "  databricks auth login --host <workspace-url> --profile <profile>",
+                "",
+                "Verify inside Claude Code with /status:",
+                "  'Anthropic base URL' -> the gateway address; 'Setting sources' -> User settings.",
+            ]
+            if args.telemetry != "off" or args.hook_telemetry != "off":
+                lines += [
+                    "",
+                    f"Any helper scripts (otel-headers-helper.sh / emit_hook_events.sh) install to",
+                    f"  {USER_CONFIG_DIR}/ beside settings.json (the install script sets them executable).",
+                    "  They need python3 + the databricks CLI on PATH (emit_hook_events.sh also jq + curl),",
+                    "  and READ_SECRET on the telemetry UC secret.",
+                ]
+            return "\n".join(lines)
+
         platforms = [p.strip() for p in args.platforms.split(",") if p.strip() in PLATFORM_INSTALL_DIRS]
         lines = [
             "Per-platform bundles were written to claude-code/<platform>/. Deploy each",
