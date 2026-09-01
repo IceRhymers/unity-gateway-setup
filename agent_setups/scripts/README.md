@@ -7,9 +7,10 @@ coding agent.
 
 **Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
 deployment), **Codex** (`config.toml` routed through the gateway's MLflow
-serving route, `mlflow/v1/responses`), **and opencode** (`opencode.json` routed
-through the same MLflow route, `mlflow/v1/chat/completions`). The design is a
-registry. You can add Gemini CLI and other agents as new generators.
+serving route, `mlflow/v1/responses`), **and opencode** (`opencode.json` with
+native providers per model family, plus an auth plugin that mints a fresh token
+per request). The design is a registry. You can add Gemini CLI and other agents
+as new generators.
 
 ## How it works
 
@@ -161,6 +162,7 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 | `--databricks-bin` | `databricks` | CLI path (use absolute for launchd/MDM). |
 | `--ssl-cert-file` | – | Per-machine CA bundle (`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`). |
 | `--required-min-version` | – | Enforce a Claude Code version floor. |
+| `--user-config` | off | Emit a per-user `settings.json` bundle (for `~/.claude/`) instead of the per-OS managed bundle. See "User (local, non-managed)" below. |
 | `--telemetry` | `auto` | OTEL export: `auto` (on iff the `telemetry` output exists) · `on` (require it) · `off`. |
 | `--otel-log-content` | off | Also log prompts, tool details/content, and raw API bodies. Privacy-sensitive. |
 | `--otel-metric-interval-ms` | `60000` | `OTEL_METRIC_EXPORT_INTERVAL`. |
@@ -212,6 +214,19 @@ construction is needed):
 Each developer must run Phase B once — `databricks auth login --host <url>
 --profile <profile>` — interactively. This is a permanent boundary. Browser OAuth
 (U2M) cannot be pushed. Verify with `/status` in Claude Code.
+
+**User (local, non-managed):** for a per-user install without root or MDM, run
+`make claude-code-install-local`. It generates a user-mode bundle
+(`--user-config`) and installs `settings.json` (plus any helper scripts) to
+`$HOME/.claude/`. The placement script
+`agent_setups/deploy/install-claude-code-local.sh` does the copy. It saves a
+timestamped backup of any existing `settings.json` first. The user-mode
+`settings.json` accepts the same keys as `managed-settings.json`, except
+`requiredMinimumVersion` (managed-only), which the generator drops. The generator
+bakes the helper paths (`otelHeadersHelper`, the hook command) as absolute
+`~/.claude` paths, so you must generate and install on the same machine. This mode
+has no enforcement. Run the script directly with `--dry-run` to preview,
+`--target-dir <dir>` to write elsewhere, or `--no-backup` to overwrite in place.
 
 This `managed-settings.json` is the **inference baseline**. With it deployed, a
 direct `claude` call routes through the gateway and emits telemetry on its own. The
@@ -329,10 +344,20 @@ overrides each user's `~/.codex/config.toml`, so it enforces routing and the def
 model/provider fleet-wide. Confirm the parse + effective provider with
 `codex --strict-config doctor`.
 
-**User (`--user-config`):** copy `codex/config.toml` into a developer's `$CODEX_HOME`
-— either as `$CODEX_HOME/config.toml`, or as `$CODEX_HOME/databricks.config.toml`
-launched with `codex -p databricks` to overlay the gateway provider on an existing
-(for example ChatGPT-app) config.
+**User (local, non-managed):** for a per-user install without root or MDM, run
+`make codex-install-local`. It generates a user-mode bundle (`--user-config`) and
+installs `config.toml` (plus `hooks.json` + `emit_hook_events.sh` when hook
+telemetry is on) to `${CODEX_HOME:-$HOME/.codex}/`. The placement script
+`agent_setups/deploy/install-codex-local.sh` does the copy. It saves a timestamped
+backup of any existing `config.toml` first. Codex user hooks require per-user
+trust, so trust them in Codex (or launch with `--dangerously-bypass-hook-trust`)
+for the reporting hooks to run. Run the script directly with `--dry-run` to
+preview, `--target-dir <dir>` to write elsewhere, or `--no-backup` to overwrite in
+place.
+
+To overlay the gateway provider on an existing (for example ChatGPT-app)
+`config.toml` instead, copy `codex/config.toml` to
+`$CODEX_HOME/databricks.config.toml` and launch with `codex -p databricks`.
 
 **Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
 Either way, each developer runs `databricks auth login --host <url> --profile <profile>`
@@ -409,16 +434,25 @@ wrong shape makes Codex fail to load config entirely, so validate any additions 
 ## opencode (`opencode`)
 
 The generator emits an **enforced, root-owned managed bundle** by default (the
-opencode analogue of Claude Code's managed settings), or a single per-user
-`opencode.json` with `--user-config`. This is a config-only baseline. It emits no
-plugin, no client telemetry, and no hooks.
+opencode analogue of Claude Code's managed settings), or a per-user bundle with
+`--user-config`. The bundle carries a config file and an auth plugin. The plugin
+mints a fresh Databricks token on every request, so the config needs no
+environment variable and the launcher needs no token step.
 
-opencode is built on the Vercel AI SDK. It reaches a custom provider through an
-npm package. The generator sets the provider's `npm` to
-`@ai-sdk/openai-compatible`, which POSTs to `<baseURL>/chat/completions`. The
-generator points `baseURL` at `<host>/ai-gateway/mlflow/v1`, so opencode lands on
-the gateway's `mlflow/v1/chat/completions` route. This mirrors Codex's
-`/ai-gateway/mlflow/v1` + `/responses`.
+opencode is built on the Vercel AI SDK. Each model family speaks its own dialect
+to its own gateway route. The generator emits one provider per family that has
+deployed endpoints:
+
+| Provider | npm package | Gateway route |
+|---|---|---|
+| `databricks-anthropic` | `@ai-sdk/anthropic` | `<host>/ai-gateway/anthropic/v1` |
+| `databricks-google` | `@ai-sdk/google` | `<host>/ai-gateway/gemini/v1beta` |
+| `databricks-oss` | `@ai-sdk/openai` | `<host>/ai-gateway/mlflow/v1` |
+
+Each endpoint buckets into a family by its schema. The `anthropic` schema routes
+to the anthropic provider. The `gemini` schema routes to the google provider.
+Every other schema routes to the oss provider. This is the native surface, so the
+generator needs no live api-type discovery.
 
 opencode reads managed config LAST, and managed config overrides user config
 (verified in the opencode source, v1.18.25). Two managed layers exist:
@@ -435,38 +469,37 @@ The default (managed) mode writes the bundle to `opencode/`:
 
 | File | Role |
 |---|---|
-| `opencode.json` | Gateway routing + provider + default model + `enabled_providers`. The OS-independent managed config. Overrides user config. |
+| `opencode.json` | Gateway routing + native providers + default model + `enabled_providers` + the plugin reference. The OS-independent managed config. Overrides user config. |
+| `databricks-auth.ts` | The auth plugin. It mints a fresh Databricks token on every request. |
 | `ai.opencode.managed.mobileconfig` | A macOS Configuration Profile that carries the same config keys. The macOS hard-lock layer. |
 
 The `opencode.json` content is OS-independent, so one file serves every managed
-config dir. Non-macOS fleets rely on the managed dir file only. With
-`--user-config` the generator instead emits a single non-enforced `opencode.json`
-for `~/.config/opencode/opencode.json`. This is useful for laptops without root.
+config dir. The config references the plugin by a relative path
+(`./databricks-auth.ts`), so the plugin must sit beside `opencode.json`. Non-macOS
+fleets rely on the managed dir files only. With `--user-config` the generator
+emits the same two files for `~/.config/opencode/`, with no enforcement. This is
+useful for laptops without root.
 
 ### What the opencode config encodes
 
-- **Routing:** a `provider.<name>` block with `npm = @ai-sdk/openai-compatible`
-  and `options.baseURL = <host>/ai-gateway/mlflow/v1`. The SDK appends
-  `/chat/completions`, so opencode lands on `mlflow/v1/chat/completions` — the
-  MLflow serving route is the actual model-inference surface. `model` pins a
-  default endpoint (the `gpt` alias by default), prefixed with the provider id
-  (`databricks/<full-name>`).
-- **Auth:** `options.apiKey` reads a bearer token from an environment variable
-  through opencode's `{env:VAR}` substitution (default `{env:DATABRICKS_BEARER}`).
-  opencode has no auth command or helper, unlike Claude Code's `apiKeyHelper` or
-  Codex's inline auth command. So opencode cannot mint or refresh the token
-  itself. The launcher must export a fresh Databricks OAuth token into the
-  variable before it starts opencode. A U2M token lives about one hour, so a long
-  session needs a re-mint. Mint one with `databricks auth token --host <host>
-  --profile <profile> --force-refresh`.
-- **Model surface:** every endpoint that exposes the chosen `--api-type` becomes
-  a switchable model in the `provider.<name>.models` map, keyed by its full UC
-  name. The default `mlflow/v1/chat/completions` is the broad chat-completions
-  surface served by the MLflow route, so GPT, Gemini, Claude, and the open models
-  are all reachable. Narrow to `openai/v1/chat/completions` for OpenAI-native
-  only.
-- **Lockdown:** `enabled_providers = ["databricks"]` restricts opencode to the
-  gateway provider only.
+- **Routing:** one `provider.<id>` block per native family. Each block sets `npm`
+  to the family's AI SDK package and `options.baseURL` to the family's gateway
+  route. `model` pins a default endpoint (a preferred alias by default), prefixed
+  with its family provider id (for example `databricks-anthropic/<full-name>`).
+- **Auth:** the config loads the `databricks-auth.ts` plugin through the `plugin`
+  key. A `chat.headers` hook in the plugin sets `Authorization: Bearer <token>` on
+  every request to the databricks-* providers. The plugin mints the token with the
+  Databricks CLI (`databricks auth token`). The CLI refreshes access tokens
+  silently from its cached OAuth session, so routine expiry needs no login. The
+  plugin runs `databricks auth login` only when no valid session exists. This
+  matches Claude Code's `apiKeyHelper`. The `options.apiKey` value is a
+  placeholder, because the gateway authenticates on the header the plugin sets.
+- **Model surface:** every deployed endpoint becomes a switchable model in its
+  family provider's `models` map, keyed by its full UC name. Anthropic models also
+  set `options.toolStreaming = false`, because the gateway's strict validator
+  rejects the AI SDK's `eager_input_streaming` flag.
+- **Lockdown:** `enabled_providers` restricts opencode to the databricks-*
+  providers only.
 
 ### Key options (`opencode`)
 
@@ -474,15 +507,9 @@ for `~/.config/opencode/opencode.json`. This is useful for laptops without root.
 |---|---|---|
 | `--profile` | `fevm-west` | Databricks profile (host + auth). |
 | `--host` | (from profile) | Override the workspace URL. |
-| `--api-type` | `mlflow/v1/chat/completions` | Endpoint filter. Narrow to `openai/v1/chat/completions` for OpenAI-native chat completions only. |
-| `--skip-api-discovery` | off | Skip live `supported_api_types` lookup. Use `--fallback-schema` (offline). |
-| `--fallback-schema` | `openai` | Schema assumed chat-completions-capable when discovery is skipped. |
-| `--default-model` | `gpt` alias | Model opencode starts on (endpoint leaf or full UC name). |
-| `--provider-name` | `databricks` | Provider id: the `provider` key, the `model` prefix, and the `enabled_providers` entry. |
-| `--gateway-path` | `/ai-gateway/mlflow/v1` | Gateway route base appended to the host for `baseURL`. The SDK appends `/chat/completions`. |
-| `--api-key-env` | `DATABRICKS_BEARER` | Environment variable the config reads the bearer token from, via `{env:VAR}`. |
-| `--databricks-bin` | `databricks` | CLI path used for api-type discovery (absolute for minimal-PATH contexts). |
-| `--user-config` | off | Emit the single per-user `opencode.json` instead of the default managed bundle. |
+| `--default-model` | preferred alias | Model opencode starts on (endpoint leaf or full UC name). |
+| `--auth-profile` | (the `--profile` value) | Databricks CLI profile the plugin uses to mint tokens. Every developer must have this profile in `~/.databrickscfg`. |
+| `--user-config` | off | Emit the per-user bundle instead of the default managed bundle. |
 
 ### Deploying the output
 
@@ -492,7 +519,7 @@ placement authority. Do not copy files by hand. Select opencode with
 
 ```bash
 # 0. Generate the managed bundle (requires Terraform outputs + network access).
-make agent-opencode      # → opencode/opencode.json + opencode/ai.opencode.managed.mobileconfig
+make agent-opencode      # → opencode/opencode.json + opencode/databricks-auth.ts + opencode/ai.opencode.managed.mobileconfig
 
 # 1. Distribute and run on each machine (see MDM runbooks below).
 ./install.sh --agents opencode
@@ -503,30 +530,38 @@ MDM runbooks for fleet deployment:
 - **macOS (Jamf):** `agent_setups/deploy/runbooks/jamf.md`
 - **Linux/servers (Ansible):** `agent_setups/deploy/runbooks/ansible.md`
 
-**Managed (default):** `install.sh` places `opencode.json` into the per-OS managed
-config dir (`/etc/opencode` on Linux, `/Library/Application Support/opencode` on
-macOS), root-owned, with mode 644. `install.sh` detects managed mode from the
-`.mobileconfig` next to `opencode.json`. On macOS `install.sh` also stages the
-`.mobileconfig` into the managed dir. An MDM must INSTALL that profile to activate
-the macOS hard-lock at `/Library/Managed Preferences/ai.opencode.managed.plist`
-(Jamf, or `profiles install -path <file>`). Staging the file alone does not
-activate it.
+**Managed (default):** `install.sh` places `opencode.json` and
+`databricks-auth.ts` into the per-OS managed config dir (`/etc/opencode` on Linux,
+`/Library/Application Support/opencode` on macOS), root-owned, with mode 644.
+`install.sh` detects managed mode from the `.mobileconfig` next to `opencode.json`.
+On macOS `install.sh` also stages the `.mobileconfig` into the managed dir. An MDM
+must INSTALL that profile to activate the macOS hard-lock at
+`/Library/Managed Preferences/ai.opencode.managed.plist` (Jamf, or
+`profiles install -path <file>`). Staging the file alone does not activate it. The
+`.mobileconfig` references the plugin by its absolute macOS path, so the plugin
+must exist at `/Library/Application Support/opencode/databricks-auth.ts`.
 
 **User (local, non-managed):** for a per-user install without root or MDM, run
-`make opencode-install-local`. It generates a user-mode `opencode.json` and
-installs it to `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json`. The
-placement script `agent_setups/deploy/install-opencode-local.sh` does the copy. It
-saves a timestamped backup of any existing config first. Run the script directly
-with `--dry-run` to preview the actions, `--target-dir <dir>` to write elsewhere,
-or `--no-backup` to overwrite in place. This mode has no enforcement. The managed
+`make opencode-install-local`. It generates a user-mode bundle and installs
+`opencode.json` and `databricks-auth.ts` to
+`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/`. The placement script
+`agent_setups/deploy/install-opencode-local.sh` does the copy. It saves a
+timestamped backup of any existing config first. Run the script directly with
+`--dry-run` to preview the actions, `--target-dir <dir>` to write elsewhere, or
+`--no-backup` to overwrite in place. This mode has no enforcement. The managed
 `install.sh` warns and skips a user-mode bundle, because it is not a root-managed
 system placement.
 
+**All three at once:** `make agents-install-local` runs the Claude Code, Codex,
+and opencode local installs together. Each install backs up its existing config
+file with a timestamp first, so it keeps a history. Each target also takes
+`PROFILE=` and `ARGS=`.
+
 **Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
 Each developer runs `databricks auth login --host <url> --profile <profile>` once,
-interactively. Browser OAuth (U2M) cannot be pushed. Because opencode has no auth
-helper, the launcher must also export a fresh token into `$DATABRICKS_BEARER`
-before it starts opencode.
+interactively. Browser OAuth (U2M) cannot be pushed. The plugin also runs this
+login itself when it finds no valid session, so a developer who skips the manual
+step gets a browser prompt at first launch.
 
 ## Adding an agent
 

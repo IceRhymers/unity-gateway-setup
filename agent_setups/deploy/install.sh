@@ -528,6 +528,18 @@ _install_opencode() {
     _action_copy  "${_oc_src}/opencode.json" "${_oc_dir}/opencode.json"
     _action_chmod 644 "${_oc_dir}/opencode.json"
 
+    # The auth plugin. opencode.json references it by a relative path, so it must
+    # sit beside opencode.json in the managed dir. The .mobileconfig references
+    # the same file by its absolute macOS path.
+    if [ -f "${_oc_src}/databricks-auth.ts" ]; then
+      _action_copy  "${_oc_src}/databricks-auth.ts" "${_oc_dir}/databricks-auth.ts"
+      _action_chmod 644 "${_oc_dir}/databricks-auth.ts"
+    else
+      _warn "opencode: databricks-auth.ts not found in '${_oc_src}'."
+      _warn "  The config references it, so opencode auth will fail without it."
+      _warn "  Re-generate with 'make agent-opencode'."
+    fi
+
     # macOS hard-lock profile. An MDM normally DELIVERS the profile to
     # /Library/Managed Preferences/ai.opencode.managed.plist (Jamf, or
     # `profiles install`). Here we stage it into the managed dir so a manual or
