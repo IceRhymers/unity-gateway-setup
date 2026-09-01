@@ -37,7 +37,8 @@ fi
 # ---------------------------------------------------------------------------
 _managed_src="${_work}/managed_src"
 mkdir -p "${_managed_src}"
-printf '{ "enabled_providers": ["databricks"] }\n' > "${_managed_src}/opencode.json"
+printf '{ "enabled_providers": ["databricks-oss"], "plugin": ["./databricks-auth.ts"] }\n' > "${_managed_src}/opencode.json"
+printf '// databricks-auth.ts stub\n' > "${_managed_src}/databricks-auth.ts"
 printf '<?xml version="1.0"?>\n<plist></plist>\n' > "${_managed_src}/ai.opencode.managed.mobileconfig"
 
 _stage_a="${_work}/stage_a"
@@ -62,7 +63,12 @@ if [ ! -f "${_oc_target_a}/opencode.json" ]; then
   printf 'FAIL: %s/A — opencode.json not installed to %s\n' "${T}" "${_oc_target_a}"
   exit 1
 fi
-printf '  ok A: managed mode -> opencode.json installed to %s\n' "${_oc_target_a}"
+# the auth plugin must sit beside opencode.json (config references it relatively)
+if [ ! -f "${_oc_target_a}/databricks-auth.ts" ]; then
+  printf 'FAIL: %s/A — databricks-auth.ts not installed beside opencode.json in %s\n' "${T}" "${_oc_target_a}"
+  exit 1
+fi
+printf '  ok A: managed mode -> opencode.json + databricks-auth.ts installed to %s\n' "${_oc_target_a}"
 
 # ---------------------------------------------------------------------------
 # Case A2: managed mode on macOS -> the .mobileconfig is also staged
@@ -92,7 +98,11 @@ if [ ! -f "${_oc_target_a2}/ai.opencode.managed.mobileconfig" ]; then
   printf 'FAIL: %s/A2 — .mobileconfig not staged to %s\n' "${T}" "${_oc_target_a2}"
   exit 1
 fi
-printf '  ok A2: macOS managed mode -> opencode.json + .mobileconfig staged\n'
+if [ ! -f "${_oc_target_a2}/databricks-auth.ts" ]; then
+  printf 'FAIL: %s/A2 — databricks-auth.ts not staged to %s\n' "${T}" "${_oc_target_a2}"
+  exit 1
+fi
+printf '  ok A2: macOS managed mode -> opencode.json + databricks-auth.ts + .mobileconfig staged\n'
 
 # ---------------------------------------------------------------------------
 # Case B: user-mode (only opencode.json at bundle root — no .mobileconfig)

@@ -151,26 +151,41 @@ if [ -f "${TARGET}" ] && [ "${NO_BACKUP}" = "0" ]; then
   fi
 fi
 
+# The auth plugin sits beside the source opencode.json. opencode.json references
+# it by a relative path, so it must land beside opencode.json in the target dir.
+_plugin_src="$(dirname "${SOURCE}")/databricks-auth.ts"
+_plugin_target="${TARGET_DIR}/databricks-auth.ts"
+
 if [ "${DRY_RUN}" = "1" ]; then
   _info "  [plan] mkdir -p \"${TARGET_DIR}\""
   _info "  [plan] copy   \"${SOURCE}\" -> \"${TARGET}\""
   _info "  [plan] chmod 644 \"${TARGET}\""
+  if [ -f "${_plugin_src}" ]; then
+    _info "  [plan] copy   \"${_plugin_src}\" -> \"${_plugin_target}\""
+    _info "  [plan] chmod 644 \"${_plugin_target}\""
+  fi
 else
   mkdir -p -- "${TARGET_DIR}" || _fatal 5 "mkdir failed: ${TARGET_DIR}"
   cp -- "${SOURCE}" "${TARGET}" || _fatal 5 "copy failed: ${SOURCE} -> ${TARGET}"
   chmod 644 "${TARGET}" || _fatal 5 "chmod 644 failed: ${TARGET}"
   _info "  installed opencode.json"
+  if [ -f "${_plugin_src}" ]; then
+    cp -- "${_plugin_src}" "${_plugin_target}" || _fatal 5 "copy failed: ${_plugin_src} -> ${_plugin_target}"
+    chmod 644 "${_plugin_target}" || _fatal 5 "chmod 644 failed: ${_plugin_target}"
+    _info "  installed databricks-auth.ts"
+  else
+    _warn "databricks-auth.ts not found beside the source; opencode auth will fail without it."
+    _warn "  Re-generate: make agent-opencode ARGS=--user-config"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
-# Auth reminder (opencode has no auth helper — the launcher exports the token)
+# Auth reminder (the plugin mints tokens; the developer logs in once)
 # ---------------------------------------------------------------------------
-printf '\nLocal install complete. opencode has no auth helper, so export a fresh\n'
-printf 'Databricks OAuth token before you start opencode:\n'
-printf '  export DATABRICKS_BEARER="$(databricks auth token --host <host> --profile <profile> \\\n'
-printf "    --force-refresh | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"access_token\"])')\"\n"
-printf 'A U2M token lives about one hour, so a long session needs a re-mint.\n'
-printf 'Authenticate once, interactively:\n'
+printf '\nLocal install complete. The databricks-auth.ts plugin mints a fresh\n'
+printf 'Databricks token on every request, so no environment variable is needed.\n'
+printf 'The Databricks CLI refreshes access tokens silently, so routine expiry\n'
+printf 'needs no login. Authenticate once (the plugin also auto-runs this if needed):\n'
 printf '  databricks auth login --host <host> --profile <profile>\n\n'
 
 exit 0

@@ -23,7 +23,9 @@ trap '_cleanup' EXIT INT TERM
 _work=$(mktemp -d)
 
 _src="${_work}/opencode.json"
-printf '{ "model": "databricks/x", "enabled_providers": ["databricks"] }\n' > "${_src}"
+printf '{ "model": "databricks-oss/x", "enabled_providers": ["databricks-oss"], "plugin": ["./databricks-auth.ts"] }\n' > "${_src}"
+# The auth plugin sits beside the source opencode.json; install must place it too.
+printf '// databricks-auth.ts stub\n' > "${_work}/databricks-auth.ts"
 
 # ---------------------------------------------------------------------------
 # E: --print-target (do this first; touches nothing)
@@ -40,7 +42,7 @@ printf '  ok E: --print-target -> %s\n' "${_got_target}"
 # C: --dry-run writes nothing
 # ---------------------------------------------------------------------------
 sh "${LOCAL_SH}" --source "${_src}" --target-dir "${_tdir}" --dry-run > "${_work}/out_c.txt" 2>&1
-if [ -e "${_tdir}/opencode.json" ]; then
+if [ -e "${_tdir}/opencode.json" ] || [ -e "${_tdir}/databricks-auth.ts" ]; then
   printf 'FAIL: %s/C — --dry-run wrote a file\n' "${T}"
   exit 1
 fi
@@ -58,7 +60,16 @@ if ! cmp -s "${_src}" "${_tdir}/opencode.json"; then
   printf 'FAIL: %s/A — installed content differs from source\n' "${T}"
   exit 1
 fi
-printf '  ok A: fresh install -> opencode.json placed, content matches\n'
+# the sibling auth plugin must be placed beside opencode.json
+if [ ! -f "${_tdir}/databricks-auth.ts" ]; then
+  printf 'FAIL: %s/A — databricks-auth.ts not installed to %s\n' "${T}" "${_tdir}"
+  exit 1
+fi
+if ! cmp -s "${_work}/databricks-auth.ts" "${_tdir}/databricks-auth.ts"; then
+  printf 'FAIL: %s/A — installed plugin content differs from source\n' "${T}"
+  exit 1
+fi
+printf '  ok A: fresh install -> opencode.json + databricks-auth.ts placed, content matches\n'
 
 # ---------------------------------------------------------------------------
 # B: existing target -> a backup is made and the new content wins
