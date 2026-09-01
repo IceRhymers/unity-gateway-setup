@@ -19,6 +19,8 @@ for _script in \
     "${TESTS_DIR}/test_07_idempotent_upgrade.sh" \
     "${TESTS_DIR}/test_08_codex_managed_user.sh" \
     "${TESTS_DIR}/test_09_agents_validation.sh" \
+    "${TESTS_DIR}/test_10_opencode_managed_user.sh" \
+    "${TESTS_DIR}/test_11_opencode_local_install.sh" \
     "${TESTS_DIR}/assert_matrix_agreement.sh"; do
   [ -f "${_script}" ] || { printf 'SKIP: %s (not found)\n' "${_script}"; continue; }
   _name="$(basename -- "${_script}")"

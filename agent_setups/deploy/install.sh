@@ -1,26 +1,28 @@
 #!/usr/bin/env sh
 # install.sh — single runtime placement authority for unity-gateway agent configs.
 #
-# Deploys generated Claude Code and/or Codex config bundles to system paths.
-# Run as root for production deployment, or with --target-root for unprivileged
-# staging and unit tests.
+# Deploys generated Claude Code, Codex, and/or opencode config bundles to system
+# paths. Run as root for production deployment, or with --target-root for
+# unprivileged staging and unit tests.
 #
 # Usage:
 #   install.sh [OPTIONS]
 #
 # Options:
 #   --dry-run               Print planned actions, touch nothing (exit 0)
-#   --agents <list>         Comma-separated: claude-code,codex  (default: both)
+#   --agents <list>         Comma-separated: claude-code,codex,opencode  (default: claude-code,codex)
 #   --profile <name>        Databricks profile (default: fevm-west; Phase-B hint only)
-#   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/
+#   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/ + <root>/opencode/
 #                           (default: .)
 #   --claude-source <dir>   Dir holding Claude files directly; overrides --source
 #                           (managed-settings.json, otel-headers-helper.sh, emit_hook_events.sh)
 #   --codex-source <dir>    Dir holding codex/ tree; overrides --source
 #                           (etc/managed_config.toml for managed mode)
+#   --opencode-source <dir> Dir holding opencode/ tree; overrides --source
+#                           (opencode.json + ai.opencode.managed.mobileconfig for managed mode)
 #   --target-root <prefix>  Install prefix for unprivileged staging (default: "")
 #   --os macos|linux        Force OS (default: autodetect via uname -s)
-#   --agent claude-code|codex  Pair with --print-target-dir
+#   --agent claude-code|codex|opencode  Pair with --print-target-dir
 #   --print-target-dir      Print resolved install dir for --os/--agent and exit 0
 #   -h, --help              Show this message
 #
@@ -43,6 +45,7 @@ PROFILE="fevm-west"
 SOURCE="."
 CLAUDE_SOURCE=""
 CODEX_SOURCE=""
+OPENCODE_SOURCE=""
 OS_OVERRIDE=""
 PRINT_AGENT=""
 PRINT_TARGET_DIR=0
@@ -72,20 +75,21 @@ _usage() {
 Usage: install.sh [OPTIONS]
 
 Single root-run placement authority for unity-gateway agent configs.
-Deploys Claude Code and Codex config bundles to system paths.
+Deploys Claude Code, Codex, and opencode config bundles to system paths.
 Run as root (production) or with --target-root (unprivileged staging).
 
 Options:
   --dry-run               Print planned actions, touch nothing (exit 0)
-  --agents <list>         Comma-separated agents: claude-code,codex (default: both)
+  --agents <list>         Comma-separated agents: claude-code,codex,opencode (default: claude-code,codex)
   --profile <name>        Databricks profile name (default: fevm-west; Phase-B hint only)
-  --source <root>         Tarball root: expects <root>/claude-code/<os>/ and <root>/codex/
+  --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/, <root>/opencode/
                           (default: .)
   --claude-source <dir>   Dir holding Claude files directly (overrides --source)
   --codex-source <dir>    Dir holding codex/ tree (overrides --source)
+  --opencode-source <dir> Dir holding opencode/ tree (overrides --source)
   --target-root <prefix>  Install prefix for unprivileged staging (default: "")
   --os macos|linux        Force OS (default: autodetect via uname -s)
-  --agent claude-code|codex
+  --agent claude-code|codex|opencode
                           Pair with --print-target-dir to select which agent
   --print-target-dir      Print resolved install dir for --os/--agent, then exit 0
   -h, --help              Show this message
@@ -112,6 +116,7 @@ while [ $# -gt 0 ]; do
     --source)            shift; SOURCE="${1:?--source requires a value}" ;;
     --claude-source)     shift; CLAUDE_SOURCE="${1:?--claude-source requires a value}" ;;
     --codex-source)      shift; CODEX_SOURCE="${1:?--codex-source requires a value}" ;;
+    --opencode-source)   shift; OPENCODE_SOURCE="${1:?--opencode-source requires a value}" ;;
     --target-root)       shift; TARGET_ROOT="${1:?--target-root requires a value}" ;;
     --os)                shift; OS_OVERRIDE="${1:?--os requires a value}" ;;
     --agent)             shift; PRINT_AGENT="${1:?--agent requires a value}" ;;
@@ -131,9 +136,9 @@ while [ -n "${_agents_rest}" ]; do
     *)   _agent_tok="${_agents_rest}";     _agents_rest="" ;;
   esac
   case "${_agent_tok}" in
-    claude-code|codex) ;;
+    claude-code|codex|opencode) ;;
     "") ;;
-    *) _fatal 1 "Unknown agent in --agents: '${_agent_tok}' (valid: claude-code, codex)." ;;
+    *) _fatal 1 "Unknown agent in --agents: '${_agent_tok}' (valid: claude-code, codex, opencode)." ;;
   esac
 done
 
@@ -158,9 +163,11 @@ esac
 # ---------------------------------------------------------------------------
 # Install path matrix
 # ---------------------------------------------------------------------------
-# macos claude: "/Library/Application Support/ClaudeCode"  (NOTE: space — quote always)
-# linux claude: "/etc/claude-code"
-# codex both:   "/etc/codex"
+# macos claude:    "/Library/Application Support/ClaudeCode"  (NOTE: space — quote always)
+# linux claude:    "/etc/claude-code"
+# codex both:      "/etc/codex"
+# macos opencode:  "/Library/Application Support/opencode"     (NOTE: space — quote always)
+# linux opencode:  "/etc/opencode"
 _raw_dir_for() {
   # Usage: _raw_dir_for <os> <agent>
   # Prints the raw install dir (no TARGET_ROOT prefix) without a trailing newline.
@@ -172,6 +179,11 @@ _raw_dir_for() {
       esac ;;
     codex)
       printf '/etc/codex' ;;
+    opencode)
+      case "$1" in
+        macos) printf '/Library/Application Support/opencode' ;;
+        linux) printf '/etc/opencode' ;;
+      esac ;;
     *)
       printf '[install] ERROR: Unknown agent for path matrix: %s\n' "$2" >&2
       exit 1 ;;
@@ -184,7 +196,7 @@ _raw_dir_for() {
 # ---------------------------------------------------------------------------
 if [ "${PRINT_TARGET_DIR}" = "1" ]; then
   if [ -z "${PRINT_AGENT}" ]; then
-    _fatal 1 "--print-target-dir requires --agent <claude-code|codex>"
+    _fatal 1 "--print-target-dir requires --agent <claude-code|codex|opencode>"
   fi
   _ptd_raw="$(_raw_dir_for "${OS}" "${PRINT_AGENT}")"
   printf '%s\n' "${TARGET_ROOT:-}${_ptd_raw}"
@@ -226,6 +238,12 @@ if [ -n "${CODEX_SOURCE}" ]; then
   _codex_src="${CODEX_SOURCE}"
 else
   _codex_src="${SOURCE}/codex"
+fi
+
+if [ -n "${OPENCODE_SOURCE}" ]; then
+  _opencode_src="${OPENCODE_SOURCE}"
+else
+  _opencode_src="${SOURCE}/opencode"
 fi
 
 # ---------------------------------------------------------------------------
@@ -486,6 +504,61 @@ _install_codex() {
 }
 
 # ---------------------------------------------------------------------------
+# opencode installation
+# ---------------------------------------------------------------------------
+_install_opencode() {
+  _oc_raw="$(_raw_dir_for "${OS}" "opencode")"
+  _oc_dir="${TARGET_ROOT:-}${_oc_raw}"
+  _oc_src="${_opencode_src}"
+
+  _info ""
+  _info "=== opencode (${OS}) ==="
+  _info "  source : ${_oc_src}"
+  _info "  target : ${_oc_dir}"
+
+  # Managed mode is signaled by the macOS Configuration Profile alongside opencode.json.
+  # Both modes emit opencode.json, so the .mobileconfig is the managed-vs-user signal.
+  if [ -f "${_oc_src}/ai.opencode.managed.mobileconfig" ]; then
+    # MANAGED mode: root-owned per-OS managed config dir. opencode reads managed
+    # config LAST and it overrides user config.
+    _info "  mode   : managed (enterprise)"
+
+    _action_mkdir "${_oc_dir}"
+
+    _action_copy  "${_oc_src}/opencode.json" "${_oc_dir}/opencode.json"
+    _action_chmod 644 "${_oc_dir}/opencode.json"
+
+    # macOS hard-lock profile. An MDM normally DELIVERS the profile to
+    # /Library/Managed Preferences/ai.opencode.managed.plist (Jamf, or
+    # `profiles install`). Here we stage it into the managed dir so a manual or
+    # staged install has it on disk. Non-macOS fleets rely on opencode.json only.
+    if [ "${OS}" = "macos" ]; then
+      _action_copy  "${_oc_src}/ai.opencode.managed.mobileconfig" "${_oc_dir}/ai.opencode.managed.mobileconfig"
+      _action_chmod 644 "${_oc_dir}/ai.opencode.managed.mobileconfig"
+      _warn "opencode: staged ai.opencode.managed.mobileconfig into \"${_oc_dir}\"."
+      _warn "  An MDM must INSTALL this profile to activate the macOS hard-lock at"
+      _warn "  /Library/Managed Preferences/ai.opencode.managed.plist (Jamf, or"
+      _warn "  'profiles install -path <file>'). Staging it here alone does not activate it."
+    fi
+
+    _action_chown "${_owner}" "${_oc_dir}"
+
+    _write_version_marker "opencode" "${_oc_dir}" "${_oc_src}"
+
+  elif [ -f "${_oc_src}/opencode.json" ]; then
+    # USER mode: per-user ~/.config/opencode — not a root-managed system placement
+    _warn "opencode source '${_oc_src}/opencode.json' is user-mode (no .mobileconfig)."
+    _warn "User-mode config is NOT a root-managed system placement; skipping."
+    _warn "Re-generate without --user-config for a managed system deploy."
+  else
+    _warn "No opencode config found at '${_oc_src}'."
+    _warn "  Checked: ${_oc_src}/ai.opencode.managed.mobileconfig  (managed mode signal)"
+    _warn "  Checked: ${_oc_src}/opencode.json                     (user mode — would be skipped anyway)"
+    _warn "Run 'make agent-opencode' to generate."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Post-install verification (never fatal)
 # ---------------------------------------------------------------------------
 _verify() {
@@ -544,6 +617,10 @@ fi
 
 if _contains "${AGENTS}" "codex"; then
   _install_codex
+fi
+
+if _contains "${AGENTS}" "opencode"; then
+  _install_opencode
 fi
 
 _verify
