@@ -6,9 +6,10 @@ services you provisioned. It then emits opinionated, deployable config for a
 coding agent.
 
 **Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
-deployment) **and Codex** (`config.toml` routed through the gateway's MLflow
-serving route, `mlflow/v1/responses`). The design is a registry. You can add
-Gemini CLI, OpenCode, and other agents as new generators.
+deployment), **Codex** (`config.toml` routed through the gateway's MLflow
+serving route, `mlflow/v1/responses`), **and opencode** (`opencode.json` routed
+through the same MLflow route, `mlflow/v1/chat/completions`). The design is a
+registry. You can add Gemini CLI and other agents as new generators.
 
 ## How it works
 
@@ -404,6 +405,128 @@ UC secret. No new Terraform — Claude Code shares the table/SP/secret/grants fr
 `[models]` (`ModelsRequirementsToml`) schema is not pinned for this Codex version. A
 wrong shape makes Codex fail to load config entirely, so validate any additions with
 `codex --strict-config doctor` before you enable them.
+
+## opencode (`opencode`)
+
+The generator emits an **enforced, root-owned managed bundle** by default (the
+opencode analogue of Claude Code's managed settings), or a single per-user
+`opencode.json` with `--user-config`. This is a config-only baseline. It emits no
+plugin, no client telemetry, and no hooks.
+
+opencode is built on the Vercel AI SDK. It reaches a custom provider through an
+npm package. The generator sets the provider's `npm` to
+`@ai-sdk/openai-compatible`, which POSTs to `<baseURL>/chat/completions`. The
+generator points `baseURL` at `<host>/ai-gateway/mlflow/v1`, so opencode lands on
+the gateway's `mlflow/v1/chat/completions` route. This mirrors Codex's
+`/ai-gateway/mlflow/v1` + `/responses`.
+
+opencode reads managed config LAST, and managed config overrides user config
+(verified in the opencode source, v1.18.25). Two managed layers exist:
+
+- The per-OS managed config dir: `/etc/opencode/opencode.json` (Linux),
+  `/Library/Application Support/opencode/opencode.json` (macOS),
+  `%ProgramData%\opencode\opencode.json` (Windows).
+- macOS Managed Preferences: an MDM `.mobileconfig` for the plist domain
+  `ai.opencode.managed`, delivered to
+  `/Library/Managed Preferences/ai.opencode.managed.plist`. This layer overrides
+  everything. It is the true hard-lock on macOS.
+
+The default (managed) mode writes the bundle to `opencode/`:
+
+| File | Role |
+|---|---|
+| `opencode.json` | Gateway routing + provider + default model + `enabled_providers`. The OS-independent managed config. Overrides user config. |
+| `ai.opencode.managed.mobileconfig` | A macOS Configuration Profile that carries the same config keys. The macOS hard-lock layer. |
+
+The `opencode.json` content is OS-independent, so one file serves every managed
+config dir. Non-macOS fleets rely on the managed dir file only. With
+`--user-config` the generator instead emits a single non-enforced `opencode.json`
+for `~/.config/opencode/opencode.json`. This is useful for laptops without root.
+
+### What the opencode config encodes
+
+- **Routing:** a `provider.<name>` block with `npm = @ai-sdk/openai-compatible`
+  and `options.baseURL = <host>/ai-gateway/mlflow/v1`. The SDK appends
+  `/chat/completions`, so opencode lands on `mlflow/v1/chat/completions` — the
+  MLflow serving route is the actual model-inference surface. `model` pins a
+  default endpoint (the `gpt` alias by default), prefixed with the provider id
+  (`databricks/<full-name>`).
+- **Auth:** `options.apiKey` reads a bearer token from an environment variable
+  through opencode's `{env:VAR}` substitution (default `{env:DATABRICKS_BEARER}`).
+  opencode has no auth command or helper, unlike Claude Code's `apiKeyHelper` or
+  Codex's inline auth command. So opencode cannot mint or refresh the token
+  itself. The launcher must export a fresh Databricks OAuth token into the
+  variable before it starts opencode. A U2M token lives about one hour, so a long
+  session needs a re-mint. Mint one with `databricks auth token --host <host>
+  --profile <profile> --force-refresh`.
+- **Model surface:** every endpoint that exposes the chosen `--api-type` becomes
+  a switchable model in the `provider.<name>.models` map, keyed by its full UC
+  name. The default `mlflow/v1/chat/completions` is the broad chat-completions
+  surface served by the MLflow route, so GPT, Gemini, Claude, and the open models
+  are all reachable. Narrow to `openai/v1/chat/completions` for OpenAI-native
+  only.
+- **Lockdown:** `enabled_providers = ["databricks"]` restricts opencode to the
+  gateway provider only.
+
+### Key options (`opencode`)
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--profile` | `fevm-west` | Databricks profile (host + auth). |
+| `--host` | (from profile) | Override the workspace URL. |
+| `--api-type` | `mlflow/v1/chat/completions` | Endpoint filter. Narrow to `openai/v1/chat/completions` for OpenAI-native chat completions only. |
+| `--skip-api-discovery` | off | Skip live `supported_api_types` lookup. Use `--fallback-schema` (offline). |
+| `--fallback-schema` | `openai` | Schema assumed chat-completions-capable when discovery is skipped. |
+| `--default-model` | `gpt` alias | Model opencode starts on (endpoint leaf or full UC name). |
+| `--provider-name` | `databricks` | Provider id: the `provider` key, the `model` prefix, and the `enabled_providers` entry. |
+| `--gateway-path` | `/ai-gateway/mlflow/v1` | Gateway route base appended to the host for `baseURL`. The SDK appends `/chat/completions`. |
+| `--api-key-env` | `DATABRICKS_BEARER` | Environment variable the config reads the bearer token from, via `{env:VAR}`. |
+| `--databricks-bin` | `databricks` | CLI path used for api-type discovery (absolute for minimal-PATH contexts). |
+| `--user-config` | off | Emit the single per-user `opencode.json` instead of the default managed bundle. |
+
+### Deploying the output
+
+**`agent_setups/deploy/install.sh` handles all file placement.** It is the single
+placement authority. Do not copy files by hand. Select opencode with
+`--agents opencode`. The deployment workflow is:
+
+```bash
+# 0. Generate the managed bundle (requires Terraform outputs + network access).
+make agent-opencode      # → opencode/opencode.json + opencode/ai.opencode.managed.mobileconfig
+
+# 1. Distribute and run on each machine (see MDM runbooks below).
+./install.sh --agents opencode
+```
+
+MDM runbooks for fleet deployment:
+
+- **macOS (Jamf):** `agent_setups/deploy/runbooks/jamf.md`
+- **Linux/servers (Ansible):** `agent_setups/deploy/runbooks/ansible.md`
+
+**Managed (default):** `install.sh` places `opencode.json` into the per-OS managed
+config dir (`/etc/opencode` on Linux, `/Library/Application Support/opencode` on
+macOS), root-owned, with mode 644. `install.sh` detects managed mode from the
+`.mobileconfig` next to `opencode.json`. On macOS `install.sh` also stages the
+`.mobileconfig` into the managed dir. An MDM must INSTALL that profile to activate
+the macOS hard-lock at `/Library/Managed Preferences/ai.opencode.managed.plist`
+(Jamf, or `profiles install -path <file>`). Staging the file alone does not
+activate it.
+
+**User (local, non-managed):** for a per-user install without root or MDM, run
+`make opencode-install-local`. It generates a user-mode `opencode.json` and
+installs it to `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json`. The
+placement script `agent_setups/deploy/install-opencode-local.sh` does the copy. It
+saves a timestamped backup of any existing config first. Run the script directly
+with `--dry-run` to preview the actions, `--target-dir <dir>` to write elsewhere,
+or `--no-backup` to overwrite in place. This mode has no enforcement. The managed
+`install.sh` warns and skips a user-mode bundle, because it is not a root-managed
+system placement.
+
+**Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
+Each developer runs `databricks auth login --host <url> --profile <profile>` once,
+interactively. Browser OAuth (U2M) cannot be pushed. Because opencode has no auth
+helper, the launcher must also export a fresh token into `$DATABRICKS_BEARER`
+before it starts opencode.
 
 ## Adding an agent
 

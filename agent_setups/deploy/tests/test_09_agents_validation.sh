@@ -10,7 +10,7 @@ set -eu
 # shellcheck disable=SC2164
 TESTS_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="${TESTS_DIR}/../install.sh"
-GENERATED_DIR="${TESTS_DIR}/../../generated"
+. "${TESTS_DIR}/_fixtures.sh"
 T="test_09_agents_validation"
 
 _work=""
@@ -18,7 +18,9 @@ _cleanup() { rm -rf "${_work}" 2>/dev/null || true; }
 trap '_cleanup' EXIT INT TERM
 _work=$(mktemp -d)
 
-_linux_src="${GENERATED_DIR}/claude-code/linux"
+# Synthetic claude-code source (validation rejects the bad --agents before any copy).
+_linux_src="${_work}/cc_src"
+mk_claude_bundle "${_linux_src}" off
 
 # ---------------------------------------------------------------------------
 # 9a: unknown agent token -> exit 1

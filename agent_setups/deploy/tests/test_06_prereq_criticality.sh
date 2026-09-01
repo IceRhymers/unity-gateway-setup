@@ -11,7 +11,7 @@ set -eu
 # shellcheck disable=SC2164
 TESTS_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="${TESTS_DIR}/../install.sh"
-GENERATED_DIR="${TESTS_DIR}/../../generated"
+. "${TESTS_DIR}/_fixtures.sh"
 T="test_06_prereq_criticality"
 
 _work=""
@@ -39,24 +39,20 @@ _mk_sys_bin() {
 # ---------------------------------------------------------------------------
 # Build source bundles
 # ---------------------------------------------------------------------------
-_linux_src="${GENERATED_DIR}/claude-code/linux"
-
 # Telemetry-OFF bundle: managed-settings.json only, no shell scripts
 _off_bundle="${_work}/off_bundle"
-mkdir -p "${_off_bundle}"
-cp "${_linux_src}/managed-settings.json" "${_off_bundle}/"
+mk_claude_bundle "${_off_bundle}" off
 # Confirm: no emit or otel scripts in telemetry-off bundle
-_emit_present=0
-[ -f "${_off_bundle}/emit_hook_events.sh" ] && _emit_present=1
-if [ "${_emit_present}" = "1" ]; then
+if [ -f "${_off_bundle}/emit_hook_events.sh" ]; then
   printf 'FAIL: %s — off_bundle setup error: emit_hook_events.sh unexpectedly present\n' "${T}"
   exit 1
 fi
 
-# Telemetry-ON bundle: use the real linux fixture (has all three files)
-_on_bundle="${_linux_src}"
+# Telemetry-ON bundle: managed-settings.json + otel-headers-helper.sh + emit_hook_events.sh
+_on_bundle="${_work}/on_bundle"
+mk_claude_bundle "${_on_bundle}" on
 if [ ! -f "${_on_bundle}/emit_hook_events.sh" ]; then
-  printf 'FAIL: %s — telemetry-ON fixture missing emit_hook_events.sh\n' "${T}"
+  printf 'FAIL: %s — on_bundle setup error: emit_hook_events.sh missing\n' "${T}"
   exit 1
 fi
 

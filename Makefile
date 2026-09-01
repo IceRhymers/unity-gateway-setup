@@ -94,6 +94,28 @@ agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, OUT_DIR=, 
 agent-codex-preview: ## Print the generated Codex config.toml without writing
 	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) --stdout $(ARGS)
 
+.PHONY: agent-opencode
+agent-opencode: ## Generate opencode.json from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) opencode --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+
+.PHONY: agent-opencode-preview
+agent-opencode-preview: ## Print the generated opencode.json without writing
+	$(PYTHON) $(AGENT_GEN) opencode --profile $(PROFILE) --stdout $(ARGS)
+
+.PHONY: agents
+agents: agent-claude-code agent-codex agent-opencode ## Generate every agent config (claude-code + codex + opencode)
+
+.PHONY: opencode-install-local
+opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/.config/opencode for a local, non-managed install (PROFILE=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) opencode --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	sh agent_setups/deploy/install-opencode-local.sh --source $(OUT_DIR)/opencode/opencode.json
+
+# ---- tests ----
+
+.PHONY: test
+test: ## Run the deploy install.sh test suite (self-contained: no infra, no network, no pre-generated bundles)
+	sh agent_setups/deploy/tests/run.sh
+
 # ---- deployment packaging ----
 
 .PHONY: deploy-package
