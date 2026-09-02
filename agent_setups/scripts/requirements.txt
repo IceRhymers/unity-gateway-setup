@@ -1,0 +1,11 @@
+# Python dependencies for the config generator (agent_setups/scripts).
+#
+# The Terraform-driven generators (claude-code, codex, opencode) use the standard
+# library only. The `mcp` subcommand needs tomlkit for the Codex config.toml merge:
+# it round-trips the TOML document, so a user's comments, formatting, and other
+# tables survive the in-place merge. tomlkit is loaded lazily, so the JSON harnesses
+# (Claude Code, opencode) and the other subcommands still run without it.
+#
+# Pinned to a minor range: a future tomlkit change to whitespace rendering could
+# break the byte-level idempotency guarantee, so we cap the upper bound.
+tomlkit>=0.13,<0.14

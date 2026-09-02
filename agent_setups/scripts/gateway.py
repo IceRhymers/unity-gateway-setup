@@ -11,6 +11,8 @@ import configparser
 import json
 import os
 import subprocess
+import urllib.parse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,6 +142,116 @@ def discover_api_types(
             "Check auth/profile, or pass --skip-api-discovery."
         )
     return results
+
+
+MCP_NAME_PREFIX = "mcp-services/"
+
+
+def filter_mcp_services(
+    services: list[dict],
+    catalogs: list[str],
+    schemas: list[str] | None = None,
+) -> list[str]:
+    """Filter a raw `mcp_services` list to the full names in scope.
+
+    The API returns each service `name` as `mcp-services/<catalog>.<schema>.<name>`.
+    The server-side catalog filter is ignored, so we filter client-side. We keep an
+    object when it is an MCP_SERVICE, its catalog is in `catalogs`, and (when
+    `schemas` is set) its schema is in `schemas`. We return the sorted three-level
+    full names (`<catalog>.<schema>.<name>`) with the `mcp-services/` prefix removed.
+    """
+    catalog_set = set(catalogs)
+    schema_set = set(schemas) if schemas else None
+    full_names: list[str] = []
+    for svc in services:
+        if svc.get("securable_type") != "MCP_SERVICE":
+            continue
+        raw = svc.get("name", "")
+        full_name = raw[len(MCP_NAME_PREFIX):] if raw.startswith(MCP_NAME_PREFIX) else raw
+        parts = full_name.split(".")
+        if len(parts) != 3:
+            continue
+        catalog, schema, _leaf = parts
+        if catalog not in catalog_set:
+            continue
+        if schema_set is not None and schema not in schema_set:
+            continue
+        full_names.append(full_name)
+    return sorted(set(full_names))
+
+
+# A command-runner maps an API endpoint path to the CLI's stdout. It is the seam
+# that makes pagination testable without a subprocess or the network.
+CommandRunner = Callable[[str], str]
+
+# Guard against a misbehaving server that returns a stable/looping page token.
+MCP_PAGE_LIMIT = 1000
+
+
+def _cli_command_runner(databricks_bin: str, profile: str) -> CommandRunner:
+    """Return a runner that fetches an endpoint via `databricks api get`."""
+
+    def run(endpoint: str) -> str:
+        try:
+            proc = subprocess.run(
+                [databricks_bin, "api", "get", endpoint, "--profile", profile],
+                check=True, capture_output=True, text=True,
+            )
+        except FileNotFoundError as exc:
+            raise SystemExit(f"{databricks_bin} not found on PATH; install the Databricks CLI") from exc
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(
+                f"`{databricks_bin} api get {endpoint}` failed (profile '{profile}').\n{exc.stderr.strip()}"
+            ) from exc
+        return proc.stdout
+
+    return run
+
+
+def discover_mcp_services(
+    catalogs: list[str],
+    profile: str,
+    schemas: list[str] | None = None,
+    databricks_bin: str = "databricks",
+    runner: CommandRunner | None = None,
+) -> list[str]:
+    """Discover the AI Gateway MCP services in scope, as three-level full names.
+
+    Lists `/api/2.1/unity-catalog/mcp-services` through the `runner` (by default the
+    databricks CLI), follows `next_page_token`, then filters client-side by catalog
+    and schema (the server-side catalog filter is ignored). The `runner` seam lets
+    tests inject canned pages. Raises SystemExit on a CLI or JSON parse failure, or if
+    the server keeps returning page tokens past a sane cap.
+    """
+    run = runner or _cli_command_runner(databricks_bin, profile)
+    services: list[dict] = []
+    page_token: str | None = None
+    seen_tokens: set[str] = set()
+    for _ in range(MCP_PAGE_LIMIT):
+        endpoint = "/api/2.1/unity-catalog/mcp-services"
+        if page_token:
+            endpoint = f"{endpoint}?page_token={urllib.parse.quote(page_token, safe='')}"
+        stdout = run(endpoint)
+        try:
+            page = json.loads(stdout) if stdout.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"Could not parse the mcp-services response as JSON ({exc})."
+            ) from exc
+        services.extend(page.get("mcp_services") or [])
+        page_token = page.get("next_page_token") or None
+        if not page_token:
+            break
+        if page_token in seen_tokens:
+            raise SystemExit(
+                "mcp-services pagination returned a repeated page token; aborting to avoid a loop."
+            )
+        seen_tokens.add(page_token)
+    else:
+        raise SystemExit(
+            f"mcp-services pagination exceeded {MCP_PAGE_LIMIT} pages; aborting to avoid a loop."
+        )
+    return filter_mcp_services(services, catalogs, schemas)
 
 
 def build_context(
