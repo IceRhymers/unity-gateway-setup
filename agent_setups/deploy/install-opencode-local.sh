@@ -151,8 +151,9 @@ if [ -f "${TARGET}" ] && [ "${NO_BACKUP}" = "0" ]; then
   fi
 fi
 
-# The auth plugin sits beside the source opencode.json. opencode.json references
-# it by a relative path, so it must land beside opencode.json in the target dir.
+# The auth plugin sits beside the source opencode.json. The user-mode config
+# references the plugin by an absolute path. This installer rewrites that path to
+# the resolved target dir after it places the plugin (see the rewrite step below).
 _plugin_src="$(dirname "${SOURCE}")/databricks-auth.ts"
 _plugin_target="${TARGET_DIR}/databricks-auth.ts"
 
@@ -177,6 +178,64 @@ else
     _warn "databricks-auth.ts not found beside the source; opencode auth will fail without it."
     _warn "  Re-generate: make agent-opencode ARGS=--user-config"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Rewrite the installed opencode.json plugin entry to the resolved target dir.
+#
+# The generator bakes a best-effort absolute default (its generation-time XDG
+# dir). This step rewrites that path to the REAL target dir, so it is correct
+# even when --target-dir or XDG_CONFIG_HOME differ from the generation default.
+# The rule: replace any plugin entry whose basename is databricks-auth.ts with
+# "${TARGET_DIR}/databricks-auth.ts". Leave unrelated entries untouched.
+#
+# This needs python3 (the generator already requires it). If python3 is not
+# present, print a warning and SKIP the rewrite. Do not fail the install: the
+# generator's baked default still works for the default dir.
+# ---------------------------------------------------------------------------
+_abs_plugin="${TARGET_DIR}/databricks-auth.ts"
+if command -v python3 >/dev/null 2>&1; then
+  # In dry-run nothing was copied, so read the source to plan the change. In a
+  # real run, read the installed target file.
+  if [ "${DRY_RUN}" = "1" ]; then
+    _rewrite_in="${SOURCE}"
+  else
+    _rewrite_in="${TARGET}"
+  fi
+  python3 - "${_rewrite_in}" "${TARGET}" "${_abs_plugin}" "${DRY_RUN}" <<'PY' || _warn "plugin rewrite step failed; edit the plugin entry in the target opencode.json by hand if needed."
+import json, os, sys
+
+in_path, out_path, abs_plugin, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+try:
+    with open(in_path) as f:
+        cfg = json.load(f)
+except (OSError, ValueError) as exc:
+    print("[opencode-local] WARN: could not read %s for plugin rewrite (%s); skipped" % (in_path, exc), file=sys.stderr)
+    sys.exit(0)
+old = cfg.get("plugin")
+if not isinstance(old, list):
+    print("[opencode-local] WARN: opencode.json has no plugin array; skipped rewrite", file=sys.stderr)
+    sys.exit(0)
+new = [
+    abs_plugin if isinstance(e, str) and os.path.basename(e) == "databricks-auth.ts" else e
+    for e in old
+]
+if new == old:
+    print("[opencode-local]   plugin path already resolved: %s" % (old,))
+    sys.exit(0)
+if dry:
+    print("[opencode-local]   [plan] rewrite plugin %s -> %s" % (old, new))
+    sys.exit(0)
+cfg["plugin"] = new
+with open(out_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print("[opencode-local]   rewrote plugin -> %s" % (new,))
+PY
+else
+  _warn "python3 not found; skipped the absolute-path rewrite of the plugin reference."
+  _warn "  The generated default works for the default dir. For a custom target dir,"
+  _warn "  edit the plugin entry in \"${TARGET}\" to \"${_abs_plugin}\"."
 fi
 
 # ---------------------------------------------------------------------------
