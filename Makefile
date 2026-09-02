@@ -115,8 +115,16 @@ agent-opencode: ## Generate opencode.json from TF outputs (PROFILE=, OUT_DIR=, A
 agent-opencode-preview: ## Print the generated opencode.json without writing
 	$(PYTHON) $(AGENT_GEN) opencode --profile $(PROFILE) --stdout $(ARGS)
 
+.PHONY: agent-dsh
+agent-dsh: ## Generate the DeepSeek Harness home patch + token plugin from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+
+.PHONY: agent-dsh-preview
+agent-dsh-preview: ## Print the generated DeepSeek Harness patch + plugin without writing
+	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --stdout $(ARGS)
+
 .PHONY: agents
-agents: agent-claude-code agent-codex agent-opencode ## Generate every agent config (claude-code + codex + opencode)
+agents: agent-claude-code agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + codex + opencode + dsh)
 
 .PHONY: opencode-install-local
 opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/.config/opencode for a local, non-managed install (PROFILE=, ARGS=)
@@ -133,9 +141,14 @@ codex-install-local: ## Generate config.toml (user mode) + install it to ~/.code
 	$(PYTHON) $(AGENT_GEN) codex --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-codex-local.sh --source $(OUT_DIR)/codex/config.toml
 
+.PHONY: dsh-install-local
+dsh-install-local: ## Generate the DeepSeek Harness patch + plugin + install them to $DSH_HOME (default ~/.dsh) for a local install (PROFILE=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	sh agent_setups/deploy/install-dsh-local.sh --source $(OUT_DIR)/dsh/cordis.patch.yml
+
 .PHONY: agents-install-local
-agents-install-local: claude-code-install-local codex-install-local opencode-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
-	@echo "[agents-install-local] Claude Code, Codex, and opencode installed locally."
+agents-install-local: claude-code-install-local codex-install-local opencode-install-local dsh-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
+	@echo "[agents-install-local] Claude Code, Codex, opencode, and DeepSeek Harness installed locally."
 
 # ---- mcp services ----
 # Discover AI Gateway MCP services and merge selected ones into the harness USER
@@ -210,14 +223,14 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 
 # ---- docker test harness ----
 # Isolated container to test the generated agent configs (Claude Code routing +
-# OTEL telemetry, and Codex gateway routing) without touching the host's own
-# settings. Typical flow:
+# OTEL telemetry, Codex gateway routing, and DeepSeek Harness gateway routing)
+# without touching the host's own settings. Typical flow:
 #   make tf-apply                 # provision the telemetry infra (once)
 #   make docker-build             # build the image (once)
-#   make docker-config-all        # generate both agent configs (or -config / -config-codex)
+#   make docker-config-all        # generate all agent configs (or -config / -config-codex / -config-dsh)
 #   make docker-up                # start the container
 #   make docker-login             # databricks auth login inside (browser on host)
-#   make docker-shell             # exec in; run `claude` or `codex` to generate traffic
+#   make docker-shell             # exec in; run `claude`, `codex`, or `dsh` to generate traffic
 
 DOCKER_IMAGE     ?= unity-gateway-test
 DOCKER_CONTAINER ?= unity-gateway-test
@@ -225,6 +238,9 @@ CONTAINER_CFG    ?= agent_setups/generated/container
 # Mount the Codex config only when it has been generated (docker-config-codex),
 # so the harness works with either or both agents present.
 CODEX_CFG_MOUNT  := $(if $(or $(wildcard $(CONTAINER_CFG)/codex/config.toml),$(wildcard $(CONTAINER_CFG)/codex/etc/managed_config.toml)),-v "$(abspath $(CONTAINER_CFG)/codex)":/opt/agent-config-codex:ro,)
+# Mount the DeepSeek Harness config only when it has been generated
+# (docker-config-dsh). The entrypoint stages it into the dev user's ~/.dsh.
+DSH_CFG_MOUNT    := $(if $(wildcard $(CONTAINER_CFG)/dsh/cordis.patch.yml),-v "$(abspath $(CONTAINER_CFG)/dsh)":/opt/agent-config-dsh:ro,)
 # Workspace host for PROFILE, read from ~/.databrickscfg at parse time.
 WS_HOST := $(shell $(PYTHON) -c "import configparser,pathlib; c=configparser.ConfigParser(); c.read(str(pathlib.Path.home()/'.databrickscfg')); print(c.get('$(PROFILE)','host',fallback=''))")
 # Forward a non-default npm registry (e.g. a corporate mirror) into the build so
@@ -260,8 +276,12 @@ docker-config: ## Generate Claude Code config bundles for the container; needs a
 docker-config-codex: ## Generate Codex config.toml for the container (routes through the gateway mlflow/v1 responses route)
 	$(MAKE) agent-codex PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
+.PHONY: docker-config-dsh
+docker-config-dsh: ## Generate the DeepSeek Harness home patch + token plugin for the container (routes the DeepSeek adapter through the gateway mlflow/v1 route)
+	$(MAKE) agent-dsh PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
+
 .PHONY: docker-config-all
-docker-config-all: docker-config docker-config-codex ## Generate both agent configs for the container
+docker-config-all: docker-config docker-config-codex docker-config-dsh ## Generate every agent config for the container (claude-code + codex + dsh)
 
 .PHONY: docker-reload
 docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload into the RUNNING container via install.sh (no restart)
@@ -277,6 +297,7 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 	@# AC7 hard gate: no independent copy/chmod matrix in this recipe.
 	@set -e; \
 	_agents=""; \
+	_staged=""; \
 	if [ -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" ]; then \
 	  docker exec -u root $(DOCKER_CONTAINER) mkdir -p /tmp/ugw-reload/claude; \
 	  docker cp "$(CONTAINER_CFG)/claude-code/linux/." $(DOCKER_CONTAINER):/tmp/ugw-reload/claude/; \
@@ -293,16 +314,28 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 	    --claude-source /tmp/ugw-reload/claude \
 	    --codex-source /tmp/ugw-reload/codex \
 	    --os linux; \
-	else \
+	  _staged="$${_agents}"; \
+	fi; \
+	if [ -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" ]; then \
+	  docker exec -u root $(DOCKER_CONTAINER) mkdir -p /tmp/ugw-reload/dsh; \
+	  docker cp "$(CONTAINER_CFG)/dsh/." $(DOCKER_CONTAINER):/tmp/ugw-reload/dsh/; \
+	  docker exec -u root $(DOCKER_CONTAINER) chown -R dev:dev /tmp/ugw-reload/dsh; \
+	  docker exec -u dev $(DOCKER_CONTAINER) /usr/local/lib/unity-gateway/install-dsh-local.sh \
+	    --source /tmp/ugw-reload/dsh/cordis.patch.yml \
+	    --target-dir /home/dev/.dsh \
+	    --no-backup; \
+	  _staged="$${_staged:+$${_staged},}dsh"; \
+	fi; \
+	if [ -z "$${_staged}" ]; then \
 	  echo "[docker-reload] No configs found in $(CONTAINER_CFG). Run make docker-config-all first."; \
 	fi
 	@docker exec -u root $(DOCKER_CONTAINER) rm -rf /tmp/ugw-reload
-	@echo "Harness reloaded (Claude Code + Codex). Restart your \`claude\` / \`codex\` session (exit and re-run) to pick it up."
+	@echo "Harness reloaded (Claude Code + Codex + DeepSeek Harness). Restart your \`claude\` / \`codex\` / \`dsh\` session (exit and re-run) to pick it up."
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
-	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" \
-		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config' and/or 'make docker-config-codex' first."; exit 1; }
+	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
+		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config', 'make docker-config-codex', and/or 'make docker-config-dsh' first."; exit 1; }
 	@test -n "$(WS_HOST)" \
 		|| { echo "Could not resolve host for profile '$(PROFILE)' in ~/.databrickscfg."; exit 1; }
 	docker run -d --name $(DOCKER_CONTAINER) \
@@ -312,11 +345,12 @@ docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes 
 		-e DATABRICKS_CONFIG_PROFILE="$(PROFILE)" \
 		-v "$(abspath $(CONTAINER_CFG)/claude-code/linux)":/opt/agent-config:ro \
 		$(CODEX_CFG_MOUNT) \
+		$(DSH_CFG_MOUNT) \
 		$(DOCKER_IMAGE)
 	@echo ""
 	@echo "Container '$(DOCKER_CONTAINER)' up (profile '$(PROFILE)' -> $(WS_HOST))."
 	@echo "  make docker-login   # authenticate (opens a URL to paste into your host browser)"
-	@echo "  make docker-shell   # then run: claude   (or: codex / ucode codex)"
+	@echo "  make docker-shell   # then run: claude   (or: codex / ucode codex / dsh web --no-open)"
 
 .PHONY: docker-login
 docker-login: ## Run `databricks auth login` inside the container (default profile)
@@ -341,4 +375,4 @@ docker-down: ## Stop and remove the container
 	docker rm -f $(DOCKER_CONTAINER)
 
 .PHONY: docker-test
-docker-test: docker-build docker-config-all docker-up ## Build + generate both agent configs + up in one step
+docker-test: docker-build docker-config-all docker-up ## Build + generate all agent configs (claude-code + codex + dsh) + up in one step
