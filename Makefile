@@ -15,6 +15,19 @@ AGENT_GEN ?= agent_setups/scripts/generate.py
 # container dir so the harness tests exactly what `agent-*` generates.
 OUT_DIR   ?= agent_setups/generated
 
+# ---- mcp installer selection (override on the command line) ----
+# CATALOG/SCHEMA scope the discovery (default: the system.ai managed MCP schema).
+# Selection: SELECT=names (comma list) or ALL=1. Selection is declarative: the chosen
+# set becomes the complete config for each harness. With neither SELECT nor ALL, the
+# `mcp*` targets run interactively (an arrow-key menu).
+CATALOG   ?= system
+SCHEMA    ?= ai
+SELECT    ?=
+ALL       ?=
+MCP_CAT_ARG := $(if $(CATALOG),--catalog $(CATALOG),)
+MCP_SCH_ARG := $(if $(SCHEMA),--schema $(SCHEMA),)
+MCP_SEL_ARG := $(if $(ALL),--all,$(if $(SELECT),--select $(SELECT),))
+
 # Computed once so the tarball filename and embedded VERSION file are identical
 # (no double git-describe drift). Format: <describe-or-sha>-<YYYYMMDD>.
 VERSION   := $(shell git describe --tags --always 2>/dev/null || printf 'nogit')-$(shell date +%Y%m%d)
@@ -124,11 +137,35 @@ codex-install-local: ## Generate config.toml (user mode) + install it to ~/.code
 agents-install-local: claude-code-install-local codex-install-local opencode-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
 	@echo "[agents-install-local] Claude Code, Codex, and opencode installed locally."
 
+# ---- mcp services ----
+# Discover AI Gateway MCP services and merge selected ones into the harness USER
+# configs. With neither ENABLE nor ALL set, the target runs interactively.
+
+.PHONY: mcp
+mcp: ## Select AI Gateway MCP services and install into ALL harnesses (PROFILE=, CATALOG=, SCHEMA=, SELECT=names, ALL=1, ARGS=)
+	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+
+.PHONY: mcp-claude-code
+mcp-claude-code: ## Select AI Gateway MCP services and install into Claude Code only (same vars as `mcp`)
+	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) --harness claude-code $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+
+.PHONY: mcp-codex
+mcp-codex: ## Select AI Gateway MCP services and install into Codex only (same vars as `mcp`)
+	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) --harness codex $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+
+.PHONY: mcp-opencode
+mcp-opencode: ## Select AI Gateway MCP services and install into opencode only (same vars as `mcp`)
+	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) --harness opencode $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+
 # ---- tests ----
 
 .PHONY: test
 test: ## Run the deploy install.sh test suite (self-contained: no infra, no network, no pre-generated bundles)
 	sh agent_setups/deploy/tests/run.sh
+
+.PHONY: test-mcp
+test-mcp: ## Run the Python unit tests for the `mcp` installer (needs: pip install -r agent_setups/scripts/requirements.txt)
+	$(PYTHON) -m unittest discover -s agent_setups/scripts/tests -v
 
 # ---- deployment packaging ----
 

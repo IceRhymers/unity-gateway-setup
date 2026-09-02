@@ -563,6 +563,38 @@ interactively. Browser OAuth (U2M) cannot be pushed. The plugin also runs this
 login itself when it finds no valid session, so a developer who skips the manual
 step gets a browser prompt at first launch.
 
+## MCP services (`mcp`)
+
+The `mcp` subcommand discovers the Databricks AI Gateway MCP services in a catalog
+or schema. It then merges stdio entries for the services you select into the USER
+config of each harness (Claude Code, Codex, and opencode). Each entry runs the
+`uvx uc-mcp-proxy` bridge. The merge is idempotent. It touches only keys with the
+`--server-prefix` (default `uc_`). A second run with the same selection makes no
+change.
+
+You choose which services to install. The selection is uniform across all three
+harnesses. The selection is declarative: the set you choose becomes the complete
+config. The merge removes any installed prefixed server that you do not select.
+
+- `--list` prints the discovered services and exits. It marks the services that are
+  already installed. It writes nothing.
+- `--all` selects every discovered service.
+- `--select NAMES` selects services by name (comma-separated or repeatable). A token
+  matches the leaf name (`slack`), the `<schema>.<name>`, the full
+  `<catalog>.<schema>.<name>`, or the server key (`uc_system_ai_slack`).
+- With none of these flags, the run is interactive. It prints a numbered menu and
+  prompts you for numbers or names. It pre-marks the installed services. An empty
+  answer confirms the marked set. The words `all` and `none` are also valid. You must
+  use `all` or `none` on its own.
+
+An interactive run needs a terminal. Without a terminal, pass `--select` or `--all`.
+Use `--dry-run` to preview the merge as a diff. Discovery of zero services refuses to
+change the configs, unless you pass `--allow-empty`.
+
+Makefile targets: `make mcp` installs into all three harnesses. `make mcp-claude-code`,
+`make mcp-codex`, and `make mcp-opencode` each scope the install to one harness. Set
+`CATALOG`, `SCHEMA`, and either `SELECT=names` or `ALL=1`.
+
 ## Adding an agent
 
 1. Create `agents/<agent>.py` with a class subclassing `AgentGenerator`

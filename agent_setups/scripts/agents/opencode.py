@@ -52,17 +52,22 @@ Default (managed) mode emits three files: the OS-independent `opencode.json` for
 the managed dir, the `databricks-auth.ts` plugin, and a macOS Configuration
 Profile (`.mobileconfig`) that carries the same config keys for the hard-lock
 layer. The managed dir file references the plugin by a relative path
-(`./databricks-auth.ts`) so it resolves next to the config on every OS; the
+(`./databricks-auth.ts`). This path resolves next to the config on every OS. The
 `.mobileconfig` references it by the absolute macOS managed path, because a plist
 spec resolves relative to `/Library/Managed Preferences`, not the managed dir.
 `--user-config` instead emits a per-user `opencode.json` (for
-`~/.config/opencode/opencode.json`) plus the plugin, with no enforcement.
+`~/.config/opencode/opencode.json`) plus the plugin, with no enforcement. The
+user-mode config references the plugin by an absolute path. opencode then loads
+the plugin regardless of the launch cwd. An absolute path also cannot be
+displaced when another global config file resolves a relative `plugin` entry.
+The local installer rewrites this absolute path to the resolved target dir.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import plistlib
 import sys
 import uuid
@@ -85,6 +90,20 @@ PLUGIN_REF_RELATIVE = f"./{PLUGIN_FILENAME}"
 # resolves relative to /Library/Managed Preferences, not the managed dir).
 MACOS_MANAGED_DIR = "/Library/Application Support/opencode"
 PLUGIN_REF_MACOS_ABS = f"{MACOS_MANAGED_DIR}/{PLUGIN_FILENAME}"
+
+
+def _user_plugin_ref() -> str:
+    """Return the user-mode plugin reference: an absolute path, XDG-aware.
+
+    User mode bakes an absolute path. opencode then loads the plugin regardless of
+    the launch cwd. An absolute path also cannot be displaced when another global
+    config file resolves a relative `plugin` entry. This is a best-effort default
+    for a manual copy. The local installer rewrites it to the true target dir.
+    This reads XDG_CONFIG_HOME at call time, so it honors the environment at
+    generation, not at import.
+    """
+    user_config_dir = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(user_config_dir, "opencode", PLUGIN_FILENAME)
 
 # Preferred default model, by endpoint leaf name (aliases first). First match
 # wins; falls back to the first discovered endpoint if none are present.
@@ -445,9 +464,12 @@ class OpenCodeGenerator(AgentGenerator):
         managed = not args.user_config
         auth_profile = args.auth_profile or args.profile
 
-        # The managed-dir and user-mode configs both reference the plugin by a
-        # relative path (resolves next to the config on every OS).
-        config = self._build_config(providers, default_ep, PLUGIN_REF_RELATIVE)
+        # Managed mode references the plugin by a relative path (resolves next to
+        # the config on every OS). User mode references it by an absolute path, so
+        # opencode loads it regardless of the launch cwd and no other global config
+        # file can displace it via relative resolution.
+        plugin_ref = PLUGIN_REF_RELATIVE if managed else _user_plugin_ref()
+        config = self._build_config(providers, default_ep, plugin_ref)
         config_json = json.dumps(config, indent=2) + "\n"
         plugin_source = _render_plugin(ctx.host, auth_profile)
 
