@@ -3,7 +3,7 @@
 #
 # Exercises install-opencode-local.sh (the non-managed, per-user complement to
 # install.sh):
-#   A: fresh target        -> opencode.json placed, content matches source
+#   A: fresh target        -> opencode.json placed, plugin path rewritten to absolute
 #   B: existing target     -> timestamped backup made, new content installed
 #   C: --dry-run           -> nothing written
 #   D: missing source      -> exit 4
@@ -26,6 +26,24 @@ _src="${_work}/opencode.json"
 printf '{ "model": "databricks-oss/x", "enabled_providers": ["databricks-oss"], "plugin": ["./databricks-auth.ts"] }\n' > "${_src}"
 # The auth plugin sits beside the source opencode.json; install must place it too.
 printf '// databricks-auth.ts stub\n' > "${_work}/databricks-auth.ts"
+
+# The installer rewrites the opencode.json `plugin` entry to an ABSOLUTE path in
+# the target dir (see install-opencode-local.sh). So the installed config is NOT
+# byte-identical to the source. This helper checks the intended post-install
+# state: the plugin entry resolves to <target>/databricks-auth.ts, and unrelated
+# fields (model) survive. It uses python3, which the installer's rewrite step
+# already requires.
+_assert_config() {
+  python3 - "$1/opencode.json" "$1/databricks-auth.ts" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+plugin = cfg.get("plugin")
+if not isinstance(plugin, list) or sys.argv[2] not in plugin:
+    print("plugin not rewritten to %s: %r" % (sys.argv[2], plugin)); sys.exit(1)
+if cfg.get("model") != "databricks-oss/x":
+    print("model not preserved: %r" % (cfg.get("model"),)); sys.exit(1)
+PY
+}
 
 # ---------------------------------------------------------------------------
 # E: --print-target (do this first; touches nothing)
@@ -56,8 +74,8 @@ if [ ! -f "${_tdir}/opencode.json" ]; then
   printf 'FAIL: %s/A — opencode.json not installed to %s\n' "${T}" "${_tdir}"
   exit 1
 fi
-if ! cmp -s "${_src}" "${_tdir}/opencode.json"; then
-  printf 'FAIL: %s/A — installed content differs from source\n' "${T}"
+if ! _assert_config "${_tdir}"; then
+  printf 'FAIL: %s/A — installed plugin not rewritten to absolute path, or model altered\n' "${T}"
   exit 1
 fi
 # the sibling auth plugin must be placed beside opencode.json
@@ -69,15 +87,15 @@ if ! cmp -s "${_work}/databricks-auth.ts" "${_tdir}/databricks-auth.ts"; then
   printf 'FAIL: %s/A — installed plugin content differs from source\n' "${T}"
   exit 1
 fi
-printf '  ok A: fresh install -> opencode.json + databricks-auth.ts placed, content matches\n'
+printf '  ok A: fresh install -> opencode.json (plugin rewritten to absolute) + databricks-auth.ts placed\n'
 
 # ---------------------------------------------------------------------------
 # B: existing target -> a backup is made and the new content wins
 # ---------------------------------------------------------------------------
 printf '{ "model": "databricks/OLD" }\n' > "${_tdir}/opencode.json"
 sh "${LOCAL_SH}" --source "${_src}" --target-dir "${_tdir}" > "${_work}/out_b.txt" 2>&1
-if ! cmp -s "${_src}" "${_tdir}/opencode.json"; then
-  printf 'FAIL: %s/B — target was not overwritten with source content\n' "${T}"
+if ! _assert_config "${_tdir}"; then
+  printf 'FAIL: %s/B — target not correctly overwritten (plugin path or model)\n' "${T}"
   exit 1
 fi
 # exactly one backup file, holding the OLD content
@@ -99,8 +117,8 @@ _tdir2="${_work}/cfg2"
 mkdir -p "${_tdir2}"
 printf '{ "model": "databricks/OLD2" }\n' > "${_tdir2}/opencode.json"
 sh "${LOCAL_SH}" --source "${_src}" --target-dir "${_tdir2}" --no-backup > "${_work}/out_f.txt" 2>&1
-if ! cmp -s "${_src}" "${_tdir2}/opencode.json"; then
-  printf 'FAIL: %s/F — target not overwritten with --no-backup\n' "${T}"
+if ! _assert_config "${_tdir2}"; then
+  printf 'FAIL: %s/F — target not correctly overwritten with --no-backup (plugin path or model)\n' "${T}"
   exit 1
 fi
 if find "${_tdir2}" -name 'opencode.json.bak-*' 2>/dev/null | grep -q .; then
