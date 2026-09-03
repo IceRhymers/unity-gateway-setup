@@ -181,5 +181,118 @@ class NoUnsupportedHardeningKnobsTest(unittest.TestCase):
             self.assertNotIn(forbidden, blob, f"{forbidden} unexpectedly emitted")
 
 
+class OtelDormantByDefaultTest(unittest.TestCase):
+    """The OTEL exporter row ships DORMANT (commented) because exporter.headers is a
+    static map read at boot — confirmed from deepseek-ai/deepseek-harness
+    packages/session/session-telemetry-otel/src/index.ts
+    (commit 7169660d330452d32c91bb2e4788a9b8c2f83a18).
+    Asserts: no active exporter row, no DATABRICKS_OTEL_TOKEN credential write,
+    dormant explanation text present."""
+
+    def test_no_active_session_telemetry_otel_row(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch = _patch(files)
+        # No active (non-disabled, non-commented) session-telemetry-otel entry
+        for item in patch:
+            if isinstance(item, dict) and item.get("id") == "session-telemetry-otel":
+                # If present at all it must be disabled
+                self.assertTrue(item.get("disabled"),
+                                "session-telemetry-otel row is active (not disabled)")
+
+    def test_no_databricks_otel_token_write_in_plugin(self):
+        files = DshGenerator().generate(_context(), _args())
+        plugin_src = files[f"dsh/{PLUGIN_FILENAME}"]
+        # The dormant branch must not write DATABRICKS_OTEL_TOKEN to credentials
+        self.assertNotIn("DATABRICKS_OTEL_TOKEN", plugin_src)
+
+    def test_dormant_explanation_text_in_patch(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        # The commented section must carry the static-headers caveat
+        self.assertIn("DORMANT", patch_raw)
+        self.assertIn("static", patch_raw)
+        self.assertIn("session-telemetry-otel", patch_raw)
+
+    def test_dormant_otel_row_in_patch_comment(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        # Commented example URL must contain the OTEL ingest path
+        self.assertIn("/api/2.0/otel/v1/logs", patch_raw)
+        # Commented Authorization header reference present
+        self.assertIn("DATABRICKS_OTEL_TOKEN", patch_raw)
+        # But all DATABRICKS_OTEL_TOKEN lines must be comments
+        for line in patch_raw.splitlines():
+            if "DATABRICKS_OTEL_TOKEN" in line:
+                stripped = line.strip()
+                self.assertTrue(
+                    stripped.startswith("#"),
+                    f"DATABRICKS_OTEL_TOKEN appears in non-comment line: {line!r}",
+                )
+
+
+class OtelActiveRowTest(unittest.TestCase):
+    """This test asserts the DORMANT branch (what actually ships): the commented
+    exporter stub is present with the correct shape. Named 'Active' per the plan
+    which says 'asserts whichever branch you actually ship'."""
+
+    def test_dormant_exporter_stub_shape(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        # Correct commented shape: mode FULL, exporter.url with OTEL path, headers
+        self.assertIn("mode: FULL", patch_raw)
+        self.assertIn("exporter:", patch_raw)
+        self.assertIn("headers:", patch_raw)
+        # All these must be in comment lines
+        for marker in ("mode: FULL", "exporter:", "headers:"):
+            found_commented = any(
+                line.strip().startswith("#") and marker in line
+                for line in patch_raw.splitlines()
+            )
+            self.assertTrue(found_commented,
+                            f"Expected {marker!r} only in comment lines in patch")
+
+    def test_citation_commit_in_patch(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        # Source citation present so the dormant state can be re-evaluated
+        self.assertIn("7169660d", patch_raw)
+
+
+class ContentOffByDefaultTest(unittest.TestCase):
+    """The default patch must not enable session telemetry (content stays local)."""
+
+    def test_telemetry_mode_not_full_by_default(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch = _patch(files)
+        # No active session-telemetry-otel entry with mode=FULL
+        for item in patch:
+            if isinstance(item, dict) and item.get("id") == "session-telemetry-otel":
+                config = item.get("config", {})
+                self.assertNotEqual(config.get("mode"), "FULL",
+                                    "session-telemetry-otel in FULL mode by default")
+
+
+class TelemetryOffTest(unittest.TestCase):
+    """The default output has no active telemetry (all dormant/commented).
+    Verifies the 'telemetry off by default' invariant for the DSH generator."""
+
+    def test_no_active_otel_in_default_output(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch = _patch(files)
+        # None of the active patch entries should configure OTEL exporting
+        for item in patch:
+            if not isinstance(item, dict) or item.get("disabled"):
+                continue
+            if item.get("id") == "session-telemetry-otel":
+                self.fail("Active session-telemetry-otel entry found in default output")
+
+    def test_no_databricks_otel_token_in_active_yaml(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch = _patch(files)
+        # The active (non-commented) YAML must not reference DATABRICKS_OTEL_TOKEN
+        for item in patch:
+            self.assertNotIn("DATABRICKS_OTEL_TOKEN", str(item))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -289,6 +289,24 @@ def _render_patch(host: str, profile: str, ref: str, model_full_name: str,
 - insert:
     - id: databricks-token-refresh
       name: '{PLUGIN_REF_RELATIVE}'
+
+# --- OTEL telemetry (DORMANT — static-headers caveat) -----------------------
+# @deepseek-ai/dsh-session-telemetry-otel's exporter.headers is a STATIC map
+# read at boot: OTLPLogExporter is constructed once from config.exporter in
+# packages/session/session-telemetry-otel/src/index.ts (deepseek-ai/deepseek-
+# harness commit 7169660d330452d32c91bb2e4788a9b8c2f83a18). Headers cannot
+# refresh per export; a token baked at boot will expire. Uncomment this row and
+# set DATABRICKS_OTEL_TOKEN only after verifying a header-refresh seam exists in
+# your installed dsh version. Content is off by default (mode FULL exports all
+# session records; switch to FEEDBACK_ONLY or DISABLED to reduce data shared).
+#
+# - id: session-telemetry-otel
+#   config:
+#     mode: FULL
+#     exporter:
+#       url: '{host}/api/2.0/otel/v1/logs'
+#       headers:
+#         Authorization: 'Bearer $DATABRICKS_OTEL_TOKEN'
 """
 
 
@@ -298,7 +316,7 @@ class _Selection:
     default: Endpoint
 
 
-# --- Cross-agent hardening knobs NOT wired here (custom CA + version floor) --
+# --- Cross-agent hardening knobs NOT wired here (custom CA, version floor, telemetry) --
 # Claude Code exposes --ssl-cert-file and --required-min-version. DSH has no config
 # equivalent this generator can emit, so neither flag is offered:
 #   * Custom CA / TLS: DSH REFUSES NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / SSL_CERT_DIR
@@ -308,6 +326,15 @@ class _Selection:
 #   * Version floor: DSH ships only a package.json Node engines floor (node >=22.19),
 #     an install-time runtime requirement, not a config-enforceable DSH self-version
 #     lock. Not faked.
+#   * OTEL (native, DORMANT): the session-telemetry-otel plugin ships as a COMMENTED
+#     row in cordis.patch.yml (see _render_patch). exporter.headers is a static map
+#     read at boot (deepseek-ai/deepseek-harness commit 7169660d); no per-export
+#     header-refresh seam is confirmed. Set DATABRICKS_OTEL_TOKEN in the environment
+#     and uncomment only after verifying the seam in your installed dsh version.
+#   * Session hook events: DSH has no hook-event observer seam comparable to Claude
+#     Code or Codex (no SubagentStart / PostToolUse / SessionEnd lifecycle events).
+#     Custom event reporting (usage/governance/adoption) is documented-only. Wire it
+#     when a Cordis lifecycle observer seam is confirmed upstream.
 class DshGenerator(AgentGenerator):
     name = "dsh"
     help = "Generate a DeepSeek Harness (dsh) home patch + token plugin for the Unity AI Gateway."
@@ -442,4 +469,21 @@ class DshGenerator(AgentGenerator):
             "",
             "Verify the composed tree before running:",
             "  dsh --profile headless --dump-config",
+            "",
+            "OTEL telemetry (DORMANT — static-headers caveat):",
+            "  cordis.patch.yml includes a COMMENTED session-telemetry-otel row.",
+            "  The exporter.headers field is a static map read at boot. A token baked",
+            "  at boot will expire. To activate after verifying a header-refresh seam",
+            "  exists in your dsh version:",
+            "    1. Set DATABRICKS_OTEL_TOKEN in the launch environment (mint a short-lived",
+            "       M2M bearer for the telemetry SP, down-scoped to the OTEL UC tables).",
+            "    2. Uncomment the session-telemetry-otel row in cordis.patch.yml.",
+            "    3. Set the exporter.url to <workspace>/api/2.0/otel/v1/logs.",
+            "  Verify rows: dsh --profile headless --dump-config | grep telemetry",
+            "",
+            "Hook events (documented-only):",
+            "  DSH has no SubagentStart / PostToolUse / SessionEnd lifecycle observer",
+            "  comparable to Claude Code or Codex. Custom event reporting (usage,",
+            "  governance, adoption) cannot be wired without a Cordis lifecycle seam.",
+            "  Wire it when a lifecycle observer seam is confirmed upstream.",
         ])

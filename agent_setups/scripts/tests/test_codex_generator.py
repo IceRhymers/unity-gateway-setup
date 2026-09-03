@@ -165,7 +165,8 @@ class NoUnsupportedHardeningKnobsTest(unittest.TestCase):
     """Codex has no config-emittable custom-CA or version-floor knob, so the
     generator must not leak one. NODE_EXTRA_CA_CERTS is Node-only (Codex is Rust),
     and no min-version key is confirmed for requirements.toml (a wrong shape breaks
-    config load). Guard against a future accidental fake."""
+    config load). Guard against a future accidental fake.
+    Also ensures OTEL_* env names do not appear as active keys in the output."""
 
     def test_no_ca_or_version_keys_in_managed_output(self):
         files = CodexGenerator().generate(_context(), _args())
@@ -180,6 +181,42 @@ class NoUnsupportedHardeningKnobsTest(unittest.TestCase):
         for forbidden in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
                           "minimum_version", "required_version", "requiredMinimumVersion"):
             self.assertNotIn(forbidden, blob, f"{forbidden} unexpectedly emitted")
+
+    def test_no_active_otel_env_names_in_managed_output(self):
+        """OTEL_* env names must not appear as active (uncommented) TOML keys."""
+        files = CodexGenerator().generate(_context(), _args())
+        toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
+        # All OTEL_* references must be commented lines (starting with '#')
+        for line in toml_blob.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue  # OK — in a comment
+            for otel_key in ("OTEL_EXPORTER_OTLP", "OTEL_LOGS_EXPORTER",
+                              "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER"):
+                self.assertNotIn(otel_key, stripped,
+                                 f"Active OTEL key {otel_key!r} in uncommented TOML line: {line!r}")
+
+
+class NoActiveOtelBlockTest(unittest.TestCase):
+    """The generated TOML files must not contain an active (parsed) [otel] table.
+    The stub ships as COMMENTS only; tomllib must not see an 'otel' key."""
+
+    def test_no_otel_table_in_managed_config(self):
+        files = CodexGenerator().generate(_context(), _args())
+        parsed = tomllib.loads(files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"])
+        self.assertNotIn("otel", parsed, "'otel' table found in parsed managed_config.toml")
+
+    def test_no_otel_table_in_requirements(self):
+        files = CodexGenerator().generate(_context(), _args())
+        parsed = tomllib.loads(files[f"codex/etc/{REQUIREMENTS_FILENAME}"])
+        self.assertNotIn("otel", parsed, "'otel' table found in parsed requirements.toml")
+
+    def test_otel_stub_comment_present_in_managed_config(self):
+        """The COMMENTED stub must be present so operators can activate it."""
+        files = CodexGenerator().generate(_context(), _args())
+        toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
+        self.assertIn("# [otel]", toml_blob)
+        self.assertIn("log_user_prompt", toml_blob)
 
 
 if __name__ == "__main__":
