@@ -25,7 +25,6 @@ for _script in \
     "${TESTS_DIR}/test_13_claude_code_local_install.sh" \
     "${TESTS_DIR}/test_14_backup_on_overwrite.sh" \
     "${TESTS_DIR}/test_15_uninstall.sh" \
-    "${TESTS_DIR}/test_16_smoke_gating.sh" \
     "${TESTS_DIR}/assert_matrix_agreement.sh"; do
   [ -f "${_script}" ] || { printf 'SKIP: %s (not found)\n' "${_script}"; continue; }
   _name="$(basename -- "${_script}")"

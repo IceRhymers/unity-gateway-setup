@@ -25,8 +25,6 @@
 #   --agent claude-code|codex|opencode  Pair with --print-target-dir
 #   --print-target-dir      Print resolved install dir for --os/--agent and exit 0
 #   --uninstall             Remove placed files and version marker; exit 0 on success
-#   --smoke-test            After install, probe the gateway endpoint (exit 7 on non-200)
-#   --host <url>            Gateway base URL for --smoke-test (default: derived from installed configs)
 #   -h, --help              Show this message
 #
 # Exit codes:
@@ -37,7 +35,6 @@
 #   4  required source file missing (managed-settings.json)
 #   5  copy or permission failure
 #   6  uninstall: file removal or marker removal failed (marker left intact for retry)
-#   7  smoke test: gateway returned a non-200 response
 set -eu
 
 # ---------------------------------------------------------------------------
@@ -55,10 +52,7 @@ OS_OVERRIDE=""
 PRINT_AGENT=""
 PRINT_TARGET_DIR=0
 UNINSTALL=0
-SMOKE_TEST=0
-HOST=""
 _BACKUP_SEQ=0
-_smoke_failed=0
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -104,11 +98,6 @@ Options:
   --print-target-dir      Print resolved install dir for --os/--agent, then exit 0
   --uninstall             Remove placed files and version marker (needs --os and --target-root;
                           does not require --source). Exit 6 on removal failure.
-  --smoke-test            After install, POST a ping to the gateway. Exit 7 on non-200.
-                          Requires curl and a valid token. Skipped if host or token
-                          cannot be resolved.
-  --host <url>            Gateway base URL for --smoke-test (default: derived from
-                          ANTHROPIC_BASE_URL in managed-settings.json or equivalent)
   -h, --help              Show this message
 
 Exit codes:
@@ -119,7 +108,6 @@ Exit codes:
   4  required source file missing (managed-settings.json)
   5  copy/permission failure
   6  uninstall: removal or marker failure (marker left intact for retry)
-  7  smoke test: gateway returned non-200
 EOF
   exit 1
 }
@@ -141,8 +129,6 @@ while [ $# -gt 0 ]; do
     --agent)             shift; PRINT_AGENT="${1:?--agent requires a value}" ;;
     --print-target-dir)  PRINT_TARGET_DIR=1 ;;
     --uninstall)         UNINSTALL=1 ;;
-    --smoke-test)        SMOKE_TEST=1 ;;
-    --host)              shift; HOST="${1:?--host requires a value}" ;;
     -h|--help)           _usage ;;
     *)                   _warn "Unknown option: $1"; _usage ;;
   esac
@@ -733,187 +719,7 @@ _install_opencode() {
 }
 
 # ---------------------------------------------------------------------------
-# Smoke-test helpers
-# ---------------------------------------------------------------------------
-
-# _scheme_authority <url>
-# Prints scheme + authority (https://host[:port]) with the path stripped.
-_scheme_authority() {
-  # shellcheck disable=SC3001
-  printf '%s' "$1" | sed -E 's#^(https?://[^/]+).*#\1#'
-}
-
-# _smoke_test
-# POSTs a minimal ping to the gateway. Sets _smoke_failed=1 on non-200.
-# Derives (host, model, route) together from a single installed config so the
-# probe URL, payload, and headers match the agent's actual gateway endpoint.
-# Precedence: claude-code -> codex -> opencode.
-#
-# Route selection:
-#   claude-code ANTHROPIC_BASE_URL -> /ai-gateway/anthropic/v1/messages
-#                                     + Anthropic Messages payload
-#                                     + anthropic-version: 2023-06-01 header
-#   codex base_url                 -> /ai-gateway/mlflow/v1/chat/completions
-#                                     + OpenAI-compatible payload
-#   opencode provider baseURL      -> route inferred from URL path family;
-#                                     model stripped of provider prefix
-#
-# Skips gracefully when host, model, curl, or token are unavailable.
-_smoke_test() {
-  # Derive (host, model, route_type) from a single installed config source.
-  # _st_route_type: "anthropic" or "mlflow".
-  # _st_fallback_host: set when a gateway URL is found but the model is absent,
-  #   so a URL-present / model-absent bundle still reaches the "no model" warning
-  #   rather than the "no host" warning.
-  _st_host="" _st_fallback_host="" _st_model="" _st_route_type="" _st_resolved=0
-
-  # claude-code: ANTHROPIC_BASE_URL on the anthropic gateway path
-  if _contains "${AGENTS}" "claude-code"; then
-    _st_cc_cfg="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")/managed-settings.json"
-    if [ -f "${_st_cc_cfg}" ]; then
-      _st_cc_url="$(grep 'ANTHROPIC_BASE_URL' "${_st_cc_cfg}" \
-        | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
-      _st_cc_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "${_st_cc_cfg}" | head -n1 || true)"
-      if [ -n "${_st_cc_url}" ]; then
-        [ -z "${_st_fallback_host}" ] && _st_fallback_host="$(_scheme_authority "${_st_cc_url}")"
-        if [ -n "${_st_cc_model}" ] && [ "${_st_resolved}" = "0" ]; then
-          _st_host="$(_scheme_authority "${_st_cc_url}")"
-          _st_model="${_st_cc_model}"
-          _st_route_type="anthropic"
-          _st_resolved=1
-        fi
-      fi
-    fi
-  fi
-
-  # codex: base_url on the mlflow gateway path
-  if [ "${_st_resolved}" = "0" ] && _contains "${AGENTS}" "codex"; then
-    _st_cx_cfg="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")/managed_config.toml"
-    if [ -f "${_st_cx_cfg}" ]; then
-      _st_cx_url="$(grep 'base_url' "${_st_cx_cfg}" \
-        | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
-      _st_cx_model="$(grep '^model' "${_st_cx_cfg}" | head -n1 \
-        | sed 's/model[[:space:]]*=[[:space:]]*"//;s/".*//' || true)"
-      if [ -n "${_st_cx_url}" ]; then
-        [ -z "${_st_fallback_host}" ] && _st_fallback_host="$(_scheme_authority "${_st_cx_url}")"
-        if [ -n "${_st_cx_model}" ]; then
-          _st_host="$(_scheme_authority "${_st_cx_url}")"
-          _st_model="${_st_cx_model}"
-          _st_route_type="mlflow"
-          _st_resolved=1
-        fi
-      fi
-    fi
-  fi
-
-  # opencode: provider baseURL on any gateway path; model stripped of provider prefix
-  if [ "${_st_resolved}" = "0" ] && _contains "${AGENTS}" "opencode"; then
-    _st_oc_cfg="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "opencode")/opencode.json"
-    if [ -f "${_st_oc_cfg}" ]; then
-      _st_oc_url="$(grep -o 'https://[^"]*' "${_st_oc_cfg}" \
-        | grep '/ai-gateway/' | head -n1 || true)"
-      # Strip provider prefix: "provider/model-id" -> "model-id"
-      _st_oc_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "${_st_oc_cfg}" | head -n1 | sed 's|.*/||' || true)"
-      if [ -n "${_st_oc_url}" ]; then
-        [ -z "${_st_fallback_host}" ] && _st_fallback_host="$(_scheme_authority "${_st_oc_url}")"
-        if [ -n "${_st_oc_model}" ]; then
-          _st_host="$(_scheme_authority "${_st_oc_url}")"
-          _st_model="${_st_oc_model}"
-          case "${_st_oc_url}" in
-            */ai-gateway/anthropic*) _st_route_type="anthropic" ;;
-            *)                       _st_route_type="mlflow" ;;
-          esac
-          _st_resolved=1
-        fi
-      fi
-    fi
-  fi
-
-  # Use fallback host when a gateway URL was found but no model resolved from config.
-  if [ -z "${_st_host}" ] && [ -n "${_st_fallback_host}" ]; then
-    _st_host="${_st_fallback_host}"
-  fi
-
-  # --host override: replace the derived host; keep the derived route.
-  if [ -n "${HOST}" ]; then
-    _st_host="$(_scheme_authority "${HOST}")"
-  fi
-
-  # Default route when model comes from SMOKE_MODEL with no config-resolved route.
-  if [ -z "${_st_route_type}" ]; then
-    _st_route_type="mlflow"
-  fi
-
-  if [ -z "${_st_host}" ]; then
-    _warn "smoke test: no host resolved; skipping (pass --host to set explicitly)."
-    return 0
-  fi
-
-  if ! command -v curl >/dev/null 2>&1; then
-    _warn "smoke test: curl not found; skipping."
-    return 0
-  fi
-
-  _st_token="${DATABRICKS_BEARER:-}"
-  if [ -z "${_st_token}" ]; then
-    _st_token="$(databricks auth token --host "${_st_host}" --profile "${PROFILE}" --output json 2>/dev/null \
-      | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])' 2>/dev/null \
-      || true)"
-  fi
-  if [ -z "${_st_token}" ]; then
-    _warn "smoke test: no token available; skipping."
-    return 0
-  fi
-
-  # SMOKE_MODEL env var overrides the derived model.
-  if [ -n "${SMOKE_MODEL:-}" ]; then
-    _st_model="${SMOKE_MODEL}"
-  fi
-
-  if [ -z "${_st_model}" ]; then
-    _warn "smoke test: no model resolved; skipping (set SMOKE_MODEL=<model-id> to probe)."
-    return 0
-  fi
-
-  # Build probe URL, payload, and headers from route type.
-  # Pass the bearer token via curl --config - (stdin) so it never appears in
-  # process argv, which would be visible to other processes on the same machine.
-  if [ "${_st_route_type}" = "anthropic" ]; then
-    _st_url="${_st_host}/ai-gateway/anthropic/v1/messages"
-    _st_body="{\"model\":\"${_st_model}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
-    _st_code="$(printf 'header = "Authorization: Bearer %s"\n' "${_st_token}" \
-      | curl -sS -o /dev/null -w '%{http_code}' \
-        --config - \
-        -X POST "${_st_url}" \
-        -H "Content-Type: application/json" \
-        -H "anthropic-version: 2023-06-01" \
-        -d "${_st_body}" \
-      || printf '000')"
-  else
-    _st_url="${_st_host}/ai-gateway/mlflow/v1/chat/completions"
-    _st_body="{\"model\":\"${_st_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}"
-    _st_code="$(printf 'header = "Authorization: Bearer %s"\n' "${_st_token}" \
-      | curl -sS -o /dev/null -w '%{http_code}' \
-        --config - \
-        -X POST "${_st_url}" \
-        -H "Content-Type: application/json" \
-        -d "${_st_body}" \
-      || printf '000')"
-  fi
-
-  if [ "${_st_code}" = "200" ]; then
-    _info "  smoke test: OK (${_st_url} -> HTTP ${_st_code})"
-  else
-    _warn "smoke test: non-200 response from ${_st_url} (HTTP ${_st_code})"
-    _smoke_failed=1
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# Post-install verification (never fatal on its own; smoke test may set
-# _smoke_failed=1, which is checked in main after _verify returns)
+# Post-install verification (never fatal)
 # ---------------------------------------------------------------------------
 _verify() {
   _info ""
@@ -936,12 +742,6 @@ _verify() {
 
   if _contains "${AGENTS}" "claude-code"; then
     _info "  Claude Code: run '/status' in-session to verify managed settings are active."
-  fi
-
-  if [ "${SMOKE_TEST}" = "1" ]; then
-    _smoke_test
-  else
-    _info "  smoke test: not run (pass --smoke-test to probe the gateway)."
   fi
 }
 
@@ -1000,9 +800,5 @@ fi
 _verify
 
 _phase_b_handoff
-
-if [ "${_smoke_failed}" = "1" ]; then
-  _fatal 7 "Gateway smoke test failed (non-200 response). Check gateway connectivity and credentials."
-fi
 
 exit 0

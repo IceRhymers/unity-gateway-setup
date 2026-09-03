@@ -66,7 +66,6 @@ point (or a Jamf Pro package).
 | 4 | Required source file missing (`managed-settings.json`) |
 | 5 | Copy or permission failure |
 | 6 | Uninstall failure. A file or the marker could not be removed. The marker is left intact for retry. |
-| 7 | Smoke test failure. The gateway returned a non-200 response. Only possible when `--smoke-test` is passed. |
 
 ---
 

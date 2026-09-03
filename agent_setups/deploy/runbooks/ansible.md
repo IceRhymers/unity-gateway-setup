@@ -95,7 +95,7 @@ S3, artifact store). Adapt `local_tarball_path` and the copy task accordingly.
         fail_msg: >
           install.sh exited {{ install_result.rc }} on {{ inventory_hostname }}.
           Exit codes: 2=not root, 3=missing prereq, 4=missing source file,
-          5=copy/perm failure, 6=uninstall removal failure, 7=smoke test non-200.
+          5=copy/perm failure, 6=uninstall removal failure.
           Stdout: {{ install_result.stdout }}
           Stderr: {{ install_result.stderr }}
 
@@ -128,7 +128,6 @@ S3, artifact store). Adapt `local_tarball_path` and the copy task accordingly.
 | 4 | Required source file missing (`managed-settings.json`) |
 | 5 | Copy or permission failure |
 | 6 | Uninstall failure. A file or the marker could not be removed. The marker is left intact for retry. |
-| 7 | Smoke test failure. The gateway returned a non-200 response. Only possible when `--smoke-test` is passed. |
 
 ---
 
@@ -144,9 +143,6 @@ S3, artifact store). Adapt `local_tarball_path` and the copy task accordingly.
   It needs `--os` and `--target-root` only. It does not need `--source`.
   Files not listed in the marker (user files, `.bak-*` backups) are not removed.
   Exit 6 means a file could not be removed; the marker is left intact for retry.
-- **`--smoke-test`:** pass `--smoke-test` to POST a ping to the gateway after install.
-  The installer exits 7 when the gateway returns a non-200 response.
-  Omit this flag in Ansible plays; use a dedicated health-check task instead.
 - **`--target-root`:** do not pass this flag here. It is for unprivileged staging
   and unit tests only. A fleet play should use real system paths.
 - **Version variable:** set `unity_gateway_version` in your inventory or as an
