@@ -463,9 +463,21 @@ _write_version_marker() {
 
   # Determine log message (installed / upgraded X->Y / unchanged X)
   _wvm_prev=""
+  _wvm_prev_files=""
   if [ -f "${_wvm_marker}" ]; then
     _wvm_prev="$(grep '^version=' "${_wvm_marker}" 2>/dev/null | cut -d= -f2 || true)"
+    _wvm_prev_files="$(grep '^files=' "${_wvm_marker}" 2>/dev/null | cut -d= -f2- || true)"
   fi
+
+  # Union previously-recorded files with the current set so --uninstall never
+  # orphans files dropped from this bundle (e.g. emit_hook_events.sh on a
+  # telemetry-off re-install over a telemetry-on one).
+  for _wvm_pf in ${_wvm_prev_files}; do
+    case " ${_wvm_files} " in
+      *" ${_wvm_pf} "*) ;; # already present
+      *) _wvm_files="${_wvm_files:+${_wvm_files} }${_wvm_pf}" ;;
+    esac
+  done
 
   _wvm_now="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u)"
 
@@ -733,7 +745,10 @@ _scheme_authority() {
 
 # _derive_host
 # Derives the gateway base URL from installed agent configs.
-# Precedence: claude-code ANTHROPIC_BASE_URL > codex base_url > opencode mlflow baseURL.
+# Precedence: claude-code ANTHROPIC_BASE_URL > codex base_url > opencode baseURL.
+# Only URLs containing /ai-gateway/ are accepted. Non-gateway URLs ($schema,
+# opencode.ai, anthropic.com docs) are skipped. Returns empty string if no
+# gateway URL is found; the caller must skip the smoke test gracefully.
 _derive_host() {
   _dh_result=""
 
@@ -741,7 +756,7 @@ _derive_host() {
     _dh_cc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")"
     _dh_cc_file="${_dh_cc_dir}/managed-settings.json"
     if [ -f "${_dh_cc_file}" ]; then
-      _dh_result="$(grep 'ANTHROPIC_BASE_URL' "${_dh_cc_file}" | grep -o 'https://[^"]*' | head -n1 || true)"
+      _dh_result="$(grep 'ANTHROPIC_BASE_URL' "${_dh_cc_file}" | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
     fi
   fi
 
@@ -749,7 +764,7 @@ _derive_host() {
     _dh_cx_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")"
     _dh_cx_file="${_dh_cx_dir}/managed_config.toml"
     if [ -f "${_dh_cx_file}" ]; then
-      _dh_result="$(grep 'base_url' "${_dh_cx_file}" | grep -o 'https://[^"]*' | head -n1 || true)"
+      _dh_result="$(grep 'base_url' "${_dh_cx_file}" | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
     fi
   fi
 
@@ -757,11 +772,37 @@ _derive_host() {
     _dh_oc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "opencode")"
     _dh_oc_file="${_dh_oc_dir}/opencode.json"
     if [ -f "${_dh_oc_file}" ]; then
-      _dh_result="$(grep -o 'https://[^"]*' "${_dh_oc_file}" | head -n1 || true)"
+      _dh_result="$(grep -o 'https://[^"]*' "${_dh_oc_file}" | grep '/ai-gateway/' | head -n1 || true)"
     fi
   fi
 
   printf '%s' "${_dh_result}"
+}
+
+# _derive_model
+# Derives a real deployed model ID from installed agent configs.
+# Precedence: codex managed_config.toml model= > claude managed-settings.json "model" field.
+# Returns empty string if no model can be derived; the caller must skip the probe.
+_derive_model() {
+  _dm_result=""
+
+  if _contains "${AGENTS}" "codex"; then
+    _dm_cx_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")"
+    _dm_cx_file="${_dm_cx_dir}/managed_config.toml"
+    if [ -f "${_dm_cx_file}" ]; then
+      _dm_result="$(grep '^model' "${_dm_cx_file}" | head -n1 | sed 's/model[[:space:]]*=[[:space:]]*"//;s/".*//' || true)"
+    fi
+  fi
+
+  if [ -z "${_dm_result}" ] && _contains "${AGENTS}" "claude-code"; then
+    _dm_cc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")"
+    _dm_cc_file="${_dm_cc_dir}/managed-settings.json"
+    if [ -f "${_dm_cc_file}" ]; then
+      _dm_result="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${_dm_cc_file}" | head -n1 || true)"
+    fi
+  fi
+
+  printf '%s' "${_dm_result}"
 }
 
 # _smoke_test
@@ -791,13 +832,24 @@ _smoke_test() {
     return 0
   fi
 
-  _st_model="${SMOKE_MODEL:-databricks-claude-sonnet-4}"
+  _st_model="${SMOKE_MODEL:-}"
+  if [ -z "${_st_model}" ]; then
+    _st_model="$(_derive_model)"
+  fi
+  if [ -z "${_st_model}" ]; then
+    _warn "smoke test: no model resolved; skipping (set SMOKE_MODEL=<model-id> to probe)."
+    return 0
+  fi
+
   _st_url="${_st_host}/ai-gateway/mlflow/v1/chat/completions"
-  _st_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-    -X POST "${_st_url}" \
-    -H "Authorization: Bearer ${_st_token}" \
-    -H "Content-Type: application/json" \
-    -d "{\"model\":\"${_st_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+  # Pass the bearer token via curl --config - (stdin) so it never appears in
+  # process argv, which would be visible to other processes on the same machine.
+  _st_code="$(printf 'header = "Authorization: Bearer %s"\n' "${_st_token}" \
+    | curl -sS -o /dev/null -w '%{http_code}' \
+      --config - \
+      -X POST "${_st_url}" \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"${_st_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
     || printf '000')"
 
   if [ "${_st_code}" = "200" ]; then

@@ -8,6 +8,10 @@
 #     smoke URL uses scheme+authority only; no repeated path segment.
 # (4) curl stub returns 500 -> exit 7; returns 200 -> exit 0.
 # (5) --smoke-test --dry-run -> exit 0, curl not called.
+# (6) opencode-only bundle: $schema URL (opencode.ai) first in opencode.json ->
+#     smoke uses gateway host, never opencode.ai.
+# (7) No derivable model (claude bundle without "model" field, no codex) ->
+#     smoke test SKIPS with "no model" message; curl not called.
 set -eu
 
 # shellcheck disable=SC2164
@@ -257,5 +261,124 @@ if [ -f "${_curl_sentinel}" ]; then
   exit 1
 fi
 printf '  ok (5): --smoke-test --dry-run exits 0 and never calls curl\n'
+
+# ---------------------------------------------------------------------------
+# (6) opencode-only: $schema URL (opencode.ai) first in opencode.json ->
+#     smoke must use the /ai-gateway/ URL, not opencode.ai
+# ---------------------------------------------------------------------------
+_staging6="${_work}/staging6"
+mkdir -p "${_staging6}"
+_oc_src6="${_work}/oc_src6"
+mkdir -p "${_oc_src6}"
+_test_gw6="https://test-gw.example.com"
+
+# opencode.json with opencode.ai $schema first, then a provider with
+# the real gateway baseURL containing /ai-gateway/.
+cat > "${_oc_src6}/opencode.json" <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "databricks-oss": {
+      "options": { "baseURL": "${_test_gw6}/ai-gateway/mlflow/v1" }
+    }
+  }
+}
+EOF
+printf '<?xml version="1.0"?><plist></plist>\n' > "${_oc_src6}/ai.opencode.managed.mobileconfig"
+printf '// auth stub\n' > "${_oc_src6}/databricks-auth.ts"
+
+# curl stub that records all argv so we can inspect the URL.
+_curl_argv_6="${_work}/curl_argv_6"
+cat > "${_stub_bin}/curl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >> ARGV_FILE_6
+touch SENTINEL_6
+printf '200'
+exit 0
+STUB
+# shellcheck disable=SC2016
+sed -i.bak "s|ARGV_FILE_6|${_curl_argv_6}|g; s|SENTINEL_6|${_curl_sentinel}|g" "${_stub_bin}/curl"
+rm -f "${_stub_bin}/curl.bak"
+chmod +x "${_stub_bin}/curl"
+rm -f "${_curl_sentinel}" "${_curl_argv_6}"
+
+# Restore databricks stub (ensures token resolution works via DATABRICKS_BEARER).
+printf '#!/bin/sh\nexit 0\n' > "${_stub_bin}/databricks"
+chmod +x "${_stub_bin}/databricks"
+
+_exit=0
+DATABRICKS_BEARER="test-token" SMOKE_MODEL="test-model" PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents opencode \
+  --opencode-source "${_oc_src6}" \
+  --target-root "${_staging6}" \
+  --smoke-test \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(6) — expected exit 0, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+
+# curl must have been called (smoke was not skipped).
+if [ ! -f "${_curl_sentinel}" ]; then
+  printf 'FAIL: %s/(6) — curl was not called (smoke was unexpectedly skipped)\n' "${T}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+
+# The URL passed to curl must use the gateway host, not opencode.ai.
+_expected_url6="${_test_gw6}/ai-gateway/mlflow/v1/chat/completions"
+if ! grep -q "${_expected_url6}" "${_curl_argv_6}" 2>/dev/null; then
+  printf 'FAIL: %s/(6) — expected gateway URL "%s" in curl argv\n' "${T}" "${_expected_url6}"
+  printf '  curl argv was:\n'; cat "${_curl_argv_6}" 2>/dev/null || printf '  (empty)\n'
+  exit 1
+fi
+if grep -q 'opencode\.ai' "${_curl_argv_6}" 2>/dev/null; then
+  printf 'FAIL: %s/(6) — opencode.ai appeared in curl argv (must be excluded)\n' "${T}"
+  cat "${_curl_argv_6}"
+  exit 1
+fi
+# shellcheck disable=SC2016  # $schema is literal text, not a variable
+printf '  ok (6): opencode-only with $schema first -> smoke uses gateway host, not opencode.ai\n'
+
+# ---------------------------------------------------------------------------
+# (7) No derivable model: claude bundle without "model" field, no codex ->
+#     smoke test SKIPS with "no model" message; curl not called
+# ---------------------------------------------------------------------------
+_staging7="${_work}/staging7"
+mkdir -p "${_staging7}"
+_cc_src7="${_work}/cc_src7"
+mkdir -p "${_cc_src7}"
+# managed-settings.json with a gateway URL but no "model" field.
+printf '{ "env": { "ANTHROPIC_BASE_URL": "https://test-ws.example.com/ai-gateway/anthropic" } }\n' \
+  > "${_cc_src7}/managed-settings.json"
+
+_write_curl_stub 200
+rm -f "${_curl_sentinel}"
+
+_exit=0
+DATABRICKS_BEARER="test-token" PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents claude-code \
+  --claude-source "${_cc_src7}" \
+  --target-root "${_staging7}" \
+  --smoke-test \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(7) — expected exit 0 on no-model skip, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+if [ -f "${_curl_sentinel}" ]; then
+  printf 'FAIL: %s/(7) — curl was called when model was not derivable\n' "${T}"
+  exit 1
+fi
+if ! grep -q 'no model' "${_work}/err.txt"; then
+  printf 'FAIL: %s/(7) — expected "no model" skip message on stderr\n' "${T}"
+  printf '  stderr:\n'; cat "${_work}/err.txt"
+  exit 1
+fi
+printf '  ok (7): no derivable model -> smoke test skips with "no model" message\n'
 
 printf 'PASS: %s\n' "${T}"

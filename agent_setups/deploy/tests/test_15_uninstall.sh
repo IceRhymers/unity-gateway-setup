@@ -11,6 +11,9 @@
 #     optional files too.
 # (6) fresh empty staging dir --uninstall -> warn exit 0.
 # (7) --uninstall --dry-run -> [plan] rm lines, no files removed.
+# (8) upgrade orphan fix: install telemetry-on, re-install telemetry-off, then
+#     --uninstall -> emit_hook_events.sh is unioned into marker and removed
+#     (not orphaned); dir ends empty.
 set -eu
 
 # shellcheck disable=SC2164
@@ -276,5 +279,87 @@ if [ ! -f "${_target7}/.unity-gateway-version" ]; then
   exit 1
 fi
 printf '  ok (7): --uninstall --dry-run prints [plan] rm; removes nothing\n'
+
+# ---------------------------------------------------------------------------
+# (8) Upgrade orphan fix: install telemetry-ON, re-install telemetry-OFF,
+#     --uninstall -> emit_hook_events.sh (and otel-headers-helper.sh) are
+#     unioned into marker and removed; dir ends empty.
+# ---------------------------------------------------------------------------
+_staging8="${_work}/staging8"
+mkdir -p "${_staging8}"
+_target8="${_staging8}/etc/claude-code"
+
+_cc_src8on="${_work}/cc_src8on"
+mk_claude_bundle "${_cc_src8on}" on
+
+_exit=0
+PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents claude-code \
+  --claude-source "${_cc_src8on}" \
+  --target-root "${_staging8}" \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(8) install-on — expected exit 0, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+
+# Re-install telemetry-OFF: source has only managed-settings.json, no optional files.
+_cc_src8off="${_work}/cc_src8off"
+mk_claude_bundle "${_cc_src8off}" off
+
+_exit=0
+PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents claude-code \
+  --claude-source "${_cc_src8off}" \
+  --target-root "${_staging8}" \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(8) install-off — expected exit 0, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+
+# Marker must still list emit_hook_events.sh (union from first install).
+_marker8="${_target8}/.unity-gateway-version"
+_files8="$(grep '^files=' "${_marker8}" | cut -d= -f2-)"
+for _f in otel-headers-helper.sh emit_hook_events.sh; do
+  case " ${_files8} " in
+    *" ${_f} "*) ;;
+    *) printf 'FAIL: %s/(8a) — "%s" missing from files= after telemetry-OFF re-install\n' \
+         "${T}" "${_f}"
+       printf '  files= was: %s\n' "${_files8}"
+       exit 1 ;;
+  esac
+done
+printf '  ok (8a): marker files= lists optional files after telemetry-OFF re-install (union)\n'
+
+# --uninstall must remove all 3 placed files (including emit_hook_events.sh, otel-headers-helper.sh).
+_exit=0
+PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents claude-code \
+  --target-root "${_staging8}" \
+  --uninstall \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(8b) uninstall — expected exit 0, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+
+for _f in managed-settings.json otel-headers-helper.sh emit_hook_events.sh .unity-gateway-version; do
+  if [ -e "${_target8}/${_f}" ]; then
+    printf 'FAIL: %s/(8b) — "%s" not removed by --uninstall (orphaned)\n' "${T}" "${_f}"
+    exit 1
+  fi
+done
+
+# No user files were added; dir must be removed by rmdir.
+if [ -d "${_target8}" ]; then
+  printf 'FAIL: %s/(8b) — target dir still exists (expected removal when empty)\n' "${T}"
+  ls -la "${_target8}" || true
+  exit 1
+fi
+printf '  ok (8b): --uninstall removes emit_hook_events.sh + otel-headers-helper.sh; dir removed\n'
 
 printf 'PASS: %s\n' "${T}"
