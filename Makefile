@@ -260,15 +260,15 @@ DOCKER_CONTAINER ?= unity-gateway-test
 CONTAINER_CFG    ?= agent_setups/generated/container
 # Mount the Codex config only when it has been generated (docker-config-codex),
 # so the harness works with either or both agents present.
-CODEX_CFG_MOUNT  := $(if $(or $(wildcard $(CONTAINER_CFG)/codex/config.toml),$(wildcard $(CONTAINER_CFG)/codex/etc/managed_config.toml)),-v "$(abspath $(CONTAINER_CFG)/codex)":/opt/agent-config-codex:ro,)
+CODEX_CFG_MOUNT   = $(if $(or $(wildcard $(CONTAINER_CFG)/codex/config.toml),$(wildcard $(CONTAINER_CFG)/codex/etc/managed_config.toml)),-v "$(abspath $(CONTAINER_CFG)/codex)":/opt/agent-config-codex:ro,)
 # Mount the DeepSeek Harness config only when it has been generated
 # (docker-config-dsh). The entrypoint stages it into the dev user's ~/.dsh.
-DSH_CFG_MOUNT    := $(if $(wildcard $(CONTAINER_CFG)/dsh/cordis.patch.yml),-v "$(abspath $(CONTAINER_CFG)/dsh)":/opt/agent-config-dsh:ro,)
+DSH_CFG_MOUNT     = $(if $(wildcard $(CONTAINER_CFG)/dsh/cordis.patch.yml),-v "$(abspath $(CONTAINER_CFG)/dsh)":/opt/agent-config-dsh:ro,)
 # Mount the opencode config only when it has been generated (docker-config-opencode).
 # Guard on the .mobileconfig — the managed-vs-user signal (both modes emit
 # opencode.json; only managed mode emits the .mobileconfig). The entrypoint stages
 # it into /etc/opencode/ (Linux managed path) inside the container.
-OPENCODE_CFG_MOUNT := $(if $(wildcard $(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig),-v "$(abspath $(CONTAINER_CFG)/opencode)":/opt/agent-config-opencode:ro,)
+OPENCODE_CFG_MOUNT = $(if $(wildcard $(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig),-v "$(abspath $(CONTAINER_CFG)/opencode)":/opt/agent-config-opencode:ro,)
 # Workspace host for PROFILE, read from ~/.databrickscfg at parse time.
 WS_HOST := $(shell $(PYTHON) -c "import configparser,pathlib; c=configparser.ConfigParser(); c.read(str(pathlib.Path.home()/'.databrickscfg')); print(c.get('$(PROFILE)','host',fallback=''))")
 # Forward a non-default npm registry (e.g. a corporate mirror) into the build so
