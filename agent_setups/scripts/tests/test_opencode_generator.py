@@ -12,6 +12,12 @@ Terraform outputs and never touch a real user config. They assert:
   - NoUnsupportedHardeningKnobsTest: forbids OTEL keys and CA/version keys.
   - Cross-agent golden mint-shape assertion: authorization_details shape matches
     the canonical shape used by claude_code.py and codex.py.
+  - SpoolSecurityTest: spool dir/file created with 0o700/0o600 mode literals.
+  - FlushTriggerTest: session.status idle is the primary flush boundary; session.deleted
+    is retained as a backup drain.
+  - FetchTimeoutTest: both fetch calls include AbortController timeout.
+  - AuthProfileDiscoveryTest: _derive_zerobus_endpoint is called with auth_profile
+    (not profile) when both are set.
 
 Run: python3 -m unittest discover -s agent_setups/scripts/tests
 """
@@ -24,6 +30,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -213,9 +220,10 @@ class SpoolBatchEmissionTest(unittest.TestCase):
     def test_session_end_hook_present_and_awaited(self):
         src = self._plugin_src()
         self.assertIn("session.deleted", src)
-        # The session-end flush is awaited (not fire-and-forget)
-        idx_deleted = src.index("session.deleted")
-        # Find 'await' after 'session.deleted'
+        # The session-end flush is awaited (not fire-and-forget).
+        # session.deleted also appears in the header comment; use rindex to find
+        # the last occurrence, which is inside the actual event handler body.
+        idx_deleted = src.rindex("session.deleted")
         post = src[idx_deleted:]
         self.assertIn("await", post[:500])
 
@@ -359,6 +367,166 @@ class CrossAgentMintShapeTest(unittest.TestCase):
     def test_oidc_token_endpoint_path(self):
         src = self._plugin_src()
         self.assertIn("/oidc/v1/token", src)
+
+
+def _context_with_telemetry_no_endpoint() -> GatewayContext:
+    """A context with hook_events table but NO pre-computed endpoint.
+
+    Forces _hook_parts to call _derive_zerobus_endpoint so that the profile
+    argument can be verified.
+    """
+    tel = Telemetry(
+        schema_full_name="cat.telemetry",
+        tables={
+            "metrics": "cat.telemetry.otel_metrics",
+            "traces": "cat.telemetry.otel_traces",
+        },
+        secret_full_name=ZB_SECRET,
+        service_principal_application_id="12345",
+        hook_events={"table": ZB_TABLE},  # no "endpoint" key
+    )
+    ep = Endpoint(
+        key="anthropic/claude-sonnet",
+        schema="anthropic",
+        name="claude-sonnet",
+        full_name="cat.anthropic.claude-sonnet",
+        foundation_model="models/system.ai.databricks-claude-sonnet",
+        inference_table=None,
+    )
+    return GatewayContext(
+        host=HOST,
+        catalog_name="cat",
+        provider_schemas={"anthropic": "cat.anthropic"},
+        endpoints=[ep],
+        telemetry=tel,
+    )
+
+
+class SpoolSecurityTest(unittest.TestCase):
+    """Fix 2: spool dir and files are created with 0700/0600 mode literals."""
+
+    def _plugin_src(self) -> str:
+        files = OpenCodeGenerator().generate(
+            _context_with_telemetry(), _args(hook_telemetry="auto")
+        )
+        return _plugin(files)
+
+    def test_spool_dir_mode_0700(self):
+        src = self._plugin_src()
+        self.assertIn("0o700", src)
+
+    def test_spool_file_mode_0600(self):
+        src = self._plugin_src()
+        self.assertIn("0o600", src)
+
+    def test_chmodSync_defensive_present(self):
+        src = self._plugin_src()
+        self.assertIn("chmodSync", src)
+
+    def test_chmodSync_in_imports(self):
+        src = self._plugin_src()
+        # The import must include chmodSync so the defensive chmod is callable.
+        idx = src.index("from 'node:fs'")
+        import_line = src[: idx + len("from 'node:fs'")]
+        self.assertIn("chmodSync", import_line)
+
+
+class FlushTriggerTest(unittest.TestCase):
+    """Fix 1: session.status idle is the primary flush boundary; session.deleted
+    is retained as a backup drain for sessions that end without an idle transition."""
+
+    def _plugin_src(self) -> str:
+        files = OpenCodeGenerator().generate(
+            _context_with_telemetry(), _args(hook_telemetry="auto")
+        )
+        return _plugin(files)
+
+    def test_session_status_idle_is_primary_flush(self):
+        src = self._plugin_src()
+        self.assertIn("session.status", src)
+        # idle status check must be present in the event handler
+        self.assertIn("idle", src)
+        # The session ID must come from event.properties.sessionID
+        self.assertIn("event.properties", src)
+
+    def test_session_deleted_retained_as_backup(self):
+        src = self._plugin_src()
+        # session.deleted is still present as a backup drain
+        self.assertIn("session.deleted", src)
+
+    def test_session_status_flush_is_awaited(self):
+        src = self._plugin_src()
+        # The flush on session.status idle must be awaited, not fire-and-forget.
+        # session.status also appears in the header comment; anchor to the
+        # _ret["event"] handler and verify await is present inside its body.
+        idx_handler = src.index('_ret["event"]')
+        handler_body = src[idx_handler: idx_handler + 800]
+        self.assertIn("session.status", handler_body)
+        self.assertIn("await", handler_body)
+
+
+class FetchTimeoutTest(unittest.TestCase):
+    """Fix 4: both fetch calls include an AbortController-based 15-second timeout."""
+
+    def _plugin_src(self) -> str:
+        files = OpenCodeGenerator().generate(
+            _context_with_telemetry(), _args(hook_telemetry="auto")
+        )
+        return _plugin(files)
+
+    def test_abort_controller_present(self):
+        src = self._plugin_src()
+        self.assertIn("AbortController", src)
+
+    def test_signal_passed_to_fetch(self):
+        src = self._plugin_src()
+        self.assertIn("signal:", src)
+
+    def test_timeout_cleared_in_finally(self):
+        src = self._plugin_src()
+        # Both fetches use .finally() to clear the timer — verify the pattern.
+        self.assertIn("clearTimeout", src)
+        self.assertIn(".finally(", src)
+
+    def test_both_fetches_have_timeout(self):
+        src = self._plugin_src()
+        # Two AbortController instances expected: one per fetch.
+        self.assertGreaterEqual(src.count("AbortController"), 2)
+
+
+class AuthProfileDiscoveryTest(unittest.TestCase):
+    """Fix 3: _derive_zerobus_endpoint receives auth_profile, not profile, when
+    both are set — matching how generate() resolves the auth profile."""
+
+    def test_auth_profile_used_for_discovery(self):
+        """When auth_profile differs from profile, discovery uses auth_profile."""
+        ctx = _context_with_telemetry_no_endpoint()
+        args = _args(
+            hook_telemetry="auto",
+            auth_profile="auth-specific-profile",
+            # profile is "fevm-west" from _args default
+        )
+        with patch("agents.opencode._derive_zerobus_endpoint") as mock_derive:
+            mock_derive.return_value = None  # endpoint discovery fails; that is fine
+            OpenCodeGenerator()._hook_parts(ctx, args)
+        mock_derive.assert_called_once()
+        called_profile = mock_derive.call_args[0][1]  # second positional arg is profile
+        self.assertEqual(called_profile, "auth-specific-profile")
+
+    def test_falls_back_to_profile_when_auth_profile_unset(self):
+        """When auth_profile is None, discovery uses the base profile."""
+        ctx = _context_with_telemetry_no_endpoint()
+        args = _args(
+            hook_telemetry="auto",
+            auth_profile=None,
+            # profile is "fevm-west" from _args default
+        )
+        with patch("agents.opencode._derive_zerobus_endpoint") as mock_derive:
+            mock_derive.return_value = None
+            OpenCodeGenerator()._hook_parts(ctx, args)
+        mock_derive.assert_called_once()
+        called_profile = mock_derive.call_args[0][1]
+        self.assertEqual(called_profile, PROFILE)  # "fevm-west"
 
 
 if __name__ == "__main__":

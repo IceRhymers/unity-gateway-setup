@@ -130,9 +130,10 @@ USER_CONFIG_PATH = "~/.config/opencode/opencode.json"
 # Categories available for opencode: usage (tool_used via tool.execute.after)
 # and governance/adoption (future: shell command inspection when a shell-env or
 # tool-args seam is confirmed). Hook names confirmed from anomalyco/opencode
-# packages/plugin/src/index.ts (commit b578b7261fc9ec4917fe272df5cc4bd8a056cd5d):
-#   tool.execute.after  — fires after every tool call with tool name + args
-#   event (session.deleted) — fires when a session ends; used as the drain trigger
+# packages/plugin/src/index.ts (commit f12e14cf1640cbf0dfb6b1ff425b2daaef459eec):
+#   tool.execute.after     — fires after every tool call with tool name + args
+#   event (session.status idle) — normal session-completion signal; primary flush boundary
+#   event (session.deleted)    — explicit session deletion; backup drain
 HOOK_CATEGORIES = ("usage", "governance", "adoption")
 
 
@@ -311,7 +312,7 @@ export default {
 
 # Node.js imports for the hook-telemetry addon; injected at the top of the plugin.
 _PLUGIN_TELEMETRY_IMPORTS = (
-    "import { appendFileSync, existsSync, mkdirSync, readdirSync,"
+    "import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync,"
     " readFileSync, renameSync, unlinkSync } from 'node:fs'\n"
     "import { homedir } from 'node:os'\n"
     "import { join } from 'node:path'"
@@ -322,15 +323,23 @@ _PLUGIN_TELEMETRY_IMPORTS = (
 #   __ZB_ENDPOINT__, __ZB_TABLE__, __ZB_SECRET__, __ZB_CATEGORIES__,
 #   __ZB_CONTENT__, __ZB_TOKEN_TTL_MS__
 # Hook names confirmed from anomalyco/opencode packages/plugin/src/index.ts
-# (commit b578b7261fc9ec4917fe272df5cc4bd8a056cd5d):
+# (commit f12e14cf1640cbf0dfb6b1ff425b2daaef459eec):
 #   tool.execute.after  (input: { tool, sessionID, callID, args })
-#   event with event.type === 'session.deleted'  (session-end drain trigger)
+#   event (session.status idle)  — normal session-completion signal; primary flush boundary
+#   event (session.deleted)      — explicit session deletion; backup drain
+# Event hook dispatch confirmed in packages/opencode/src/plugin/index.ts (same commit):
+#   hook["event"]?.({ event: { id, type, properties: event.data } })
+#   session.status: event.properties.sessionID, event.properties.status.type === 'idle'
+#   session.deleted: event.properties.sessionID (v1 schema; info.id as fallback)
 _PLUGIN_TELEMETRY_BLOCK = r"""
   // --- Hook telemetry: Zerobus REST event reporter ---
   // Spool tool events locally (no network, no token on the hot path); AWAIT the flush
   // at session end. Mirrors the Claude Code hook emitter: same UC table, SP, auth.
   // Hook names confirmed: anomalyco/opencode packages/plugin/src/index.ts
-  // commit b578b7261fc9ec4917fe272df5cc4bd8a056cd5d.
+  // commit f12e14cf1640cbf0dfb6b1ff425b2daaef459eec.
+  // Event hook dispatch: hook["event"]?.({ event: { id, type, properties: event.data } })
+  // session.status idle: event.properties.sessionID, event.properties.status.type === 'idle'
+  // session.deleted:     event.properties.sessionID (v1 schema; info.id as fallback)
 
   const ZB_ENDPOINT = '__ZB_ENDPOINT__'
   const ZB_TABLE = '__ZB_TABLE__'
@@ -372,11 +381,14 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
         authorization_details: JSON.stringify(ad),
       })
       const basic = Buffer.from(`${creds.client_id}:${creds.client_secret}`).toString('base64')
+      const ac = new AbortController()
+      const t = setTimeout(() => ac.abort(), 15_000)
       const r = await fetch(`${HOST.replace(/\/$/, '')}/oidc/v1/token`, {
         method: 'POST',
         headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
-      })
+        signal: ac.signal,
+      }).finally(() => clearTimeout(t))
       if (!r.ok) return null
       return (await r.json()).access_token ?? null
     } catch { return null }
@@ -395,8 +407,9 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
   const _zbAppend = (sid, evt) => {
     if (!ZB_ENDPOINT) return
     try {
-      mkdirSync(_zbSpoolDir, { recursive: true })
-      appendFileSync(_zbSpoolFile(sid), JSON.stringify(evt) + '\n')
+      mkdirSync(_zbSpoolDir, { recursive: true, mode: 0o700 })
+      chmodSync(_zbSpoolDir, 0o700) // defensive: restrict if pre-existing dir was wider
+      appendFileSync(_zbSpoolFile(sid), JSON.stringify(evt) + '\n', { mode: 0o600 })
     } catch { /* non-fatal */ }
   }
 
@@ -412,11 +425,14 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
       const lines = readFileSync(sending, 'utf8').trim().split('\n').filter(Boolean)
       if (!lines.length) { unlinkSync(sending); return }
       const batch = lines.map(l => JSON.parse(l))
+      const ac2 = new AbortController()
+      const t2 = setTimeout(() => ac2.abort(), 15_000)
       const r = await fetch(`${ZB_ENDPOINT.replace(/\/$/, '')}/zerobus/v1/tables/${ZB_TABLE}/insert`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(batch),
-      })
+        signal: ac2.signal,
+      }).finally(() => clearTimeout(t2))
       if (r.ok) { unlinkSync(sending) } else { try { appendFileSync(sf, readFileSync(sending)) } catch {} unlinkSync(sending) }
     } catch {
       try { appendFileSync(sf, readFileSync(sending)) } catch {}
@@ -453,13 +469,24 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
     }
   }
 
-  // Session end: AWAIT flush (process is still alive; not fire-and-forget).
-  // event.type === 'session.deleted' confirmed in anomalyco/opencode
-  // packages/opencode/src/plugin/openai/codex.ts (same commit).
+  // Session idle/end: AWAIT flush (process is still alive; not fire-and-forget).
+  // session.status idle is the normal turn-completion signal (fires every time a
+  // session goes idle after a run). session.deleted fires only on explicit deletion
+  // and is kept as a backup drain for sessions that end without an idle transition.
+  // Both confirmed in anomalyco/opencode packages/opencode/src/plugin/index.ts
+  // (commit f12e14cf1640cbf0dfb6b1ff425b2daaef459eec):
+  //   hook["event"]?.({ event: { id, type, properties: event.data } })
   _ret["event"] = async ({ event }) => {
-    if (event.type !== 'session.deleted') return
-    const sid = event.sessionID ?? event.session?.id ?? event.id ?? null
-    await (sid ? _zbFlush(String(sid)) : _zbSweep())
+    if (event.type === 'session.status') {
+      if (event.properties?.status?.type !== 'idle') return
+      const sid = event.properties?.sessionID ?? null
+      await (sid ? _zbFlush(String(sid)) : _zbSweep())
+      return
+    }
+    if (event.type === 'session.deleted') {
+      const sid = event.properties?.sessionID ?? event.properties?.info?.id ?? null
+      await (sid ? _zbFlush(String(sid)) : _zbSweep())
+    }
   }
 """
 
@@ -641,7 +668,8 @@ class OpenCodeGenerator(AgentGenerator):
                 "(default) enables it iff the Terraform telemetry.hook_events table is "
                 "present; 'on' requires it; 'off' skips. Hook names confirmed from "
                 "anomalyco/opencode packages/plugin/src/index.ts (commit "
-                "b578b7261fc9ec4917fe272df5cc4bd8a056cd5d): tool.execute.after + event."
+                "f12e14cf1640cbf0dfb6b1ff425b2daaef459eec): tool.execute.after + "
+                "event (session.status idle as primary flush, session.deleted as backup)."
             ),
         )
         parser.add_argument(
@@ -700,7 +728,7 @@ class OpenCodeGenerator(AgentGenerator):
             return None, []  # auto + not deployed
 
         endpoint = args.zerobus_endpoint or (he.get("endpoint") if isinstance(he, dict) else "") or ""
-        profile = args.__dict__.get("profile", "DEFAULT")
+        profile = args.auth_profile or args.__dict__.get("profile", "DEFAULT")
         if not endpoint:
             endpoint = _derive_zerobus_endpoint(ctx.host, profile) or ""
             if endpoint:
