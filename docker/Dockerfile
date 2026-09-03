@@ -16,11 +16,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq python3 socat gosu unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Databricks CLI -> /usr/local/bin/databricks. The setup-cli installer is fetched
-# by exact tag (lockstepped with the CLI release). SHA256SUMS -c is the stronger
-# integrity check; see https://github.com/databricks/cli/releases.
+# Databricks CLI -> /usr/local/bin/databricks. Downloads the versioned zip and
+# the SHA256SUMS file from the GitHub release, verifies the checksum with
+# sha256sum -c, then unzips the binary. Fails the build on mismatch.
+# See https://github.com/databricks/cli/releases.
 ARG DATABRICKS_CLI_VERSION=1.14.1
-RUN curl -fsSL "https://raw.githubusercontent.com/databricks/setup-cli/v${DATABRICKS_CLI_VERSION}/install.sh" | sh \
+RUN arch="$(dpkg --print-architecture)" \
+    && zip="databricks_cli_${DATABRICKS_CLI_VERSION}_linux_${arch}.zip" \
+    && sums="databricks_cli_${DATABRICKS_CLI_VERSION}_SHA256SUMS" \
+    && base="https://github.com/databricks/cli/releases/download/v${DATABRICKS_CLI_VERSION}" \
+    && curl -fsSL "${base}/${zip}" -o "/tmp/${zip}" \
+    && curl -fsSL "${base}/${sums}" -o "/tmp/${sums}" \
+    && grep " ${zip}\$" "/tmp/${sums}" > /tmp/check.sum \
+    && (cd /tmp && sha256sum -c check.sum) \
+    && unzip -o "/tmp/${zip}" databricks -d /usr/local/bin \
+    && chmod +x /usr/local/bin/databricks \
+    && rm "/tmp/${zip}" "/tmp/${sums}" /tmp/check.sum \
     && databricks --version | grep -q "${DATABRICKS_CLI_VERSION}"
 
 # Claude Code + Codex + DeepSeek Harness + opencode CLIs (all npm-distributed).

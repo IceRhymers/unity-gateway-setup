@@ -310,6 +310,10 @@ docker-config-dsh: ## Generate the DeepSeek Harness home patch + token plugin fo
 
 .PHONY: docker-config-opencode
 docker-config-opencode: ## Generate opencode config for the container (routes through the gateway; stages Linux managed at /etc/opencode/)
+	@if echo "$(ARGS)" | grep -q -- '--user-config'; then \
+	  echo "ERROR: docker-config-opencode does not support --user-config. The container harness requires managed opencode only. Remove --user-config and run again."; \
+	  exit 1; \
+	fi
 	$(MAKE) agent-opencode PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
 .PHONY: docker-config-all
@@ -372,7 +376,7 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
-	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/opencode/opencode.json" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
+	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
 		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config', 'make docker-config-codex', 'make docker-config-opencode', and/or 'make docker-config-dsh' first."; exit 1; }
 	@test -n "$(WS_HOST)" \
 		|| { echo "Could not resolve host for profile '$(PROFILE)' in ~/.databrickscfg."; exit 1; }
