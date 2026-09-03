@@ -743,78 +743,113 @@ _scheme_authority() {
   printf '%s' "$1" | sed -E 's#^(https?://[^/]+).*#\1#'
 }
 
-# _derive_host
-# Derives the gateway base URL from installed agent configs.
-# Precedence: claude-code ANTHROPIC_BASE_URL > codex base_url > opencode baseURL.
-# Only URLs containing /ai-gateway/ are accepted. Non-gateway URLs ($schema,
-# opencode.ai, anthropic.com docs) are skipped. Returns empty string if no
-# gateway URL is found; the caller must skip the smoke test gracefully.
-_derive_host() {
-  _dh_result=""
-
-  if _contains "${AGENTS}" "claude-code"; then
-    _dh_cc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")"
-    _dh_cc_file="${_dh_cc_dir}/managed-settings.json"
-    if [ -f "${_dh_cc_file}" ]; then
-      _dh_result="$(grep 'ANTHROPIC_BASE_URL' "${_dh_cc_file}" | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
-    fi
-  fi
-
-  if [ -z "${_dh_result}" ] && _contains "${AGENTS}" "codex"; then
-    _dh_cx_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")"
-    _dh_cx_file="${_dh_cx_dir}/managed_config.toml"
-    if [ -f "${_dh_cx_file}" ]; then
-      _dh_result="$(grep 'base_url' "${_dh_cx_file}" | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
-    fi
-  fi
-
-  if [ -z "${_dh_result}" ] && _contains "${AGENTS}" "opencode"; then
-    _dh_oc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "opencode")"
-    _dh_oc_file="${_dh_oc_dir}/opencode.json"
-    if [ -f "${_dh_oc_file}" ]; then
-      _dh_result="$(grep -o 'https://[^"]*' "${_dh_oc_file}" | grep '/ai-gateway/' | head -n1 || true)"
-    fi
-  fi
-
-  printf '%s' "${_dh_result}"
-}
-
-# _derive_model
-# Derives a real deployed model ID from installed agent configs.
-# Precedence: codex managed_config.toml model= > claude managed-settings.json "model" field.
-# Returns empty string if no model can be derived; the caller must skip the probe.
-_derive_model() {
-  _dm_result=""
-
-  if _contains "${AGENTS}" "codex"; then
-    _dm_cx_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")"
-    _dm_cx_file="${_dm_cx_dir}/managed_config.toml"
-    if [ -f "${_dm_cx_file}" ]; then
-      _dm_result="$(grep '^model' "${_dm_cx_file}" | head -n1 | sed 's/model[[:space:]]*=[[:space:]]*"//;s/".*//' || true)"
-    fi
-  fi
-
-  if [ -z "${_dm_result}" ] && _contains "${AGENTS}" "claude-code"; then
-    _dm_cc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")"
-    _dm_cc_file="${_dm_cc_dir}/managed-settings.json"
-    if [ -f "${_dm_cc_file}" ]; then
-      _dm_result="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${_dm_cc_file}" | head -n1 || true)"
-    fi
-  fi
-
-  printf '%s' "${_dm_result}"
-}
-
 # _smoke_test
 # POSTs a minimal ping to the gateway. Sets _smoke_failed=1 on non-200.
-# Skips gracefully when host, curl, or token are unavailable.
+# Derives (host, model, route) together from a single installed config so the
+# probe URL, payload, and headers match the agent's actual gateway endpoint.
+# Precedence: claude-code -> codex -> opencode.
+#
+# Route selection:
+#   claude-code ANTHROPIC_BASE_URL -> /ai-gateway/anthropic/v1/messages
+#                                     + Anthropic Messages payload
+#                                     + anthropic-version: 2023-06-01 header
+#   codex base_url                 -> /ai-gateway/mlflow/v1/chat/completions
+#                                     + OpenAI-compatible payload
+#   opencode provider baseURL      -> route inferred from URL path family;
+#                                     model stripped of provider prefix
+#
+# Skips gracefully when host, model, curl, or token are unavailable.
 _smoke_test() {
-  _st_host="${HOST:-$(_derive_host)}"
+  # Derive (host, model, route_type) from a single installed config source.
+  # _st_route_type: "anthropic" or "mlflow".
+  # _st_fallback_host: set when a gateway URL is found but the model is absent,
+  #   so a URL-present / model-absent bundle still reaches the "no model" warning
+  #   rather than the "no host" warning.
+  _st_host="" _st_fallback_host="" _st_model="" _st_route_type="" _st_resolved=0
+
+  # claude-code: ANTHROPIC_BASE_URL on the anthropic gateway path
+  if _contains "${AGENTS}" "claude-code"; then
+    _st_cc_cfg="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")/managed-settings.json"
+    if [ -f "${_st_cc_cfg}" ]; then
+      _st_cc_url="$(grep 'ANTHROPIC_BASE_URL' "${_st_cc_cfg}" \
+        | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
+      _st_cc_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "${_st_cc_cfg}" | head -n1 || true)"
+      if [ -n "${_st_cc_url}" ]; then
+        [ -z "${_st_fallback_host}" ] && _st_fallback_host="$(_scheme_authority "${_st_cc_url}")"
+        if [ -n "${_st_cc_model}" ] && [ "${_st_resolved}" = "0" ]; then
+          _st_host="$(_scheme_authority "${_st_cc_url}")"
+          _st_model="${_st_cc_model}"
+          _st_route_type="anthropic"
+          _st_resolved=1
+        fi
+      fi
+    fi
+  fi
+
+  # codex: base_url on the mlflow gateway path
+  if [ "${_st_resolved}" = "0" ] && _contains "${AGENTS}" "codex"; then
+    _st_cx_cfg="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")/managed_config.toml"
+    if [ -f "${_st_cx_cfg}" ]; then
+      _st_cx_url="$(grep 'base_url' "${_st_cx_cfg}" \
+        | grep -o 'https://[^"]*' | grep '/ai-gateway/' | head -n1 || true)"
+      _st_cx_model="$(grep '^model' "${_st_cx_cfg}" | head -n1 \
+        | sed 's/model[[:space:]]*=[[:space:]]*"//;s/".*//' || true)"
+      if [ -n "${_st_cx_url}" ]; then
+        [ -z "${_st_fallback_host}" ] && _st_fallback_host="$(_scheme_authority "${_st_cx_url}")"
+        if [ -n "${_st_cx_model}" ]; then
+          _st_host="$(_scheme_authority "${_st_cx_url}")"
+          _st_model="${_st_cx_model}"
+          _st_route_type="mlflow"
+          _st_resolved=1
+        fi
+      fi
+    fi
+  fi
+
+  # opencode: provider baseURL on any gateway path; model stripped of provider prefix
+  if [ "${_st_resolved}" = "0" ] && _contains "${AGENTS}" "opencode"; then
+    _st_oc_cfg="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "opencode")/opencode.json"
+    if [ -f "${_st_oc_cfg}" ]; then
+      _st_oc_url="$(grep -o 'https://[^"]*' "${_st_oc_cfg}" \
+        | grep '/ai-gateway/' | head -n1 || true)"
+      # Strip provider prefix: "provider/model-id" -> "model-id"
+      _st_oc_model="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "${_st_oc_cfg}" | head -n1 | sed 's|.*/||' || true)"
+      if [ -n "${_st_oc_url}" ]; then
+        [ -z "${_st_fallback_host}" ] && _st_fallback_host="$(_scheme_authority "${_st_oc_url}")"
+        if [ -n "${_st_oc_model}" ]; then
+          _st_host="$(_scheme_authority "${_st_oc_url}")"
+          _st_model="${_st_oc_model}"
+          case "${_st_oc_url}" in
+            */ai-gateway/anthropic*) _st_route_type="anthropic" ;;
+            *)                       _st_route_type="mlflow" ;;
+          esac
+          _st_resolved=1
+        fi
+      fi
+    fi
+  fi
+
+  # Use fallback host when a gateway URL was found but no model resolved from config.
+  if [ -z "${_st_host}" ] && [ -n "${_st_fallback_host}" ]; then
+    _st_host="${_st_fallback_host}"
+  fi
+
+  # --host override: replace the derived host; keep the derived route.
+  if [ -n "${HOST}" ]; then
+    _st_host="$(_scheme_authority "${HOST}")"
+  fi
+
+  # Default route when model comes from SMOKE_MODEL with no config-resolved route.
+  if [ -z "${_st_route_type}" ]; then
+    _st_route_type="mlflow"
+  fi
+
   if [ -z "${_st_host}" ]; then
     _warn "smoke test: no host resolved; skipping (pass --host to set explicitly)."
     return 0
   fi
-  _st_host="$(_scheme_authority "${_st_host}")"
 
   if ! command -v curl >/dev/null 2>&1; then
     _warn "smoke test: curl not found; skipping."
@@ -832,25 +867,41 @@ _smoke_test() {
     return 0
   fi
 
-  _st_model="${SMOKE_MODEL:-}"
-  if [ -z "${_st_model}" ]; then
-    _st_model="$(_derive_model)"
+  # SMOKE_MODEL env var overrides the derived model.
+  if [ -n "${SMOKE_MODEL:-}" ]; then
+    _st_model="${SMOKE_MODEL}"
   fi
+
   if [ -z "${_st_model}" ]; then
     _warn "smoke test: no model resolved; skipping (set SMOKE_MODEL=<model-id> to probe)."
     return 0
   fi
 
-  _st_url="${_st_host}/ai-gateway/mlflow/v1/chat/completions"
+  # Build probe URL, payload, and headers from route type.
   # Pass the bearer token via curl --config - (stdin) so it never appears in
   # process argv, which would be visible to other processes on the same machine.
-  _st_code="$(printf 'header = "Authorization: Bearer %s"\n' "${_st_token}" \
-    | curl -sS -o /dev/null -w '%{http_code}' \
-      --config - \
-      -X POST "${_st_url}" \
-      -H "Content-Type: application/json" \
-      -d "{\"model\":\"${_st_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
-    || printf '000')"
+  if [ "${_st_route_type}" = "anthropic" ]; then
+    _st_url="${_st_host}/ai-gateway/anthropic/v1/messages"
+    _st_body="{\"model\":\"${_st_model}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+    _st_code="$(printf 'header = "Authorization: Bearer %s"\n' "${_st_token}" \
+      | curl -sS -o /dev/null -w '%{http_code}' \
+        --config - \
+        -X POST "${_st_url}" \
+        -H "Content-Type: application/json" \
+        -H "anthropic-version: 2023-06-01" \
+        -d "${_st_body}" \
+      || printf '000')"
+  else
+    _st_url="${_st_host}/ai-gateway/mlflow/v1/chat/completions"
+    _st_body="{\"model\":\"${_st_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}"
+    _st_code="$(printf 'header = "Authorization: Bearer %s"\n' "${_st_token}" \
+      | curl -sS -o /dev/null -w '%{http_code}' \
+        --config - \
+        -X POST "${_st_url}" \
+        -H "Content-Type: application/json" \
+        -d "${_st_body}" \
+      || printf '000')"
+  fi
 
   if [ "${_st_code}" = "200" ]; then
     _info "  smoke test: OK (${_st_url} -> HTTP ${_st_code})"

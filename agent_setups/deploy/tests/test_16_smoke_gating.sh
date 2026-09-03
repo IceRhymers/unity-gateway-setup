@@ -1,17 +1,21 @@
 #!/usr/bin/env sh
 # test_16_smoke_gating.sh — smoke-test gating: offline safety, URL derivation,
-# no double-path, exit-7 on non-200, dry-run passthrough.
+# no double-path, exit-7 on non-200, dry-run passthrough, per-route probe selection.
 #
 # (1) Default install (no --smoke-test): curl stub never called.
 # (2) --smoke-test, no token available: SKIPPED, exit 0, curl not called.
-# (3) No-double-path: base URL with /ai-gateway/anthropic path ->
-#     smoke URL uses scheme+authority only; no repeated path segment.
+# (3) claude-only bundle -> probe URL ends /ai-gateway/anthropic/v1/messages,
+#     anthropic-version header present, Anthropic payload; no double path segment.
 # (4) curl stub returns 500 -> exit 7; returns 200 -> exit 0.
 # (5) --smoke-test --dry-run -> exit 0, curl not called.
 # (6) opencode-only bundle: $schema URL (opencode.ai) first in opencode.json ->
 #     smoke uses gateway host, never opencode.ai.
 # (7) No derivable model (claude bundle without "model" field, no codex) ->
 #     smoke test SKIPS with "no model" message; curl not called.
+# (8) codex-only bundle -> probe URL ends /ai-gateway/mlflow/v1/chat/completions,
+#     OpenAI-compatible payload, no anthropic-version header.
+# (9) opencode-only bundle with "model" field -> model derived from opencode.json
+#     (provider prefix stripped), gateway route used (not opencode.ai).
 set -eu
 
 # shellcheck disable=SC2164
@@ -130,8 +134,9 @@ printf '#!/bin/sh\nexit 0\n' > "${_stub_bin}/databricks"
 chmod +x "${_stub_bin}/databricks"
 
 # ---------------------------------------------------------------------------
-# (3) No-double-path: base URL /ai-gateway/anthropic -> smoke URL uses
-#     scheme+authority only; path is /ai-gateway/mlflow/v1/chat/completions
+# (3) claude-only bundle: ANTHROPIC_BASE_URL -> probe URL is
+#     scheme+authority + /ai-gateway/anthropic/v1/messages,
+#     anthropic-version header present, Anthropic payload, no double path.
 # ---------------------------------------------------------------------------
 _staging3="${_work}/staging3"
 mkdir -p "${_staging3}"
@@ -140,7 +145,7 @@ _test_host="https://test-workspace.example.com"
 _mk_claude_bundle_with_url "${_cc_src3}" "${_test_host}/ai-gateway/anthropic"
 rm -f "${_curl_sentinel}"
 
-# curl stub that records its full argv so we can inspect the URL.
+# curl stub that records its full argv so we can inspect URL, headers, and body.
 _curl_argv_file="${_work}/curl_argv"
 cat > "${_stub_bin}/curl" <<'STUB'
 #!/bin/sh
@@ -168,20 +173,32 @@ if [ "${_exit}" != "0" ]; then
   exit 1
 fi
 
-# The URL passed to curl must be scheme+authority + /ai-gateway/mlflow/v1/chat/completions.
-_expected_url="${_test_host}/ai-gateway/mlflow/v1/chat/completions"
-if ! grep -q "${_expected_url}" "${_curl_argv_file}" 2>/dev/null; then
-  printf 'FAIL: %s/(3) — expected URL "%s" in curl argv\n' "${T}" "${_expected_url}"
+# The URL must be scheme+authority + /ai-gateway/anthropic/v1/messages.
+_expected_url3="${_test_host}/ai-gateway/anthropic/v1/messages"
+if ! grep -q "${_expected_url3}" "${_curl_argv_file}" 2>/dev/null; then
+  printf 'FAIL: %s/(3) — expected URL "%s" in curl argv\n' "${T}" "${_expected_url3}"
   printf '  curl argv was:\n'; cat "${_curl_argv_file}" 2>/dev/null || printf '  (empty)\n'
   exit 1
 fi
-# There must be no double /ai-gateway/mlflow/v1 path segment.
-if grep -q 'ai-gateway/mlflow/v1/ai-gateway' "${_curl_argv_file}" 2>/dev/null; then
+# anthropic-version header must be present.
+if ! grep -q 'anthropic-version: 2023-06-01' "${_curl_argv_file}" 2>/dev/null; then
+  printf 'FAIL: %s/(3) — expected "anthropic-version: 2023-06-01" header in curl argv\n' "${T}"
+  printf '  curl argv was:\n'; cat "${_curl_argv_file}" 2>/dev/null || printf '  (empty)\n'
+  exit 1
+fi
+# Body must use Anthropic Messages shape (max_tokens before messages).
+if ! grep -q '"max_tokens":1' "${_curl_argv_file}" 2>/dev/null; then
+  printf 'FAIL: %s/(3) — expected "max_tokens":1 in curl body\n' "${T}"
+  cat "${_curl_argv_file}" 2>/dev/null || true
+  exit 1
+fi
+# There must be no double path segment.
+if grep -q 'ai-gateway/anthropic/.*ai-gateway' "${_curl_argv_file}" 2>/dev/null; then
   printf 'FAIL: %s/(3) — double path segment detected in URL\n' "${T}"
   cat "${_curl_argv_file}"
   exit 1
 fi
-printf '  ok (3): no-double-path: smoke URL is scheme+authority + /ai-gateway/mlflow/v1/chat/completions\n'
+printf '  ok (3): claude-only -> probe URL /ai-gateway/anthropic/v1/messages, anthropic-version header, Anthropic payload\n'
 
 # ---------------------------------------------------------------------------
 # (4a) curl returns 500 -> exit 7
@@ -380,5 +397,158 @@ if ! grep -q 'no model' "${_work}/err.txt"; then
   exit 1
 fi
 printf '  ok (7): no derivable model -> smoke test skips with "no model" message\n'
+
+# ---------------------------------------------------------------------------
+# (8) codex-only bundle -> probe URL ends /ai-gateway/mlflow/v1/chat/completions,
+#     OpenAI-compatible payload, no anthropic-version header.
+# ---------------------------------------------------------------------------
+_staging8="${_work}/staging8"
+mkdir -p "${_staging8}"
+_cx_src8="${_work}/cx_src8"
+mkdir -p "${_cx_src8}/etc"
+_test_cx_host="https://cx-gw.example.com"
+# Minimal managed_config.toml: base_url on the mlflow gateway path + model.
+printf 'base_url = "%s/ai-gateway/mlflow/v1"\nmodel = "gpt-4o"\n' \
+  "${_test_cx_host}" > "${_cx_src8}/etc/managed_config.toml"
+printf 'allow_managed_hooks_only = true\n' > "${_cx_src8}/etc/requirements.toml"
+
+_curl_argv_8="${_work}/curl_argv_8"
+cat > "${_stub_bin}/curl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >> ARGV_FILE_8
+touch SENTINEL_8
+printf '200'
+exit 0
+STUB
+# shellcheck disable=SC2016
+sed -i.bak "s|ARGV_FILE_8|${_curl_argv_8}|g; s|SENTINEL_8|${_curl_sentinel}|g" "${_stub_bin}/curl"
+rm -f "${_stub_bin}/curl.bak"
+chmod +x "${_stub_bin}/curl"
+rm -f "${_curl_sentinel}" "${_curl_argv_8}"
+
+_exit=0
+DATABRICKS_BEARER="test-token" PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents codex \
+  --codex-source "${_cx_src8}" \
+  --target-root "${_staging8}" \
+  --smoke-test \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(8) — expected exit 0, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+if [ ! -f "${_curl_sentinel}" ]; then
+  printf 'FAIL: %s/(8) — curl was not called (smoke was unexpectedly skipped)\n' "${T}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+# URL must be the mlflow chat/completions path.
+_expected_url8="${_test_cx_host}/ai-gateway/mlflow/v1/chat/completions"
+if ! grep -q "${_expected_url8}" "${_curl_argv_8}" 2>/dev/null; then
+  printf 'FAIL: %s/(8) — expected URL "%s" in curl argv\n' "${T}" "${_expected_url8}"
+  printf '  curl argv was:\n'; cat "${_curl_argv_8}" 2>/dev/null || printf '  (empty)\n'
+  exit 1
+fi
+# No anthropic-version header.
+if grep -q 'anthropic-version' "${_curl_argv_8}" 2>/dev/null; then
+  printf 'FAIL: %s/(8) — anthropic-version header must not be present for codex/mlflow route\n' "${T}"
+  cat "${_curl_argv_8}"
+  exit 1
+fi
+# Body must use OpenAI-compatible shape (messages before max_tokens).
+if ! grep -q '"messages"' "${_curl_argv_8}" 2>/dev/null; then
+  printf 'FAIL: %s/(8) — expected "messages" key in OpenAI payload\n' "${T}"
+  cat "${_curl_argv_8}" 2>/dev/null || true
+  exit 1
+fi
+printf '  ok (8): codex-only -> probe URL /ai-gateway/mlflow/v1/chat/completions, OpenAI payload, no anthropic-version header\n'
+
+# ---------------------------------------------------------------------------
+# (9) opencode-only bundle with "model" field -> model derived from opencode.json
+#     (provider prefix stripped), mlflow gateway route used (not opencode.ai).
+# ---------------------------------------------------------------------------
+_staging9="${_work}/staging9"
+mkdir -p "${_staging9}"
+_oc_src9="${_work}/oc_src9"
+mkdir -p "${_oc_src9}"
+_test_oc_host="https://oc-gw.example.com"
+# opencode.json with a gateway baseURL and a "model" field with a provider prefix.
+cat > "${_oc_src9}/opencode.json" <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "databricks/my-gateway-model",
+  "providers": {
+    "databricks-oss": {
+      "options": { "baseURL": "${_test_oc_host}/ai-gateway/mlflow/v1" }
+    }
+  }
+}
+EOF
+printf '<?xml version="1.0"?><plist></plist>\n' > "${_oc_src9}/ai.opencode.managed.mobileconfig"
+printf '// auth stub\n' > "${_oc_src9}/databricks-auth.ts"
+
+_curl_argv_9="${_work}/curl_argv_9"
+cat > "${_stub_bin}/curl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >> ARGV_FILE_9
+touch SENTINEL_9
+printf '200'
+exit 0
+STUB
+# shellcheck disable=SC2016
+sed -i.bak "s|ARGV_FILE_9|${_curl_argv_9}|g; s|SENTINEL_9|${_curl_sentinel}|g" "${_stub_bin}/curl"
+rm -f "${_stub_bin}/curl.bak"
+chmod +x "${_stub_bin}/curl"
+rm -f "${_curl_sentinel}" "${_curl_argv_9}"
+
+# Restore databricks stub (no SMOKE_MODEL — model must come from opencode.json).
+printf '#!/bin/sh\nexit 0\n' > "${_stub_bin}/databricks"
+chmod +x "${_stub_bin}/databricks"
+
+_exit=0
+DATABRICKS_BEARER="test-token" PATH="${_stub_bin}:${PATH}" sh "${INSTALL_SH}" \
+  --os linux --agents opencode \
+  --opencode-source "${_oc_src9}" \
+  --target-root "${_staging9}" \
+  --smoke-test \
+  > "${_work}/out.txt" 2> "${_work}/err.txt" || _exit=$?
+
+if [ "${_exit}" != "0" ]; then
+  printf 'FAIL: %s/(9) — expected exit 0, got %d\n' "${T}" "${_exit}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+if [ ! -f "${_curl_sentinel}" ]; then
+  printf 'FAIL: %s/(9) — curl was not called (smoke was unexpectedly skipped)\n' "${T}"
+  cat "${_work}/out.txt" "${_work}/err.txt"
+  exit 1
+fi
+# URL must use the gateway host, not opencode.ai.
+_expected_url9="${_test_oc_host}/ai-gateway/mlflow/v1/chat/completions"
+if ! grep -q "${_expected_url9}" "${_curl_argv_9}" 2>/dev/null; then
+  printf 'FAIL: %s/(9) — expected gateway URL "%s" in curl argv\n' "${T}" "${_expected_url9}"
+  printf '  curl argv was:\n'; cat "${_curl_argv_9}" 2>/dev/null || printf '  (empty)\n'
+  exit 1
+fi
+if grep -q 'opencode\.ai' "${_curl_argv_9}" 2>/dev/null; then
+  printf 'FAIL: %s/(9) — opencode.ai appeared in curl argv (must be excluded)\n' "${T}"
+  cat "${_curl_argv_9}"
+  exit 1
+fi
+# Model in the payload must be the stripped suffix "my-gateway-model", not "databricks/my-gateway-model".
+if ! grep -q 'my-gateway-model' "${_curl_argv_9}" 2>/dev/null; then
+  printf 'FAIL: %s/(9) — expected stripped model "my-gateway-model" in curl argv\n' "${T}"
+  cat "${_curl_argv_9}" 2>/dev/null || true
+  exit 1
+fi
+if grep -q 'databricks/my-gateway-model' "${_curl_argv_9}" 2>/dev/null; then
+  printf 'FAIL: %s/(9) — provider prefix "databricks/" must be stripped from model in curl argv\n' "${T}"
+  cat "${_curl_argv_9}"
+  exit 1
+fi
+# shellcheck disable=SC2016  # $schema is literal text, not a variable
+printf '  ok (9): opencode-only with "model" field -> provider prefix stripped, mlflow gateway route used\n'
 
 printf 'PASS: %s\n' "${T}"

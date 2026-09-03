@@ -181,6 +181,8 @@ The uninstall script needs only `--os` and the real system paths. It does not ne
 #!/bin/sh
 set -eu
 
+# Jamf passes the tarball path as parameter 4. Set it in the policy script parameters.
+PAYLOAD="${4:?set the package path in Jamf parameter 4}"
 WORK_DIR="/tmp/unity-gateway-agents-install"
 
 # Unpack the tarball to get install.sh (the same tarball used for installation).
@@ -190,8 +192,14 @@ cp "$PAYLOAD" "$WORK_DIR/"
 tar -xzf "$WORK_DIR/unity-gateway-agents.tar.gz" -C "$WORK_DIR" --strip-components=1
 
 cd "$WORK_DIR"
-./install.sh --uninstall
-EXIT_CODE=$?
+# Run the uninstall. Capture the exit code before cleanup.
+# An `if` guard is required: under set -e, a non-zero exit terminates the script
+# before EXIT_CODE is assigned, so cleanup and the error message never run.
+if ./install.sh --uninstall; then
+  EXIT_CODE=0
+else
+  EXIT_CODE=$?
+fi
 
 rm -rf "$WORK_DIR"
 
