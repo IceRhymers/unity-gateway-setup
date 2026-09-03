@@ -10,19 +10,23 @@
 #
 # Options:
 #   --dry-run               Print planned actions, touch nothing (exit 0)
-#   --agents <list>         Comma-separated: claude-code,codex,opencode  (default: claude-code,codex,opencode)
+#   --agents <list>         Comma-separated: claude-code,codex,opencode,claude-desktop
+#                           (default: claude-code,codex,opencode; claude-desktop is opt-in)
 #   --profile <name>        Databricks profile (default: fevm-west; Phase-B hint only)
 #   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/ + <root>/opencode/
-#                           (default: .)
+#                           + <root>/claude-desktop/<os>/  (default: .)
 #   --claude-source <dir>   Dir holding Claude files directly; overrides --source
 #                           (managed-settings.json, otel-headers-helper.sh, emit_hook_events.sh)
 #   --codex-source <dir>    Dir holding codex/ tree; overrides --source
 #                           (etc/managed_config.toml for managed mode)
 #   --opencode-source <dir> Dir holding opencode/ tree; overrides --source
 #                           (opencode.json + ai.opencode.managed.mobileconfig for managed mode)
+#   --claude-desktop-source <dir>  Dir holding Claude Desktop helper scripts directly; overrides
+#                           --source (databricks-token.sh, otel-headers-helper.sh). The JSON is
+#                           operator-imported, not placed here.
 #   --target-root <prefix>  Install prefix for unprivileged staging (default: "")
 #   --os macos|linux        Force OS (default: autodetect via uname -s)
-#   --agent claude-code|codex|opencode  Pair with --print-target-dir
+#   --agent claude-code|codex|opencode|claude-desktop  Pair with --print-target-dir
 #   --print-target-dir      Print resolved install dir for --os/--agent and exit 0
 #   --uninstall             Remove placed files and version marker; exit 0 on success
 #   -h, --help              Show this message
@@ -48,6 +52,11 @@ SOURCE="."
 CLAUDE_SOURCE=""
 CODEX_SOURCE=""
 OPENCODE_SOURCE=""
+CLAUDE_DESKTOP_SOURCE=""
+# Placement dir override for claude-desktop helpers. Must match the absolute path
+# baked into claude-setup.json when the generator used --install-dir-<os>. Empty =
+# the per-OS default in _raw_dir_for. Used by install, uninstall, and print-target-dir.
+CLAUDE_DESKTOP_DIR=""
 OS_OVERRIDE=""
 PRINT_AGENT=""
 PRINT_TARGET_DIR=0
@@ -84,16 +93,18 @@ Run as root (production) or with --target-root (unprivileged staging).
 
 Options:
   --dry-run               Print planned actions, touch nothing (exit 0)
-  --agents <list>         Comma-separated agents: claude-code,codex,opencode (default: claude-code,codex,opencode)
+  --agents <list>         Comma-separated agents: claude-code,codex,opencode,claude-desktop
+                          (default: claude-code,codex,opencode; claude-desktop is opt-in)
   --profile <name>        Databricks profile name (default: fevm-west; Phase-B hint only)
-  --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/, <root>/opencode/
-                          (default: .)
+  --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/, <root>/opencode/,
+                          <root>/claude-desktop/<os>/  (default: .)
   --claude-source <dir>   Dir holding Claude files directly (overrides --source)
   --codex-source <dir>    Dir holding codex/ tree (overrides --source)
   --opencode-source <dir> Dir holding opencode/ tree (overrides --source)
+  --claude-desktop-source <dir>  Dir holding Claude Desktop helper scripts (overrides --source)
   --target-root <prefix>  Install prefix for unprivileged staging (default: "")
   --os macos|linux        Force OS (default: autodetect via uname -s)
-  --agent claude-code|codex|opencode
+  --agent claude-code|codex|opencode|claude-desktop
                           Pair with --print-target-dir to select which agent
   --print-target-dir      Print resolved install dir for --os/--agent, then exit 0
   --uninstall             Remove placed files and version marker (needs --os and --target-root;
@@ -124,6 +135,8 @@ while [ $# -gt 0 ]; do
     --claude-source)     shift; CLAUDE_SOURCE="${1:?--claude-source requires a value}" ;;
     --codex-source)      shift; CODEX_SOURCE="${1:?--codex-source requires a value}" ;;
     --opencode-source)   shift; OPENCODE_SOURCE="${1:?--opencode-source requires a value}" ;;
+    --claude-desktop-source) shift; CLAUDE_DESKTOP_SOURCE="${1:?--claude-desktop-source requires a value}" ;;
+    --claude-desktop-dir) shift; CLAUDE_DESKTOP_DIR="${1:?--claude-desktop-dir requires a value}" ;;
     --target-root)       shift; TARGET_ROOT="${1:?--target-root requires a value}" ;;
     --os)                shift; OS_OVERRIDE="${1:?--os requires a value}" ;;
     --agent)             shift; PRINT_AGENT="${1:?--agent requires a value}" ;;
@@ -144,9 +157,9 @@ while [ -n "${_agents_rest}" ]; do
     *)   _agent_tok="${_agents_rest}";     _agents_rest="" ;;
   esac
   case "${_agent_tok}" in
-    claude-code|codex|opencode) ;;
+    claude-code|codex|opencode|claude-desktop) ;;
     "") ;;
-    *) _fatal 1 "Unknown agent in --agents: '${_agent_tok}' (valid: claude-code, codex, opencode)." ;;
+    *) _fatal 1 "Unknown agent in --agents: '${_agent_tok}' (valid: claude-code, codex, opencode, claude-desktop)." ;;
   esac
 done
 
@@ -192,6 +205,20 @@ _raw_dir_for() {
         macos) printf '/Library/Application Support/opencode' ;;
         linux) printf '/etc/opencode' ;;
       esac ;;
+    claude-desktop)
+      # Where the credential + OTEL helper scripts live. Must match the absolute
+      # paths baked into claude-setup.json (see the claude-desktop generator's
+      # --install-dir-macos / --install-dir-linux). The JSON itself is imported
+      # into the app, not placed here. A --claude-desktop-dir override wins (pair it
+      # with a generator --install-dir-<os>); otherwise use the per-OS default.
+      if [ -n "${CLAUDE_DESKTOP_DIR}" ]; then
+        printf '%s' "${CLAUDE_DESKTOP_DIR}"
+      else
+        case "$1" in
+          macos) printf '/Library/Application Support/ClaudeDesktop' ;;
+          linux) printf '/etc/claude-desktop' ;;
+        esac
+      fi ;;
     *)
       printf '[install] ERROR: Unknown agent for path matrix: %s\n' "$2" >&2
       exit 1 ;;
@@ -204,7 +231,7 @@ _raw_dir_for() {
 # ---------------------------------------------------------------------------
 if [ "${PRINT_TARGET_DIR}" = "1" ]; then
   if [ -z "${PRINT_AGENT}" ]; then
-    _fatal 1 "--print-target-dir requires --agent <claude-code|codex|opencode>"
+    _fatal 1 "--print-target-dir requires --agent <claude-code|codex|opencode|claude-desktop>"
   fi
   _ptd_raw="$(_raw_dir_for "${OS}" "${PRINT_AGENT}")"
   printf '%s\n' "${TARGET_ROOT:-}${_ptd_raw}"
@@ -252,6 +279,13 @@ if [ -n "${OPENCODE_SOURCE}" ]; then
   _opencode_src="${OPENCODE_SOURCE}"
 else
   _opencode_src="${SOURCE}/opencode"
+fi
+
+# Claude Desktop bundles are per-OS (like Claude Code): <root>/claude-desktop/<os>/.
+if [ -n "${CLAUDE_DESKTOP_SOURCE}" ]; then
+  _claude_desktop_src="${CLAUDE_DESKTOP_SOURCE}"
+else
+  _claude_desktop_src="${SOURCE}/claude-desktop/${OS}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -354,6 +388,11 @@ _default_files_for() {
       printf 'opencode.json'
       [ -e "${_dff_dir}/databricks-auth.ts" ]              && printf ' databricks-auth.ts'
       [ -e "${_dff_dir}/ai.opencode.managed.mobileconfig" ] && printf ' ai.opencode.managed.mobileconfig'
+      ;;
+    claude-desktop)
+      # Helper scripts only (the JSON is imported into the app, never placed here).
+      printf 'databricks-token.sh'
+      [ -e "${_dff_dir}/otel-headers-helper.sh" ] && printf ' otel-headers-helper.sh'
       ;;
   esac
   printf '\n'
@@ -521,17 +560,33 @@ _check_prereqs() {
     fi
   }
 
-  # python3 is critical because both agents' auth helpers call 'python3 -c' on every
-  # token mint — EXCEPT in a DATABRICKS_BEARER-only deployment, where the helpers
-  # short-circuit to `printf %s "$DATABRICKS_BEARER"` and never invoke python3.
+  # python3 is used by the claude-code/codex/opencode auth helpers and by every
+  # OTEL/hook helper (they shell out to 'python3 -c' on each token mint). It is NOT
+  # used by the claude-desktop credential helper (bash + sed only). So it is critical
+  # only when a selected agent actually needs it: claude-code, codex, or opencode, or
+  # claude-desktop WITH its OTEL helper present. A claude-desktop-only, telemetry-off
+  # install therefore does not require python3. A DATABRICKS_BEARER-only deployment
+  # also short-circuits the auth helpers, so python3 is informational there too.
+  _prereq_py=0
+  if _contains "${AGENTS}" "claude-code" || _contains "${AGENTS}" "codex" || _contains "${AGENTS}" "opencode"; then
+    _prereq_py=1
+  fi
+  if _contains "${AGENTS}" "claude-desktop" && [ -f "${_claude_desktop_src}/otel-headers-helper.sh" ]; then
+    _prereq_py=1
+  fi
+
   if [ -n "${DATABRICKS_BEARER:-}" ]; then
     _one_check python3 \
       "auth helpers use \$DATABRICKS_BEARER (set); python3 not required in bearer-only mode." \
       info
+  elif [ "${_prereq_py}" = "1" ]; then
+    _one_check python3 \
+      "auth/OTEL helpers call 'python3 -c' on every token mint; \$DATABRICKS_BEARER not set." \
+      critical
   else
     _one_check python3 \
-      "auth helpers call 'python3 -c' on every token mint (both agents); \$DATABRICKS_BEARER not set." \
-      critical
+      "selected agents need no python3 (claude-desktop credential helper uses bash + sed only)." \
+      info
   fi
   _one_check databricks \
     "Databricks CLI: required for token minting via 'databricks auth token'." \
@@ -719,6 +774,55 @@ _install_opencode() {
 }
 
 # ---------------------------------------------------------------------------
+# Claude Desktop installation
+# ---------------------------------------------------------------------------
+# Claude Desktop reads an OPERATOR-IMPORTED config, so install.sh does NOT place
+# claude-setup.json. It places only the helper scripts the JSON references by
+# absolute path (databricks-token.sh + the optional otel-headers-helper.sh). The
+# operator imports the JSON in the app, then exports the OS-native MDM profile.
+# Windows helpers (.cmd + .ps1) are placed by Intune or a machine-wide script;
+# this POSIX installer runs on macOS/Linux only.
+_install_claude_desktop() {
+  _cd_raw="$(_raw_dir_for "${OS}" "claude-desktop")"
+  _cd_dir="${TARGET_ROOT:-}${_cd_raw}"
+  _cd_src="${_claude_desktop_src}"
+
+  _info ""
+  _info "=== Claude Desktop (${OS}) ==="
+  _info "  source : ${_cd_src}"
+  _info "  target : ${_cd_dir}"
+
+  # The credential helper is the required file for a usable Claude Desktop bundle.
+  # Absent -> warn and skip (claude-desktop is opt-in; do not hard-fail the run).
+  if [ ! -f "${_cd_src}/databricks-token.sh" ]; then
+    _warn "No Claude Desktop credential helper at '${_cd_src}/databricks-token.sh'."
+    _warn "  Generate a ${OS} bundle first: make agent-claude-desktop (needs --platforms ${OS})."
+    _warn "  Skipping Claude Desktop."
+    return 0
+  fi
+
+  _action_mkdir "${_cd_dir}"
+
+  _action_copy  "${_cd_src}/databricks-token.sh" "${_cd_dir}/databricks-token.sh"
+  _action_chmod 755 "${_cd_dir}/databricks-token.sh"
+  _cd_files="databricks-token.sh"
+
+  # Optional: the OTEL headers helper (present only when telemetry is wired).
+  if [ -f "${_cd_src}/otel-headers-helper.sh" ]; then
+    _action_copy  "${_cd_src}/otel-headers-helper.sh" "${_cd_dir}/otel-headers-helper.sh"
+    _action_chmod 755 "${_cd_dir}/otel-headers-helper.sh"
+    _cd_files="${_cd_files} otel-headers-helper.sh"
+  fi
+
+  _action_chown "${_owner}" "${_cd_dir}"
+
+  _write_version_marker "claude-desktop" "${_cd_dir}" "${_cd_src}" "${_cd_files}"
+
+  _info "  note   : import claude-setup.json in the app (Developer -> Configure"
+  _info "           third-party inference), then export the MDM profile from the app."
+}
+
+# ---------------------------------------------------------------------------
 # Post-install verification (never fatal)
 # ---------------------------------------------------------------------------
 _verify() {
@@ -775,7 +879,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ "${UNINSTALL}" = "1" ]; then
   _info "  mode       : UNINSTALL"
-  for _main_agent in claude-code codex opencode; do
+  for _main_agent in claude-code codex opencode claude-desktop; do
     if _contains "${AGENTS}" "${_main_agent}"; then
       _uninstall_agent "${_main_agent}"
     fi
@@ -795,6 +899,10 @@ fi
 
 if _contains "${AGENTS}" "opencode"; then
   _install_opencode
+fi
+
+if _contains "${AGENTS}" "claude-desktop"; then
+  _install_claude_desktop
 fi
 
 _verify

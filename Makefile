@@ -123,8 +123,16 @@ agent-dsh: ## Generate the DeepSeek Harness home patch + token plugin from TF ou
 agent-dsh-preview: ## Print the generated DeepSeek Harness patch + plugin without writing
 	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --stdout $(ARGS)
 
+.PHONY: agent-claude-desktop
+agent-claude-desktop: ## Generate the importable Claude Desktop config + helper scripts from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+
+.PHONY: agent-claude-desktop-preview
+agent-claude-desktop-preview: ## Print the generated Claude Desktop bundle without writing
+	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --stdout $(ARGS)
+
 .PHONY: agents
-agents: agent-claude-code agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + codex + opencode + dsh)
+agents: agent-claude-code agent-claude-desktop agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + claude-desktop + codex + opencode + dsh)
 
 .PHONY: opencode-install-local
 opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/.config/opencode for a local, non-managed install (PROFILE=, ARGS=)
@@ -145,6 +153,23 @@ codex-install-local: ## Generate config.toml (user mode) + install it to ~/.code
 dsh-install-local: ## Generate the DeepSeek Harness patch + plugin + install them to $DSH_HOME (default ~/.dsh) for a local install (PROFILE=, ARGS=)
 	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-dsh-local.sh --source $(OUT_DIR)/dsh/cordis.patch.yml
+
+# ---- claude-desktop local test install ----
+# Claude Desktop reads an operator-imported config, so there is no config file to
+# place. Only the helper scripts the JSON references need to exist on disk. This
+# target generates a bundle for THIS OS with the helper path set to a user-writable
+# dir, then places the helper scripts there — so you can import claude-setup.json in
+# the app and test it without root. Override CD_LOCAL_DIR / CD_OS as needed.
+CD_UNAME_S := $(shell uname -s)
+CD_OS ?= $(if $(filter Darwin,$(CD_UNAME_S)),macos,linux)
+CD_LOCAL_DIR ?= $(if $(filter macos,$(CD_OS)),$(HOME)/Library/Application Support/ClaudeDesktop,$(HOME)/.config/claude-desktop)
+
+.PHONY: claude-desktop-install-local
+claude-desktop-install-local: ## Generate a Claude Desktop bundle pointed at a user dir + place its helper scripts there for local testing (PROFILE=, CD_LOCAL_DIR=, CD_OS=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) \
+		--platforms $(CD_OS) --install-dir-$(CD_OS) "$(CD_LOCAL_DIR)" $(ARGS)
+	sh agent_setups/deploy/install-claude-desktop-local.sh \
+		--source "$(OUT_DIR)/claude-desktop/$(CD_OS)" --target-dir "$(CD_LOCAL_DIR)"
 
 .PHONY: agents-install-local
 agents-install-local: claude-code-install-local codex-install-local opencode-install-local dsh-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
@@ -225,6 +250,10 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	  if [ -d "$(OUT_DIR)/opencode" ]; then \
 	    mkdir -p "$${tmpdir}/opencode"; \
 	    cp -r "$(OUT_DIR)/opencode/." "$${tmpdir}/opencode/"; \
+	  fi; \
+	  if [ -d "$(OUT_DIR)/claude-desktop/$${os}" ]; then \
+	    mkdir -p "$${tmpdir}/claude-desktop/$${os}"; \
+	    cp -r "$(OUT_DIR)/claude-desktop/$${os}/." "$${tmpdir}/claude-desktop/$${os}/"; \
 	  fi; \
 	  cp $(INSTALL_SH) "$${tmpdir}/install.sh"; \
 	  printf '%s' "$(VERSION)" > "$${tmpdir}/VERSION"; \
