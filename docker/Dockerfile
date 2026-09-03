@@ -3,7 +3,10 @@
 # without touching them — Claude Code's config lives at the Linux enterprise path
 # (/etc/claude-code/managed-settings.json) and Codex's at the dev user's
 # $CODEX_HOME (/home/dev/.codex/config.toml) inside the container.
-FROM node:22-bookworm-slim
+# BASE_DIGEST pins the manifest-list digest (multi-arch safe). Override with
+# --build-arg BASE_DIGEST=sha256:... to test a newer base before committing the pin.
+ARG BASE_DIGEST=sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+FROM node:22-bookworm-slim@${BASE_DIGEST}
 
 # Toolchain: databricks CLI (auth + otelHeadersHelper), python3 (helpers),
 # jq (the emit_hook_events.sh reporting hook builds its JSON payloads with it),
@@ -13,25 +16,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq python3 socat gosu unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Databricks CLI (latest) -> /usr/local/bin/databricks
-RUN curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh \
-    && databricks --version
+# Databricks CLI -> /usr/local/bin/databricks. The setup-cli installer is fetched
+# by exact tag (lockstepped with the CLI release). SHA256SUMS -c is the stronger
+# integrity check; see https://github.com/databricks/cli/releases.
+ARG DATABRICKS_CLI_VERSION=1.14.1
+RUN curl -fsSL "https://raw.githubusercontent.com/databricks/setup-cli/v${DATABRICKS_CLI_VERSION}/install.sh" | sh \
+    && databricks --version | grep -q "${DATABRICKS_CLI_VERSION}"
 
-# Claude Code + Codex + DeepSeek Harness CLIs (all npm-distributed). NPM_REGISTRY
-# forwards a non-default registry (e.g. a corporate mirror) from the builder's
-# `npm config` — see the Makefile, which only passes it when set. Empty (the
-# default) uses the public npm registry, so builds on machines without the mirror
-# are unaffected. DeepSeek Harness (`dsh`) requires Node 22.19+, satisfied by the
-# node:22 base. `command -v dsh` verifies the bin without booting the harness.
+# Claude Code + Codex + DeepSeek Harness + opencode CLIs (all npm-distributed).
+# Claude Code: pkg @anthropic-ai/claude-code, bin claude.
+# Codex: pkg @openai/codex, bin codex.
+# DeepSeek Harness (dsh): pkg @deepseek-ai/dsh, bin dsh. Requires Node 22.19+,
+#   satisfied by the node:22 base. `command -v dsh` verifies the bin without booting
+#   the harness.
+# opencode: pkg opencode-ai, bin opencode. Pinned to the latest-1 stable (1.x) channel.
+# NPM_REGISTRY forwards a non-default registry (e.g. a corporate mirror); empty (the
+# default) uses the public npm registry.
 ARG NPM_REGISTRY=""
+ARG CLAUDE_CODE_VERSION=2.1.259
+ARG CODEX_VERSION=0.153.0
+ARG DSH_VERSION=0.1.1-rc.2
+ARG OPENCODE_VERSION=1.1.4
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
-    && npm install -g @anthropic-ai/claude-code @openai/codex @deepseek-ai/dsh \
-    && claude --version && codex --version && command -v dsh
+    && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} @deepseek-ai/dsh@${DSH_VERSION} opencode-ai@${OPENCODE_VERSION} \
+    && claude --version && codex --version && command -v dsh && opencode --version | grep -q "${OPENCODE_VERSION}"
 
-# uv (Astral) -> /usr/local/bin/uv, used to install ucode below.
-RUN curl -LsSf https://astral.sh/uv/install.sh \
+# uv (Astral) -> /usr/local/bin/uv, used to install ucode below. The version-pinned
+# installer self-verifies embedded SHA256 checksums (primary integrity check);
+# the version grep below is a fallback.
+ARG UV_VERSION=0.12.9
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
       | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
-    && uv --version
+    && uv --version | grep -q "${UV_VERSION}"
 
 # ucode (Unity AI Gateway coding CLI): discovers Databricks MCP services and
 # registers them into a tool's user-level config, bridging each through the
@@ -39,9 +55,10 @@ RUN curl -LsSf https://astral.sh/uv/install.sh \
 # Python 3.12+, which uv fetches and manages itself (bookworm's python3 is 3.11).
 # Everything is installed into shared, world-readable /opt/uv with entry points
 # on PATH via /usr/local/bin, so the non-root `dev` user can run `ucode`.
-# UCODE_SOURCE is overridable (a pinned ref, a mirror, a private URL with token,
-# or a local path) — mirrors the NPM_REGISTRY override pattern.
-ARG UCODE_SOURCE="git+https://github.com/databricks/ucode"
+# UCODE_SOURCE is pinned to a commit SHA by default (reproducible builds). Override
+# with a mirror, a private URL with token, or a local path — mirrors the
+# NPM_REGISTRY override pattern.
+ARG UCODE_SOURCE="git+https://github.com/databricks/ucode@848022a4b085ac389437f1adcdf2ec63f2cfeb01"
 # PYPI_INDEX: if the build host resolves PyPI through a proxy/mirror, the Makefile
 # forwards it here (from uv's global config, mirroring NPM_REGISTRY) so uv can
 # fetch ucode's build backend. Empty (default) uses public PyPI, so builds on

@@ -10,8 +10,9 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 
 ## What's inside
 
-- **Claude Code** + **Codex** + **DeepSeek Harness** (`dsh`) + the **databricks
-  CLI** + **python3** (for the api-key, otel-headers, and Codex auth helpers).
+- **Claude Code** + **Codex** + **opencode** + **DeepSeek Harness** (`dsh`) + the
+  **databricks CLI** + **python3** (for the api-key, otel-headers, and Codex auth
+  helpers).
 - **`ucode`** (Unity AI Gateway coding CLI), installed via `uv` and available on
   `PATH` by default. The harness uses it to discover Databricks MCP services and
   register them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
@@ -23,6 +24,10 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
   artifact a Linux deploy ships. The harness stages the generated **Codex**
   `config.toml` at the dev user's `~/.codex/config.toml` (Codex has no
   system-managed path). The image installs `jq` for the hook.
+- The generated **opencode** config (npm pkg `opencode-ai`, bin `opencode`). The
+  harness stages `opencode.json` and `databricks-auth.ts` at the Linux managed path
+  `/etc/opencode/` (opencode reads managed config last; it overrides user config).
+  The macOS `.mobileconfig` hard-lock does not apply inside a Linux container.
 - The generated **DeepSeek Harness** config. The harness stages the home patch
   (`cordis.patch.yml`) and its token plugin (`databricks-token-refresh.mjs`) at
   the dev user's `~/.dsh/` (DSH has no system-managed path). The entrypoint runs
@@ -30,6 +35,12 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
   patch routes DSH's native DeepSeek adapter through the gateway. The token plugin
   mints a fresh Databricks token on a timer and stores it in the credential store,
   so the adapter reads a current token on each request.
+- **Tool versions are pinned** via Dockerfile `ARG` defaults (the single source of
+  truth): base image digest, `CLAUDE_CODE_VERSION`, `CODEX_VERSION`,
+  `OPENCODE_VERSION`, `DSH_VERSION`, `DATABRICKS_CLI_VERSION`, `UV_VERSION`, and
+  `UCODE_SOURCE` (commit SHA). Override any pin with `--build-arg <VAR>=<value>`.
+  `NPM_REGISTRY`, `UCODE_SOURCE`, and `PYPI_INDEX` overrides remain available for
+  corporate mirrors.
 - A fresh, isolated `~/.databrickscfg`. The harness writes it at start. Both
   `DEFAULT` and the named profile point at the workspace, so `databricks auth login`
   and the settings' `--profile` calls resolve. The profile is also the default
@@ -44,8 +55,8 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 
 ```bash
 make tf-apply           # provision the telemetry infra first (creates tables, SP, secret)
-make docker-build       # build the image (once) — Claude Code + Codex + DeepSeek Harness
-make docker-config-all  # generate all agent configs (or docker-config / docker-config-codex / docker-config-dsh)
+make docker-build       # build the image (once) — Claude Code + Codex + opencode + dsh + databricks CLI + ucode
+make docker-config-all  # generate all agent configs (or docker-config / docker-config-codex / docker-config-opencode / docker-config-dsh)
 make docker-up          # start the container (maps 8020, mounts configs, writes the profile)
 make docker-login       # runs `databricks auth login` inside — see browser note below
 make docker-shell       # exec in as the dev user
@@ -127,6 +138,25 @@ still captures its traffic server-side. Switch models with
 `codex -m tanner_..._catalog.openai.gpt-5-6-sol` (any model listed in the config's
 comment header). To iterate on the config without restarting the container, run
 `make docker-reload` (reloads all agent configs).
+
+### Testing opencode
+
+The harness stages `opencode.json` and `databricks-auth.ts` at `/etc/opencode/`
+inside the container. opencode reads that directory as Linux managed config.
+
+Run `make docker-config-opencode` to generate the config first, then start the
+container with `make docker-up`. Inside `make docker-shell`:
+
+```bash
+opencode --version   # confirm the pinned version is installed
+opencode             # launches opencode, routed through <host>/ai-gateway/anthropic/v1
+                     # (or gemini/v1beta / mlflow/v1 depending on model family)
+```
+
+Authenticate first with `make docker-login`. The `databricks-auth.ts` plugin mints
+a fresh OAuth token on each request via the Databricks CLI. To iterate on the
+config without restarting the container, run `make docker-reload` (reloads all
+agent configs including opencode).
 
 ### Testing DeepSeek Harness
 

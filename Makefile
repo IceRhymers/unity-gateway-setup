@@ -264,6 +264,11 @@ CODEX_CFG_MOUNT  := $(if $(or $(wildcard $(CONTAINER_CFG)/codex/config.toml),$(w
 # Mount the DeepSeek Harness config only when it has been generated
 # (docker-config-dsh). The entrypoint stages it into the dev user's ~/.dsh.
 DSH_CFG_MOUNT    := $(if $(wildcard $(CONTAINER_CFG)/dsh/cordis.patch.yml),-v "$(abspath $(CONTAINER_CFG)/dsh)":/opt/agent-config-dsh:ro,)
+# Mount the opencode config only when it has been generated (docker-config-opencode).
+# Guard on the .mobileconfig — the managed-vs-user signal (both modes emit
+# opencode.json; only managed mode emits the .mobileconfig). The entrypoint stages
+# it into /etc/opencode/ (Linux managed path) inside the container.
+OPENCODE_CFG_MOUNT := $(if $(wildcard $(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig),-v "$(abspath $(CONTAINER_CFG)/opencode)":/opt/agent-config-opencode:ro,)
 # Workspace host for PROFILE, read from ~/.databrickscfg at parse time.
 WS_HOST := $(shell $(PYTHON) -c "import configparser,pathlib; c=configparser.ConfigParser(); c.read(str(pathlib.Path.home()/'.databrickscfg')); print(c.get('$(PROFILE)','host',fallback=''))")
 # Forward a non-default npm registry (e.g. a corporate mirror) into the build so
@@ -283,7 +288,7 @@ PYPI_INDEX       ?= $(shell if [ -n "$$UV_DEFAULT_INDEX" ]; then echo "$$UV_DEFA
 PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 
 .PHONY: docker-build
-docker-build: ## Build the test-harness image (Claude Code + Codex + databricks CLI + python3 + ucode)
+docker-build: ## Build the test-harness image (Claude Code + Codex + opencode + dsh + databricks CLI + python3 + ucode)
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) -f docker/Dockerfile .
 
 # The docker-config* targets delegate to the SAME agent-* generation, only
@@ -303,8 +308,12 @@ docker-config-codex: ## Generate Codex config.toml for the container (routes thr
 docker-config-dsh: ## Generate the DeepSeek Harness home patch + token plugin for the container (routes the DeepSeek adapter through the gateway mlflow/v1 route)
 	$(MAKE) agent-dsh PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
+.PHONY: docker-config-opencode
+docker-config-opencode: ## Generate opencode config for the container (routes through the gateway; stages Linux managed at /etc/opencode/)
+	$(MAKE) agent-opencode PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
+
 .PHONY: docker-config-all
-docker-config-all: docker-config docker-config-codex docker-config-dsh ## Generate every agent config for the container (claude-code + codex + dsh)
+docker-config-all: docker-config docker-config-codex docker-config-opencode docker-config-dsh ## Generate every agent config for the container (claude-code + codex + opencode + dsh)
 
 .PHONY: docker-reload
 docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload into the RUNNING container via install.sh (no restart)
@@ -331,11 +340,17 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 	  docker cp "$(CONTAINER_CFG)/codex/." $(DOCKER_CONTAINER):/tmp/ugw-reload/codex/; \
 	  _agents="$${_agents:+$${_agents},}codex"; \
 	fi; \
+	if [ -f "$(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig" ]; then \
+	  docker exec -u root $(DOCKER_CONTAINER) mkdir -p /tmp/ugw-reload/opencode; \
+	  docker cp "$(CONTAINER_CFG)/opencode/." $(DOCKER_CONTAINER):/tmp/ugw-reload/opencode/; \
+	  _agents="$${_agents:+$${_agents},}opencode"; \
+	fi; \
 	if [ -n "$${_agents}" ]; then \
 	  docker exec -u root $(DOCKER_CONTAINER) /tmp/ugw-reload/install.sh \
 	    --agents "$${_agents}" \
 	    --claude-source /tmp/ugw-reload/claude \
 	    --codex-source /tmp/ugw-reload/codex \
+	    --opencode-source /tmp/ugw-reload/opencode \
 	    --os linux; \
 	  _staged="$${_agents}"; \
 	fi; \
@@ -353,12 +368,12 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 	  echo "[docker-reload] No configs found in $(CONTAINER_CFG). Run make docker-config-all first."; \
 	fi
 	@docker exec -u root $(DOCKER_CONTAINER) rm -rf /tmp/ugw-reload
-	@echo "Harness reloaded (Claude Code + Codex + DeepSeek Harness). Restart your \`claude\` / \`codex\` / \`dsh\` session (exit and re-run) to pick it up."
+	@echo "Harness reloaded (Claude Code + Codex + opencode + DeepSeek Harness). Restart your \`claude\` / \`codex\` / \`opencode\` / \`dsh\` session (exit and re-run) to pick it up."
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
-	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
-		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config', 'make docker-config-codex', and/or 'make docker-config-dsh' first."; exit 1; }
+	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/opencode/opencode.json" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
+		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config', 'make docker-config-codex', 'make docker-config-opencode', and/or 'make docker-config-dsh' first."; exit 1; }
 	@test -n "$(WS_HOST)" \
 		|| { echo "Could not resolve host for profile '$(PROFILE)' in ~/.databrickscfg."; exit 1; }
 	docker run -d --name $(DOCKER_CONTAINER) \
@@ -369,6 +384,7 @@ docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes 
 		-v "$(abspath $(CONTAINER_CFG)/claude-code/linux)":/opt/agent-config:ro \
 		$(CODEX_CFG_MOUNT) \
 		$(DSH_CFG_MOUNT) \
+		$(OPENCODE_CFG_MOUNT) \
 		$(DOCKER_IMAGE)
 	@echo ""
 	@echo "Container '$(DOCKER_CONTAINER)' up (profile '$(PROFILE)' -> $(WS_HOST))."
