@@ -56,9 +56,9 @@ NARROW_API_TYPE = "openai/v1/responses"
 # surface; Codex appends /responses, so <base_url>/responses = mlflow/v1/responses.
 DEFAULT_GATEWAY_PATH = "/ai-gateway/mlflow/v1"
 
-# Preferred default model, by endpoint leaf name (Codex is GPT-oriented). First
-# match wins; falls back to the first discovered endpoint if none are present.
-DEFAULT_MODEL_PREFERENCES = ["gpt", "gpt-sol", "gpt-5-6-sol", "gpt-5-5", "gpt-5-6-luna"]
+# Preferred default model, by endpoint leaf name. First match wins; falls back
+# to the first discovered endpoint if none are present.
+DEFAULT_MODEL_PREFERENCES = ["kimi-k3", "gpt", "gpt-sol", "gpt-5-6-sol", "gpt-5-5", "gpt-5-6-luna"]
 
 # Codex reasoning-effort levels (mirrors the CLI's own enum).
 REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"]

@@ -108,6 +108,7 @@ def _user_plugin_ref() -> str:
 # Preferred default model, by endpoint leaf name (aliases first). First match
 # wins; falls back to the first discovered endpoint if none are present.
 DEFAULT_MODEL_PREFERENCES = [
+    "kimi-k3",
     "claude-sonnet", "claude-sonnet-4-5", "claude-opus",
     "gpt", "gpt-5-6-sol", "gpt-5-5",
     "gemini", "gemini-2-5-pro",
