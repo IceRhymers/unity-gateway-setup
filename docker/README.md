@@ -13,7 +13,7 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 - **Claude Code** + **Codex** + **opencode** + **DeepSeek Harness** (`dsh`) + the
   **databricks CLI** + **python3** (for the api-key, otel-headers, and Codex auth
   helpers).
-- **`ucode`** (Unity AI Gateway coding CLI), installed via `uv` and available on
+- **`ug`** (Unity AI Gateway coding CLI), installed via `uv` and available on
   `PATH` by default. The harness uses it to discover Databricks MCP services and
   register them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
 - The generated **Claude Code** config. The harness stages it as Linux
@@ -55,7 +55,7 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 
 ```bash
 make tf-apply           # provision the telemetry infra first (creates tables, SP, secret)
-make docker-build       # build the image (once) — Claude Code + Codex + opencode + dsh + databricks CLI + ucode
+make docker-build       # build the image (once) — Claude Code + Codex + opencode + dsh + databricks CLI + ug
 make docker-config-all  # generate all agent configs (or docker-config / docker-config-codex / docker-config-opencode / docker-config-dsh)
 make docker-up          # start the container (maps 8020, mounts configs, writes the profile)
 make docker-login       # runs `databricks auth login` inside — see browser note below
@@ -185,11 +185,11 @@ restarting the container, run `make docker-reload` (reloads all agent configs).
 
 ## MCP servers
 
-The image includes `ucode`, so you can test MCP-service discovery and registration
+The image includes `ug`, so you can test MCP-service discovery and registration
 against the deployed MDM config. After authenticating (`make docker-login`):
 
 ```bash
-make docker-mcp        # runs `ucode configure mcp` inside the container
+make docker-mcp        # runs `ug configure mcp` inside the container
 ```
 
 It discovers the Databricks MCP servers your identity can see (external
@@ -197,7 +197,7 @@ connections, Databricks SQL, managed MCPs, and `system.ai.*` services). It lets 
 pick which to add. Then it writes them to the agent's **user-level** config
 (`~/.claude.json` for Claude Code, `~/.codex/config.toml`'s `[mcp_servers.*]` for
 Codex), separate from the gateway-routing configs this harness stages. It registers
-each server as a local stdio bridge (`ucode mcp-proxy`) that mints a fresh OAuth
+each server as a local stdio bridge (`ug mcp-proxy`) that mints a fresh OAuth
 token per request from the container's databricks profile.
 
 Then run `claude` or `codex` (via `make docker-shell`). The registered MCP tools are
@@ -208,7 +208,7 @@ make docker-mcp ARGS="--agents claude"
 make docker-mcp ARGS="--agents codex"
 ```
 
-> The image installs `ucode` from `github.com/databricks/ucode` at build time.
+> The image installs `ug` from `github.com/databricks/ucode` at build time.
 > If that repo needs auth or a mirror, override the source:
 > `make docker-build UCODE_SOURCE="git+https://<token>@github.com/databricks/ucode"`.
 

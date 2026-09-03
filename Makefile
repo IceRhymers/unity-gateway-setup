@@ -317,7 +317,7 @@ PYPI_INDEX       ?= $(shell if [ -n "$$UV_DEFAULT_INDEX" ]; then echo "$$UV_DEFA
 PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 
 .PHONY: docker-build
-docker-build: ## Build the test-harness image (Claude Code + Codex + opencode + dsh + databricks CLI + python3 + ucode)
+docker-build: ## Build the test-harness image (Claude Code + Codex + opencode + dsh + databricks CLI + python3 + ug)
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) -f docker/Dockerfile .
 
 # The docker-config* targets delegate to the SAME agent-* generation, only
@@ -422,17 +422,17 @@ docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes 
 	@echo ""
 	@echo "Container '$(DOCKER_CONTAINER)' up (profile '$(PROFILE)' -> $(WS_HOST))."
 	@echo "  make docker-login   # authenticate (opens a URL to paste into your host browser)"
-	@echo "  make docker-shell   # then run: claude   (or: codex / ucode codex / dsh web --no-open)"
+	@echo "  make docker-shell   # then run: claude   (or: codex / ug codex / dsh web --no-open)"
 
 .PHONY: docker-login
 docker-login: ## Run `databricks auth login` inside the container (default profile)
 	docker exec -it -u dev $(DOCKER_CONTAINER) databricks auth login --profile $(PROFILE)
 
 .PHONY: docker-mcp
-docker-mcp: ## Discover + register Databricks MCP servers into Claude Code's user config (runs `ucode configure mcp` inside; auth first via docker-login)
+docker-mcp: ## Discover + register Databricks MCP servers into Claude Code's user config (runs `ug configure mcp` inside; auth first via docker-login)
 	docker exec -it -u dev -w /home/dev/work \
 		-e DATABRICKS_CONFIG_PROFILE="$(PROFILE)" \
-		$(DOCKER_CONTAINER) ucode configure mcp $(ARGS)
+		$(DOCKER_CONTAINER) ug configure mcp $(ARGS)
 
 .PHONY: docker-shell
 docker-shell: ## Open an interactive shell in the container (as the dev user)

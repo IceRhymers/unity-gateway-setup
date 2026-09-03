@@ -11,7 +11,7 @@ FROM node:22-bookworm-slim@${BASE_DIGEST}
 # Toolchain: databricks CLI (auth + otelHeadersHelper), python3 (helpers),
 # jq (the emit_hook_events.sh reporting hook builds its JSON payloads with it),
 # socat (bridges the OAuth loopback callback to the host), gosu (drop to non-root).
-# uv + ucode (below) provide MCP-service discovery/registration.
+# uv + ug (below) provide MCP-service discovery/registration.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq python3 socat gosu unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -60,16 +60,16 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
       | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
     && uv --version | grep -q "${UV_VERSION}"
 
-# ucode (Unity AI Gateway coding CLI): discovers Databricks MCP services and
+# ug (Unity AI Gateway coding CLI): discovers Databricks MCP services and
 # registers them into a tool's user-level config, bridging each through the
-# bundled `ucode mcp-proxy` (no separate uvx uc-mcp-proxy needed). Requires
+# bundled `ug mcp-proxy` (no separate uvx uc-mcp-proxy needed). Requires
 # Python 3.12+, which uv fetches and manages itself (bookworm's python3 is 3.11).
 # Everything is installed into shared, world-readable /opt/uv with entry points
-# on PATH via /usr/local/bin, so the non-root `dev` user can run `ucode`.
+# on PATH via /usr/local/bin, so the non-root `dev` user can run `ug`.
 # UCODE_SOURCE is pinned to a commit SHA by default (reproducible builds). Override
 # with a mirror, a private URL with token, or a local path — mirrors the
 # NPM_REGISTRY override pattern.
-ARG UCODE_SOURCE="git+https://github.com/databricks/ucode@848022a4b085ac389437f1adcdf2ec63f2cfeb01"
+ARG UCODE_SOURCE="git+https://github.com/databricks/ucode@95999aa5188951662ac1ccc95e1c05599d601a32"
 # PYPI_INDEX: if the build host resolves PyPI through a proxy/mirror, the Makefile
 # forwards it here (from uv's global config, mirroring NPM_REGISTRY) so uv can
 # fetch ucode's build backend. Empty (default) uses public PyPI, so builds on
@@ -81,7 +81,7 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
 RUN if [ -n "$PYPI_INDEX" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi \
     && uv tool install "$UCODE_SOURCE" \
     && chmod -R a+rX /opt/uv \
-    && ucode --version
+    && ug --version
 
 # Non-root user for interactive sessions (Claude Code + auth). Managed settings
 # are written root-owned at container start; the shell runs as this user.

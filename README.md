@@ -16,7 +16,7 @@ It has three layers plus a launch surface:
    opinionated, deployable agent configs. These are the routing baseline: Claude
    Code `managed-settings.json` (+ an OTEL headers helper) and a Codex
    `config.toml`.
-3. **`ucode`** is the **intended entrypoint** developers use to launch agents. It
+3. **`ug`** is the **intended entrypoint** developers use to launch agents. It
    adds MCP discovery and a governed OAuth surface on top of that baseline.
 4. **Docker harness** (`docker/`) tests the generated configs (routing,
    telemetry, and MCP) in an isolated container. The container never touches the
@@ -31,16 +31,16 @@ It has three layers plus a launch surface:
                                                           fleet-wide baseline
                                                                       │
                                                                       ▼
-                                          developer machine:  ucode ──▶ claude / codex / …
+                                          developer machine:  ug ──▶ claude / codex / …
                                                              (MCP discovery + OAuth)
 ```
 
-The MDM baseline makes **inference** work. `ucode` is how agents are meant to be
+The MDM baseline makes **inference** work. `ug` is how agents are meant to be
 **launched**. The two are complementary. Details are below.
 
 ---
 
-## Launching agents: `ucode` is the intended entrypoint
+## Launching agents: `ug` is the intended entrypoint
 
 The generated `managed-settings.json` (deployed fleet-wide via MDM) fully
 configures **inference**. It does five things:
@@ -54,50 +54,50 @@ configures **inference**. It does five things:
 With that file in place, running `claude` directly **just works** for inference.
 That path stays supported.
 
-But the **intended surface is `ucode`** (the Unity AI Gateway coding CLI),
+But the **intended surface is `ug`** (the Unity AI Gateway coding CLI),
 because it supplies the two things a static MDM file cannot:
 
-- **MCP discovery.** `ucode mcp add` finds the Databricks MCP servers your
+- **MCP discovery.** `ug mcp add` finds the Databricks MCP servers your
   identity can see — UC external connections, Databricks SQL, managed MCPs, and
-  `system.ai.*` services. You pick which to register. `ucode` writes them into
+  `system.ai.*` services. You pick which to register. `ug` writes them into
   the agent's **user-level** config (alongside, not replacing, the MDM baseline).
-  `ucode` bridges each server as a local stdio proxy.
-- **A governed OAuth surface.** A launch through `ucode` (bare `ucode`, or
-  `ucode claude`) runs a per-launch Databricks auth and AI Gateway re-validation
+  `ug` bridges each server as a local stdio proxy.
+- **A governed OAuth surface.** A launch through `ug` (bare `ug`, or
+  `ug claude`) runs a per-launch Databricks auth and AI Gateway re-validation
   before it starts the agent. Every registered MCP bridge mints a **fresh OAuth
-  token per request** from your Databricks profile. `ucode` governs tool access
+  token per request** from your Databricks profile. `ug` governs tool access
   the same way it governs inference, with no bearer tokens baked into any config
   file.
 
-`ucode` also closes a gap the MDM baseline deliberately leaves open. The managed
+`ug` also closes a gap the MDM baseline deliberately leaves open. The managed
 config **denies the built-in `WebSearch` tool**, because built-in search cannot
-reach `api.anthropic.com` through the gateway. `ucode mcp web-search` supplies a
+reach `api.anthropic.com` through the gateway. `ug mcp web-search` supplies a
 gateway-backed `web_search` MCP as the replacement.
 
 ### Day-to-day
 
 ```bash
-ucode                      # launch the agent your workspace's managed config selects
-ucode claude               # launch Claude Code specifically, routed through the gateway
-ucode claude --model <catalog.schema.name>   # pin a specific gateway model for this launch
+ug                      # launch the agent your workspace's managed config selects
+ug claude               # launch Claude Code specifically, routed through the gateway
+ug claude --model <catalog.schema.name>   # pin a specific gateway model for this launch
 
 # one-time (per workspace / when MCP servers change):
-ucode configure            # set up workspace + tool settings (auth, routing)
-ucode mcp add              # discover + register Databricks MCP servers
-ucode status               # show workspace, tool configs, saved model selections
-ucode usage                # AI Gateway usage summary (last 7 days)
+ug configure            # set up workspace + tool settings (auth, routing)
+ug mcp add              # discover + register Databricks MCP servers
+ug status               # show workspace, tool configs, saved model selections
+ug usage                # AI Gateway usage summary (last 7 days)
 ```
 
-`ucode` supports Claude Code, Codex, Gemini CLI, OpenCode, Copilot CLI, Pi, and
+`ug` supports Claude Code, Codex, Gemini CLI, OpenCode, Copilot CLI, Pi, and
 Cursor — the same gateway + MCP + OAuth surface for each.
 
 ### `claude` directly still works
 
 The MDM `managed-settings.json` configures inference on its own. So invoking
 `claude` (or any agent) directly routes its model calls through the gateway and
-emits telemetry with no `ucode` involvement. The direct path gives up two
+emits telemetry with no `ug` involvement. The direct path gives up two
 things: the discovered Databricks MCP tools and the per-launch auth
-re-validation. Treat the direct path as a supported fallback. **Prefer `ucode`**
+re-validation. Treat the direct path as a supported fallback. **Prefer `ug`**
 for normal work.
 
 ---
@@ -163,28 +163,28 @@ Each developer authenticates once with
 each developer also needs `READ_SECRET` on the telemetry UC secret (grant a group
 via `telemetry_reader_groups`).
 
-### 4. Developers launch through `ucode`
+### 4. Developers launch through `ug`
 
 Follow these steps:
 
-1. Install `ucode` with `uv tool install git+https://github.com/databricks/ucode`.
-2. Run `ucode configure` and `ucode mcp add` once.
-3. Run `ucode` or `ucode claude` from then on.
+1. Install `ug` with `uv tool install git+https://github.com/databricks/ucode`.
+2. Run `ug configure` and `ug mcp add` once.
+3. Run `ug` or `ug claude` from then on.
 
-See [Launching agents](#launching-agents-ucode-is-the-intended-entrypoint)
+See [Launching agents](#launching-agents-ug-is-the-intended-entrypoint)
 above.
 
 ### Testing it first (Docker harness)
 
 Before you touch real machines, validate the generated config end-to-end in an
-isolated container. This covers gateway routing, OTEL export, and `ucode` MCP
+isolated container. This covers gateway routing, OTEL export, and `ug` MCP
 discovery. The container never touches the host's own managed settings:
 
 ```bash
 make docker-test     # build + generate both agent configs + start the container
 make docker-login    # databricks auth login inside (browser on host)
-make docker-mcp      # discover + register Databricks MCP servers via ucode
-make docker-shell    # exec in; run `ucode claude` / `ucode codex` (or `claude` / `codex`)
+make docker-mcp      # discover + register Databricks MCP servers via ug
+make docker-shell    # exec in; run `ug claude` / `ug codex` (or `claude` / `codex`)
 ```
 
 See [`docker/README.md`](docker/README.md).
@@ -200,7 +200,7 @@ terraform/          Provision the gateway
 agent_setups/       Generate agent configs from the TF outputs
   scripts/            The generator (Claude Code + Codex; registry for more agents)
   generated/          Output (gitignored — embeds a workspace host)
-docker/             Isolated test harness (Claude Code + Codex + databricks CLI + ucode)
+docker/             Isolated test harness (Claude Code + Codex + databricks CLI + ug)
 Makefile            Task runner — `make help` lists targets
 ```
 
@@ -211,7 +211,7 @@ Makefile            Task runner — `make help` lists targets
 - The `databricks` CLI on PATH, with a `~/.databrickscfg` profile that has Unity
   Catalog + AI Gateway access.
 - Python 3.10+ (stdlib only) for the config generator.
-- `ucode` (`uv tool install git+https://github.com/databricks/ucode`, Python
+- `ug` (`uv tool install git+https://github.com/databricks/ucode`, Python
   3.12+) on each developer machine — the launch entrypoint.
 - Docker, only for the test harness.
 

@@ -78,7 +78,7 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
   `--skip-api-discovery` falls back to a schema heuristic for offline use.
 - **Governance:** `enforceAvailableModels` + `availableModels`, and
   `permissions.deny: ["WebSearch"]` (built-in search cannot reach
-  api.anthropic.com through the gateway, so replace it with `ucode mcp web-search`,
+  api.anthropic.com through the gateway, so replace it with `ug mcp web-search`,
   the gateway-backed `web_search` MCP).
 - **Model picker (opt-in, `--model-picker`):** `availableModels` is only an
   allow-list. It does **not** add rows to the interactive `/model` picker, which
@@ -230,9 +230,9 @@ has no enforcement. Run the script directly with `--dry-run` to preview,
 
 This `managed-settings.json` is the **inference baseline**. With it deployed, a
 direct `claude` call routes through the gateway and emits telemetry on its own. The
-**intended launch surface is `ucode`**, which layers Databricks MCP discovery and a
+**intended launch surface is `ug`**, which layers Databricks MCP discovery and a
 per-request OAuth surface on top — see the repo
-[README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
+[README](../../README.md#launching-agents-ug-is-the-intended-entrypoint).
 
 - **OTEL helper** (`otel-headers-helper.sh`, when telemetry is on): needs `python3`
   + the `databricks` CLI on PATH, and `READ_SECRET` on the telemetry UC secret
@@ -363,9 +363,9 @@ To overlay the gateway provider on an existing (for example ChatGPT-app)
 Either way, each developer runs `databricks auth login --host <url> --profile <profile>`
 once, interactively — browser OAuth (U2M), cannot be pushed. `python3` + the
 `databricks` CLI must be on PATH. As with Claude Code, the intended launch surface
-is `ucode` (`ucode codex`), which adds MCP discovery and the per-request OAuth
+is `ug` (`ug codex`), which adds MCP discovery and the per-request OAuth
 surface — see the repo
-[README](../../README.md#launching-agents-ucode-is-the-intended-entrypoint).
+[README](../../README.md#launching-agents-ug-is-the-intended-entrypoint).
 
 ### OTEL telemetry — none client-side, by design
 
@@ -378,7 +378,7 @@ dependency. This is a deliberate choice, not a gap:
   interpolation resolved once at process start. There is no headers *command* like
   Claude Code's `otelHeadersHelper`, so a launch-minted OAuth token would expire
   mid-session (SP M2M tokens ~1h) with no way to refresh.
-- `ucode` (the intended launch surface) ships **no OTEL forwarder** either — it
+- `ug` (the intended launch surface) ships **no OTEL forwarder** either — it
   treats Codex telemetry the same way.
 
 A refresh-safe client-OTEL path would require a local forwarder that injects a
