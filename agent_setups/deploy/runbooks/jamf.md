@@ -53,6 +53,23 @@ point (or a Jamf Pro package).
 
 ---
 
+## Exit code reference
+
+`install.sh` returns a structured exit code. Jamf marks the policy failed when the exit code is non-zero.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (or `--dry-run` / `--uninstall` with all files removed) |
+| 1 | Usage error |
+| 2 | Not root and no `--target-root` set |
+| 3 | Critical prereq missing |
+| 4 | Required source file missing (`managed-settings.json`) |
+| 5 | Copy or permission failure |
+| 6 | Uninstall failure. A file or the marker could not be removed. The marker is left intact for retry. |
+| 7 | Smoke test failure. The gateway returned a non-200 response. Only possible when `--smoke-test` is passed. |
+
+---
+
 ## Step 2 — Create a Script policy
 
 In Jamf Pro, create a **Script** (Computers → Management → Scripts → New). Paste the
@@ -152,3 +169,46 @@ Replace `<host>` with your Databricks workspace URL (e.g.
 `https://myworkspace.cloud.databricks.com`).
 
 You **cannot automate** this step. It requires interactive browser OAuth (U2M).
+
+---
+
+## Uninstall
+
+To remove the managed config files from a machine, create a separate Script policy.
+The uninstall script needs only `--os` and the real system paths. It does not need `--source`.
+
+```sh
+#!/bin/sh
+set -eu
+
+WORK_DIR="/tmp/unity-gateway-agents-install"
+
+# Unpack the tarball to get install.sh (the same tarball used for installation).
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR"
+cp "$PAYLOAD" "$WORK_DIR/"
+tar -xzf "$WORK_DIR/unity-gateway-agents.tar.gz" -C "$WORK_DIR" --strip-components=1
+
+cd "$WORK_DIR"
+./install.sh --uninstall
+EXIT_CODE=$?
+
+rm -rf "$WORK_DIR"
+
+if [ "$EXIT_CODE" -ne 0 ]; then
+  echo "install.sh --uninstall exited $EXIT_CODE — policy failed" >&2
+  exit "$EXIT_CODE"
+fi
+
+echo "Unity AI Gateway agent configs removed (Phase A reversed)."
+```
+
+Notes on uninstall behavior:
+
+- `install.sh --uninstall` reads the `files=` list from the version marker.
+  It removes only files that the installer placed.
+- Files not in the marker (user files, `.bak-*` backups) are not removed.
+- When the install directory is empty after removal, the script removes the directory.
+- When the install directory is not empty, the script leaves it in place and warns.
+- Exit 6 means a file could not be removed. The marker is left intact. Re-run the policy to retry.
+- `.bak-*` backup files are never removed by `--uninstall`. Remove them manually if needed.

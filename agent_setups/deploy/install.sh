@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # install.sh — single runtime placement authority for unity-gateway agent configs.
 #
-# Deploys generated Claude Code, Codex, and/or opencode config bundles to system
+# Deploys generated Claude Code, Codex, and opencode config bundles to system
 # paths. Run as root for production deployment, or with --target-root for
 # unprivileged staging and unit tests.
 #
@@ -24,15 +24,20 @@
 #   --os macos|linux        Force OS (default: autodetect via uname -s)
 #   --agent claude-code|codex|opencode  Pair with --print-target-dir
 #   --print-target-dir      Print resolved install dir for --os/--agent and exit 0
+#   --uninstall             Remove placed files and version marker; exit 0 on success
+#   --smoke-test            After install, probe the gateway endpoint (exit 7 on non-200)
+#   --host <url>            Gateway base URL for --smoke-test (default: derived from installed configs)
 #   -h, --help              Show this message
 #
 # Exit codes:
-#   0  success / --dry-run / --print-target-dir
+#   0  success / --dry-run / --print-target-dir / --uninstall (all removed)
 #   1  usage error
 #   2  not root (and --target-root not set)
 #   3  critical prerequisite missing
 #   4  required source file missing (managed-settings.json)
 #   5  copy or permission failure
+#   6  uninstall: file removal or marker removal failed (marker left intact for retry)
+#   7  smoke test: gateway returned a non-200 response
 set -eu
 
 # ---------------------------------------------------------------------------
@@ -49,6 +54,11 @@ OPENCODE_SOURCE=""
 OS_OVERRIDE=""
 PRINT_AGENT=""
 PRINT_TARGET_DIR=0
+UNINSTALL=0
+SMOKE_TEST=0
+HOST=""
+_BACKUP_SEQ=0
+_smoke_failed=0
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -92,15 +102,24 @@ Options:
   --agent claude-code|codex|opencode
                           Pair with --print-target-dir to select which agent
   --print-target-dir      Print resolved install dir for --os/--agent, then exit 0
+  --uninstall             Remove placed files and version marker (needs --os and --target-root;
+                          does not require --source). Exit 6 on removal failure.
+  --smoke-test            After install, POST a ping to the gateway. Exit 7 on non-200.
+                          Requires curl and a valid token. Skipped if host or token
+                          cannot be resolved.
+  --host <url>            Gateway base URL for --smoke-test (default: derived from
+                          ANTHROPIC_BASE_URL in managed-settings.json or equivalent)
   -h, --help              Show this message
 
 Exit codes:
-  0  success / --dry-run / --print-target-dir
+  0  success / --dry-run / --print-target-dir / --uninstall (all removed)
   1  usage error
   2  not root (and --target-root not set)
-  3  critical prerequisite missing
+  3  critical prereq missing
   4  required source file missing (managed-settings.json)
   5  copy/permission failure
+  6  uninstall: removal or marker failure (marker left intact for retry)
+  7  smoke test: gateway returned non-200
 EOF
   exit 1
 }
@@ -121,6 +140,9 @@ while [ $# -gt 0 ]; do
     --os)                shift; OS_OVERRIDE="${1:?--os requires a value}" ;;
     --agent)             shift; PRINT_AGENT="${1:?--agent requires a value}" ;;
     --print-target-dir)  PRINT_TARGET_DIR=1 ;;
+    --uninstall)         UNINSTALL=1 ;;
+    --smoke-test)        SMOKE_TEST=1 ;;
+    --host)              shift; HOST="${1:?--host requires a value}" ;;
     -h|--help)           _usage ;;
     *)                   _warn "Unknown option: $1"; _usage ;;
   esac
@@ -263,10 +285,37 @@ _action_mkdir() {
   fi
 }
 
+# _backup_path <dest>
+# Prints a backup path: <dest>.bak-<UTC>-<pid>-<seq>.
+# Uses a run-global _BACKUP_SEQ counter; increments until the path is free.
+_backup_path() {
+  _bp_ts="$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null || date -u | tr ' :' '__')"
+  _BACKUP_SEQ=$(( _BACKUP_SEQ + 1 ))
+  _bp_base="$1.bak-${_bp_ts}-$$-${_BACKUP_SEQ}"
+  while [ -e "${_bp_base}" ]; do
+    _BACKUP_SEQ=$(( _BACKUP_SEQ + 1 ))
+    _bp_base="$1.bak-${_bp_ts}-$$-${_BACKUP_SEQ}"
+  done
+  printf '%s' "${_bp_base}"
+}
+
 _action_copy() {
+  # $1=src  $2=dest
+  # Identical content: skip (no backup, no copy).
+  if [ -e "$2" ] && cmp -s "$1" "$2"; then
+    _info "  unchanged: \"$2\""
+    return 0
+  fi
   if [ "${DRY_RUN}" = "1" ]; then
+    if [ -e "$2" ]; then
+      _info "  [plan] backup  \"$2\""
+    fi
     _info "  [plan] copy  \"$1\"  ->  \"$2\""
   else
+    if [ -e "$2" ]; then
+      _ac_bak="$(_backup_path "$2")"
+      cp -p -- "$2" "${_ac_bak}" || _fatal 5 "backup failed: $2 -> ${_ac_bak}"
+    fi
     cp -- "$1" "$2" || _fatal 5 "copy failed: $1 -> $2"
   fi
 }
@@ -297,13 +346,105 @@ _action_chown() {
 }
 
 # ---------------------------------------------------------------------------
+# Uninstall helpers
+# ---------------------------------------------------------------------------
+
+# _default_files_for <agent> <install_dir>
+# Prints mandatory basenames unconditionally, then probes for optional ones.
+_default_files_for() {
+  _dff_agent="$1"
+  _dff_dir="$2"
+  case "${_dff_agent}" in
+    claude-code)
+      printf 'managed-settings.json'
+      [ -e "${_dff_dir}/otel-headers-helper.sh" ] && printf ' otel-headers-helper.sh'
+      [ -e "${_dff_dir}/emit_hook_events.sh" ]    && printf ' emit_hook_events.sh'
+      ;;
+    codex)
+      printf 'managed_config.toml requirements.toml'
+      [ -e "${_dff_dir}/emit_hook_events.sh" ] && printf ' emit_hook_events.sh'
+      ;;
+    opencode)
+      printf 'opencode.json'
+      [ -e "${_dff_dir}/databricks-auth.ts" ]              && printf ' databricks-auth.ts'
+      [ -e "${_dff_dir}/ai.opencode.managed.mobileconfig" ] && printf ' ai.opencode.managed.mobileconfig'
+      ;;
+  esac
+  printf '\n'
+}
+
+# _uninstall_agent <agent>
+# Reads the placed files from the version marker and removes them.
+# Removes the marker last. Never uses rm -rf. Preserves .bak-* files.
+_uninstall_agent() {
+  _ua_agent="$1"
+  _ua_raw="$(_raw_dir_for "${OS}" "${_ua_agent}")"
+  _ua_dir="${TARGET_ROOT:-}${_ua_raw}"
+  _ua_marker="${_ua_dir}/.unity-gateway-version"
+
+  _info ""
+  _info "=== Uninstall: ${_ua_agent} ==="
+  _info "  target : ${_ua_dir}"
+
+  if [ ! -f "${_ua_marker}" ]; then
+    _warn "No version marker at '${_ua_marker}'. Nothing placed by install.sh."
+    return 0
+  fi
+
+  # Read files= from marker; fall back to probing when the line is absent.
+  _ua_files="$(grep '^files=' "${_ua_marker}" 2>/dev/null | cut -d= -f2- || true)"
+  if [ -z "${_ua_files}" ]; then
+    _warn "Marker has no files= line. Using probing fallback."
+    _ua_files="$(_default_files_for "${_ua_agent}" "${_ua_dir}")"
+  fi
+
+  _ua_failed=0
+  for _ua_f in ${_ua_files}; do
+    _ua_path="${_ua_dir}/${_ua_f}"
+    if [ ! -e "${_ua_path}" ]; then
+      _info "  skip   : \"${_ua_path}\" (not present)"
+      continue
+    fi
+    if [ "${DRY_RUN}" = "1" ]; then
+      _info "  [plan] rm  \"${_ua_path}\""
+    else
+      if rm -f -- "${_ua_path}" 2>/dev/null; then
+        _info "  removed: \"${_ua_path}\""
+      else
+        _warn "Failed to remove '${_ua_path}'"
+        _ua_failed=1
+      fi
+    fi
+  done
+
+  if [ "${_ua_failed}" = "1" ]; then
+    _fatal 6 "Uninstall incomplete: some files could not be removed. Marker left intact for retry."
+  fi
+
+  # Remove the marker last.
+  if [ "${DRY_RUN}" = "1" ]; then
+    _info "  [plan] rm  \"${_ua_marker}\""
+  else
+    rm -f -- "${_ua_marker}" || _fatal 6 "Failed to remove marker: ${_ua_marker}"
+    _info "  removed: marker"
+    # Remove the directory only when it is empty (non-fatal if not empty).
+    if rmdir -- "${_ua_dir}" 2>/dev/null; then
+      _info "  removed empty dir: \"${_ua_dir}\""
+    else
+      _warn "Left '${_ua_dir}' in place (not empty — user files remain)."
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Version marker
 # ---------------------------------------------------------------------------
 _write_version_marker() {
-  # $1=agent  $2=install_dir  $3=source_dir_for_marker
+  # $1=agent  $2=install_dir  $3=source_dir_for_marker  $4=space-separated placed basenames
   _wvm_agent="$1"
   _wvm_dir="$2"
   _wvm_src="$3"
+  _wvm_files="${4:-}"
   _wvm_marker="${_wvm_dir}/.unity-gateway-version"
 
   # Read packaged VERSION if present (written by make deploy-package)
@@ -336,6 +477,7 @@ agent=${_wvm_agent}
 os=${OS}
 source=${_wvm_src}
 installer_sha=${_wvm_sha}
+files=${_wvm_files}
 EOF
     chmod 644 "${_wvm_marker}"
   fi
@@ -436,22 +578,25 @@ _install_claude() {
 
   _action_copy  "${_cc_src}/managed-settings.json" "${_cc_dir}/managed-settings.json"
   _action_chmod 644 "${_cc_dir}/managed-settings.json"
+  _cc_files="managed-settings.json"
 
   # Optional: otel-headers-helper.sh
   if [ -f "${_cc_src}/otel-headers-helper.sh" ]; then
     _action_copy  "${_cc_src}/otel-headers-helper.sh" "${_cc_dir}/otel-headers-helper.sh"
     _action_chmod 755 "${_cc_dir}/otel-headers-helper.sh"
+    _cc_files="${_cc_files} otel-headers-helper.sh"
   fi
 
   # Optional: emit_hook_events.sh
   if [ -f "${_cc_src}/emit_hook_events.sh" ]; then
     _action_copy  "${_cc_src}/emit_hook_events.sh" "${_cc_dir}/emit_hook_events.sh"
     _action_chmod 755 "${_cc_dir}/emit_hook_events.sh"
+    _cc_files="${_cc_files} emit_hook_events.sh"
   fi
 
   _action_chown "${_owner}" "${_cc_dir}"
 
-  _write_version_marker "claude-code" "${_cc_dir}" "${_cc_src}"
+  _write_version_marker "claude-code" "${_cc_dir}" "${_cc_src}" "${_cc_files}"
 }
 
 # ---------------------------------------------------------------------------
@@ -479,15 +624,17 @@ _install_codex() {
 
     _action_copy  "${_cx_etc}/requirements.toml"   "${_cx_dir}/requirements.toml"
     _action_chmod 644 "${_cx_dir}/requirements.toml"
+    _cx_files="managed_config.toml requirements.toml"
 
     if [ -f "${_cx_etc}/emit_hook_events.sh" ]; then
       _action_copy  "${_cx_etc}/emit_hook_events.sh" "${_cx_dir}/emit_hook_events.sh"
       _action_chmod 755 "${_cx_dir}/emit_hook_events.sh"
+      _cx_files="${_cx_files} emit_hook_events.sh"
     fi
 
     _action_chown "${_owner}" "${_cx_dir}"
 
-    _write_version_marker "codex" "${_cx_dir}" "${_cx_etc}"
+    _write_version_marker "codex" "${_cx_dir}" "${_cx_etc}" "${_cx_files}"
 
   elif [ -f "${_cx_src}/config.toml" ]; then
     # USER mode: per-user $CODEX_HOME — not a root-managed system placement
@@ -527,6 +674,7 @@ _install_opencode() {
 
     _action_copy  "${_oc_src}/opencode.json" "${_oc_dir}/opencode.json"
     _action_chmod 644 "${_oc_dir}/opencode.json"
+    _oc_files="opencode.json"
 
     # The auth plugin. opencode.json references it by a relative path, so it must
     # sit beside opencode.json in the managed dir. The .mobileconfig references
@@ -534,6 +682,7 @@ _install_opencode() {
     if [ -f "${_oc_src}/databricks-auth.ts" ]; then
       _action_copy  "${_oc_src}/databricks-auth.ts" "${_oc_dir}/databricks-auth.ts"
       _action_chmod 644 "${_oc_dir}/databricks-auth.ts"
+      _oc_files="${_oc_files} databricks-auth.ts"
     else
       _warn "opencode: databricks-auth.ts not found in '${_oc_src}'."
       _warn "  The config references it, so opencode auth will fail without it."
@@ -547,6 +696,7 @@ _install_opencode() {
     if [ "${OS}" = "macos" ]; then
       _action_copy  "${_oc_src}/ai.opencode.managed.mobileconfig" "${_oc_dir}/ai.opencode.managed.mobileconfig"
       _action_chmod 644 "${_oc_dir}/ai.opencode.managed.mobileconfig"
+      _oc_files="${_oc_files} ai.opencode.managed.mobileconfig"
       _warn "opencode: staged ai.opencode.managed.mobileconfig into \"${_oc_dir}\"."
       _warn "  An MDM must INSTALL this profile to activate the macOS hard-lock at"
       _warn "  /Library/Managed Preferences/ai.opencode.managed.plist (Jamf, or"
@@ -555,7 +705,7 @@ _install_opencode() {
 
     _action_chown "${_owner}" "${_oc_dir}"
 
-    _write_version_marker "opencode" "${_oc_dir}" "${_oc_src}"
+    _write_version_marker "opencode" "${_oc_dir}" "${_oc_src}" "${_oc_files}"
 
   elif [ -f "${_oc_src}/opencode.json" ]; then
     # USER mode: per-user ~/.config/opencode — not a root-managed system placement
@@ -571,7 +721,96 @@ _install_opencode() {
 }
 
 # ---------------------------------------------------------------------------
-# Post-install verification (never fatal)
+# Smoke-test helpers
+# ---------------------------------------------------------------------------
+
+# _scheme_authority <url>
+# Prints scheme + authority (https://host[:port]) with the path stripped.
+_scheme_authority() {
+  # shellcheck disable=SC3001
+  printf '%s' "$1" | sed -E 's#^(https?://[^/]+).*#\1#'
+}
+
+# _derive_host
+# Derives the gateway base URL from installed agent configs.
+# Precedence: claude-code ANTHROPIC_BASE_URL > codex base_url > opencode mlflow baseURL.
+_derive_host() {
+  _dh_result=""
+
+  if _contains "${AGENTS}" "claude-code"; then
+    _dh_cc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "claude-code")"
+    _dh_cc_file="${_dh_cc_dir}/managed-settings.json"
+    if [ -f "${_dh_cc_file}" ]; then
+      _dh_result="$(grep 'ANTHROPIC_BASE_URL' "${_dh_cc_file}" | grep -o 'https://[^"]*' | head -n1 || true)"
+    fi
+  fi
+
+  if [ -z "${_dh_result}" ] && _contains "${AGENTS}" "codex"; then
+    _dh_cx_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "codex")"
+    _dh_cx_file="${_dh_cx_dir}/managed_config.toml"
+    if [ -f "${_dh_cx_file}" ]; then
+      _dh_result="$(grep 'base_url' "${_dh_cx_file}" | grep -o 'https://[^"]*' | head -n1 || true)"
+    fi
+  fi
+
+  if [ -z "${_dh_result}" ] && _contains "${AGENTS}" "opencode"; then
+    _dh_oc_dir="${TARGET_ROOT:-}$(_raw_dir_for "${OS}" "opencode")"
+    _dh_oc_file="${_dh_oc_dir}/opencode.json"
+    if [ -f "${_dh_oc_file}" ]; then
+      _dh_result="$(grep -o 'https://[^"]*' "${_dh_oc_file}" | head -n1 || true)"
+    fi
+  fi
+
+  printf '%s' "${_dh_result}"
+}
+
+# _smoke_test
+# POSTs a minimal ping to the gateway. Sets _smoke_failed=1 on non-200.
+# Skips gracefully when host, curl, or token are unavailable.
+_smoke_test() {
+  _st_host="${HOST:-$(_derive_host)}"
+  if [ -z "${_st_host}" ]; then
+    _warn "smoke test: no host resolved; skipping (pass --host to set explicitly)."
+    return 0
+  fi
+  _st_host="$(_scheme_authority "${_st_host}")"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    _warn "smoke test: curl not found; skipping."
+    return 0
+  fi
+
+  _st_token="${DATABRICKS_BEARER:-}"
+  if [ -z "${_st_token}" ]; then
+    _st_token="$(databricks auth token --host "${_st_host}" --profile "${PROFILE}" --output json 2>/dev/null \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])' 2>/dev/null \
+      || true)"
+  fi
+  if [ -z "${_st_token}" ]; then
+    _warn "smoke test: no token available; skipping."
+    return 0
+  fi
+
+  _st_model="${SMOKE_MODEL:-databricks-claude-sonnet-4}"
+  _st_url="${_st_host}/ai-gateway/mlflow/v1/chat/completions"
+  _st_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -X POST "${_st_url}" \
+    -H "Authorization: Bearer ${_st_token}" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${_st_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+    || printf '000')"
+
+  if [ "${_st_code}" = "200" ]; then
+    _info "  smoke test: OK (${_st_url} -> HTTP ${_st_code})"
+  else
+    _warn "smoke test: non-200 response from ${_st_url} (HTTP ${_st_code})"
+    _smoke_failed=1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Post-install verification (never fatal on its own; smoke test may set
+# _smoke_failed=1, which is checked in main after _verify returns)
 # ---------------------------------------------------------------------------
 _verify() {
   _info ""
@@ -594,6 +833,12 @@ _verify() {
 
   if _contains "${AGENTS}" "claude-code"; then
     _info "  Claude Code: run '/status' in-session to verify managed settings are active."
+  fi
+
+  if [ "${SMOKE_TEST}" = "1" ]; then
+    _smoke_test
+  else
+    _info "  smoke test: not run (pass --smoke-test to probe the gateway)."
   fi
 }
 
@@ -621,6 +866,20 @@ if [ "${DRY_RUN}" = "1" ]; then
   _info "  (DRY-RUN MODE -- no files will be written)"
 fi
 
+# ---------------------------------------------------------------------------
+# Uninstall short-circuit — runs before _check_prereqs; needs only --os and
+# --target-root. Does not require --source.
+# ---------------------------------------------------------------------------
+if [ "${UNINSTALL}" = "1" ]; then
+  _info "  mode       : UNINSTALL"
+  for _main_agent in claude-code codex opencode; do
+    if _contains "${AGENTS}" "${_main_agent}"; then
+      _uninstall_agent "${_main_agent}"
+    fi
+  done
+  exit 0
+fi
+
 _check_prereqs
 
 if _contains "${AGENTS}" "claude-code"; then
@@ -638,5 +897,9 @@ fi
 _verify
 
 _phase_b_handoff
+
+if [ "${_smoke_failed}" = "1" ]; then
+  _fatal 7 "Gateway smoke test failed (non-200 response). Check gateway connectivity and credentials."
+fi
 
 exit 0
