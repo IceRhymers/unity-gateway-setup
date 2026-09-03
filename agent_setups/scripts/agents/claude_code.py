@@ -38,7 +38,7 @@ TIER_PREFERENCES = {
     "opus": ["claude-opus", "claude-opus-5"],
     "sonnet": ["claude-sonnet", "claude-sonnet-5"],
     "haiku": ["claude-haiku-4-5", "claude-haiku"],
-    "fable": ["claude-fable", "claude-fable-5"],
+    "fable": ["claude-fable", "claude-fable-5-1", "claude-fable-5"],
 }
 
 # Declared capabilities per tier (custom gateway model IDs skip auto-detection,

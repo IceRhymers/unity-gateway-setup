@@ -56,7 +56,7 @@ variable "model_providers" {
       schema_comment = "Unity AI Gateway model services for Anthropic Claude"
       # Versionless aliases -> current latest model.
       aliases = {
-        "claude-fable"  = "system.ai.databricks-claude-fable-5"
+        "claude-fable"  = "system.ai.databricks-claude-fable-5-1"
         "claude-opus"   = "system.ai.databricks-claude-opus-5"
         "claude-sonnet" = "system.ai.databricks-claude-sonnet-5"
         "claude-haiku"  = "system.ai.databricks-claude-haiku-4-5"
@@ -68,6 +68,7 @@ variable "model_providers" {
         "system.ai.databricks-claude-sonnet-5",
         "system.ai.databricks-claude-sonnet-4-6",
         "system.ai.databricks-claude-haiku-4-5",
+        "system.ai.databricks-claude-fable-5-1",
         "system.ai.databricks-claude-fable-5",
       ]
     }
