@@ -1,5 +1,10 @@
-# OMC tooling state
+# OMC / Omnigent tooling state (session-local; never commit)
 .omc/
+.omo/
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
 
 # Terraform
 **/.terraform/

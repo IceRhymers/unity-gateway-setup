@@ -123,8 +123,16 @@ agent-dsh: ## Generate the DeepSeek Harness home patch + token plugin from TF ou
 agent-dsh-preview: ## Print the generated DeepSeek Harness patch + plugin without writing
 	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --stdout $(ARGS)
 
+.PHONY: agent-claude-desktop
+agent-claude-desktop: ## Generate the importable Claude Desktop config + helper scripts from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
+	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+
+.PHONY: agent-claude-desktop-preview
+agent-claude-desktop-preview: ## Print the generated Claude Desktop bundle without writing
+	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --stdout $(ARGS)
+
 .PHONY: agents
-agents: agent-claude-code agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + codex + opencode + dsh)
+agents: agent-claude-code agent-claude-desktop agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + claude-desktop + codex + opencode + dsh)
 
 .PHONY: opencode-install-local
 opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/.config/opencode for a local, non-managed install (PROFILE=, ARGS=)
@@ -225,6 +233,10 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	  if [ -d "$(OUT_DIR)/opencode" ]; then \
 	    mkdir -p "$${tmpdir}/opencode"; \
 	    cp -r "$(OUT_DIR)/opencode/." "$${tmpdir}/opencode/"; \
+	  fi; \
+	  if [ -d "$(OUT_DIR)/claude-desktop/$${os}" ]; then \
+	    mkdir -p "$${tmpdir}/claude-desktop/$${os}"; \
+	    cp -r "$(OUT_DIR)/claude-desktop/$${os}/." "$${tmpdir}/claude-desktop/$${os}/"; \
 	  fi; \
 	  cp $(INSTALL_SH) "$${tmpdir}/install.sh"; \
 	  printf '%s' "$(VERSION)" > "$${tmpdir}/VERSION"; \
