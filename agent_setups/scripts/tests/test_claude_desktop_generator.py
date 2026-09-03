@@ -298,6 +298,36 @@ class TelemetryOnTest(unittest.TestCase):
         self.assertIn("contentCapture", _macos_json(files)["otlp"])
 
 
+class ClaudeOnlyFilterTest(unittest.TestCase):
+    """Claude Desktop rejects any model name without 'claude'; the generator must
+    drop non-Claude anthropic-capable endpoints and error if none remain."""
+
+    def _mixed_context(self) -> GatewayContext:
+        eps = _endpoints() + [
+            Endpoint(key="anthropic/gpt-oss", schema="anthropic", name="gpt-oss",
+                     full_name="cat.anthropic.gpt-oss",
+                     foundation_model="models/system.ai.gpt-oss", inference_table=None),
+        ]
+        return GatewayContext(host=HOST, catalog_name="cat",
+                              provider_schemas={"anthropic": "cat.anthropic"}, endpoints=eps)
+
+    def test_non_claude_endpoint_excluded(self):
+        files = ClaudeDesktopGenerator().generate(self._mixed_context(), _args())
+        names = [m["name"] for m in _macos_json(files)["models"]["list"]]
+        self.assertNotIn("cat.anthropic.gpt-oss", names)
+        self.assertIn("cat.anthropic.claude-opus", names)
+
+    def test_all_non_claude_raises(self):
+        ctx = GatewayContext(
+            host=HOST, catalog_name="cat", provider_schemas={"anthropic": "cat.anthropic"},
+            endpoints=[Endpoint(key="anthropic/gpt-oss", schema="anthropic", name="gpt-oss",
+                                full_name="cat.anthropic.gpt-oss",
+                                foundation_model="models/system.ai.gpt-oss", inference_table=None)],
+        )
+        with self.assertRaises(SystemExit):
+            ClaudeDesktopGenerator().generate(ctx, _args())
+
+
 class BakeableValidationTest(unittest.TestCase):
     def test_unsafe_profile_rejected(self):
         with self.assertRaises(SystemExit):

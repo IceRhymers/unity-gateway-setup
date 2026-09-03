@@ -614,7 +614,23 @@ class ClaudeDesktopGenerator(AgentGenerator):
                 f"No endpoints expose the Anthropic API ({ANTHROPIC_API_TYPE}) in this workspace, "
                 "so Claude Desktop cannot route through this gateway."
             )
-        return eps
+
+        # Claude Desktop rejects any model whose name does not contain "claude". So we
+        # keep only the Claude endpoints (the app's own anthropic surface) and drop any
+        # other anthropic-API-capable model. Filter on the leaf name (the full_name
+        # carries it too).
+        claude_eps = [e for e in eps if "claude" in e.name.lower()]
+        dropped = [e.name for e in eps if e not in claude_eps]
+        if dropped:
+            print(f"[claude-desktop] dropping {len(dropped)} non-Claude model(s) "
+                  f"(Claude Desktop only accepts names containing 'claude'): {', '.join(sorted(dropped))}.",
+                  file=sys.stderr)
+        if not claude_eps:
+            raise SystemExit(
+                "No Claude models are available on this gateway. Claude Desktop only accepts "
+                "models whose name contains 'claude', so it cannot be configured here."
+            )
+        return claude_eps
 
     def _model_entries(self, eps: list[Endpoint], args: argparse.Namespace) -> list[dict]:
         """Build models.list, default-tier endpoint first (Claude Desktop's default).
