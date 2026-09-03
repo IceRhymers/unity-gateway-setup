@@ -90,6 +90,14 @@ RUN useradd -m -u 1001 -s /bin/bash dev \
     && mkdir -p /home/dev/work \
     && chown -R dev:dev /home/dev
 ENV HOME=/home/dev
+# opencode 1.1.4 predates automatic /etc/opencode directory loading (that
+# feature was added after v1.1.4 in managed.ts). Point opencode at the staged
+# managed config file explicitly. install.sh stages the file before exec gosu
+# drops to dev, so the file is present when any opencode invocation runs.
+# OPENCODE_CONFIG is a documented env var in opencode; it loads the named file
+# as an additional config layer on top of the user config. If the file does not
+# exist (no docker-config-opencode run), opencode's loadFile returns {} safely.
+ENV OPENCODE_CONFIG=/etc/opencode/opencode.json
 WORKDIR /home/dev/work
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

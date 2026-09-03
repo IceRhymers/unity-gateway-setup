@@ -142,7 +142,11 @@ comment header). To iterate on the config without restarting the container, run
 ### Testing opencode
 
 The harness stages `opencode.json` and `databricks-auth.ts` at `/etc/opencode/`
-inside the container. opencode reads that directory as Linux managed config.
+inside the container. The container sets `OPENCODE_CONFIG=/etc/opencode/opencode.json`
+so the pinned opencode reads the staged managed config. This env var override is
+required because opencode 1.1.4 predates automatic `/etc/opencode` directory loading.
+That feature was added in a later release. The `OPENCODE_CONFIG` env var is the
+documented override that tells opencode to load a specific config file.
 
 Run `make docker-config-opencode` to generate the config first, then start the
 container with `make docker-up`. Inside `make docker-shell`:
