@@ -44,6 +44,19 @@ else
   echo "[entrypoint] note: no Codex config at /opt/agent-config-codex (run 'make docker-config-codex')." >&2
 fi
 
+# 2b. Stage the DeepSeek Harness config. DSH has no managed system path: its home
+#     patch + token plugin live in the dev user's $DSH_HOME (~/.dsh). Run the
+#     user-scoped installer AS dev so the files are dev-owned, using the same real
+#     installer the deploy path uses.
+if [ -f /opt/agent-config-dsh/cordis.patch.yml ]; then
+  gosu dev /usr/local/lib/unity-gateway/install-dsh-local.sh \
+    --source /opt/agent-config-dsh/cordis.patch.yml \
+    --target-dir /home/dev/.dsh \
+    --no-backup
+else
+  echo "[entrypoint] note: no DeepSeek Harness config at /opt/agent-config-dsh (run 'make docker-config-dsh')." >&2
+fi
+
 # 3. Bridge the OAuth loopback callback. The databricks CLI's login listener binds
 #    127.0.0.1:8020 (loopback only), which a docker -p mapping cannot reach. socat
 #    listens on the container's external IP :8020 and forwards to that loopback, so

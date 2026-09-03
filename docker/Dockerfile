@@ -17,14 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh \
     && databricks --version
 
-# Claude Code + Codex CLI (both npm-distributed). NPM_REGISTRY forwards a
-# non-default registry (e.g. a corporate mirror) from the builder's `npm config`
-# — see the Makefile, which only passes it when set. Empty (the default) uses the
-# public npm registry, so builds on machines without the mirror are unaffected.
+# Claude Code + Codex + DeepSeek Harness CLIs (all npm-distributed). NPM_REGISTRY
+# forwards a non-default registry (e.g. a corporate mirror) from the builder's
+# `npm config` — see the Makefile, which only passes it when set. Empty (the
+# default) uses the public npm registry, so builds on machines without the mirror
+# are unaffected. DeepSeek Harness (`dsh`) requires Node 22.19+, satisfied by the
+# node:22 base. `command -v dsh` verifies the bin without booting the harness.
 ARG NPM_REGISTRY=""
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
-    && npm install -g @anthropic-ai/claude-code @openai/codex \
-    && claude --version && codex --version
+    && npm install -g @anthropic-ai/claude-code @openai/codex @deepseek-ai/dsh \
+    && claude --version && codex --version && command -v dsh
 
 # uv (Astral) -> /usr/local/bin/uv, used to install ucode below.
 RUN curl -LsSf https://astral.sh/uv/install.sh \
@@ -65,11 +67,19 @@ WORKDIR /home/dev/work
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# install.sh: single placement authority for agent configs, called by entrypoint
-# and by docker-reload (see Makefile). Baked into the image so the harness always
-# exercises the real installer (plan P5 — the harness is the test).
+# install.sh: single placement authority for the MANAGED agent configs (Claude
+# Code + Codex), called by entrypoint and by docker-reload (see Makefile). Baked
+# into the image so the harness always exercises the real installer (plan P5 —
+# the harness is the test).
 COPY agent_setups/deploy/install.sh /usr/local/lib/unity-gateway/install.sh
 RUN chmod +x /usr/local/lib/unity-gateway/install.sh
+
+# install-dsh-local.sh: the user-scoped installer for DeepSeek Harness. DSH has no
+# managed system path — its config lives in the dev user's $DSH_HOME (~/.dsh) — so
+# the harness exercises the real per-user installer, run as `dev` by the
+# entrypoint and docker-reload.
+COPY agent_setups/deploy/install-dsh-local.sh /usr/local/lib/unity-gateway/install-dsh-local.sh
+RUN chmod +x /usr/local/lib/unity-gateway/install-dsh-local.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["sleep", "infinity"]

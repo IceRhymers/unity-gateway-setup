@@ -2,15 +2,16 @@
 
 This container is a throwaway harness that tests the generated agent configs on a
 machine that already has host-level settings. It tests Claude Code's
-`managed-settings.json` (gateway routing **and** OTEL telemetry) and Codex's
-`config.toml` (gateway routing). The container has its own
-`/etc/claude-code/managed-settings.json` and its own `~/.codex/config.toml`, so it
-never touches the host's files.
+`managed-settings.json` (gateway routing **and** OTEL telemetry), Codex's
+`config.toml` (gateway routing), and DeepSeek Harness's `cordis.patch.yml`
+(gateway routing). The container has its own
+`/etc/claude-code/managed-settings.json`, its own `~/.codex/config.toml`, and its
+own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 
 ## What's inside
 
-- **Claude Code** + **Codex** + the **databricks CLI** + **python3** (for the
-  api-key, otel-headers, and Codex auth helpers).
+- **Claude Code** + **Codex** + **DeepSeek Harness** (`dsh`) + the **databricks
+  CLI** + **python3** (for the api-key, otel-headers, and Codex auth helpers).
 - **`ucode`** (Unity AI Gateway coding CLI), installed via `uv` and available on
   `PATH` by default. The harness uses it to discover Databricks MCP services and
   register them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
@@ -22,6 +23,13 @@ never touches the host's files.
   artifact a Linux deploy ships. The harness stages the generated **Codex**
   `config.toml` at the dev user's `~/.codex/config.toml` (Codex has no
   system-managed path). The image installs `jq` for the hook.
+- The generated **DeepSeek Harness** config. The harness stages the home patch
+  (`cordis.patch.yml`) and its token plugin (`databricks-token-refresh.mjs`) at
+  the dev user's `~/.dsh/` (DSH has no system-managed path). The entrypoint runs
+  the real user-scoped installer (`install-dsh-local.sh`) as the dev user. The
+  patch routes DSH's native DeepSeek adapter through the gateway. The token plugin
+  mints a fresh Databricks token on a timer and stores it in the credential store,
+  so the adapter reads a current token on each request.
 - A fresh, isolated `~/.databrickscfg`. The harness writes it at start. Both
   `DEFAULT` and the named profile point at the workspace, so `databricks auth login`
   and the settings' `--profile` calls resolve. The profile is also the default
@@ -36,16 +44,16 @@ never touches the host's files.
 
 ```bash
 make tf-apply           # provision the telemetry infra first (creates tables, SP, secret)
-make docker-build       # build the image (once) — Claude Code + Codex
-make docker-config-all  # generate both agent configs (or docker-config / docker-config-codex)
+make docker-build       # build the image (once) — Claude Code + Codex + DeepSeek Harness
+make docker-config-all  # generate all agent configs (or docker-config / docker-config-codex / docker-config-dsh)
 make docker-up          # start the container (maps 8020, mounts configs, writes the profile)
 make docker-login       # runs `databricks auth login` inside — see browser note below
 make docker-shell       # exec in as the dev user
 ```
 
-`make docker-test` runs build + both configs + up together. To iterate on the
+`make docker-test` runs build + all configs + up together. To iterate on the
 configs without restarting (keeps auth), run `make docker-reload`. It regenerates
-**both** agent configs and pushes them into the running container in one step.
+**all** agent configs and pushes them into the running container in one step.
 
 ### Authenticating
 
@@ -118,7 +126,28 @@ Codex has no client-side OTEL, but each model service's inference-logging UC tab
 still captures its traffic server-side. Switch models with
 `codex -m tanner_..._catalog.openai.gpt-5-6-sol` (any model listed in the config's
 comment header). To iterate on the config without restarting the container, run
-`make docker-reload` (reloads both agent configs).
+`make docker-reload` (reloads all agent configs).
+
+### Testing DeepSeek Harness
+
+The harness stages the DeepSeek Harness home patch (`cordis.patch.yml`) and its
+token plugin (`databricks-token-refresh.mjs`) at `~/.dsh/` inside the container.
+The token plugin stores the token in the `DATABRICKS_GATEWAY_TOKEN` credential
+reference. Do not set that variable in your shell. DSH treats the launch
+environment as read-only, and it would shadow the stored token.
+
+Inside `make docker-shell`:
+
+```bash
+dsh --profile headless --dump-config   # print the composed plugin tree (verifies the patch applies)
+dsh --profile headless "summarize this workspace"   # one-shot run, routed through <host>/ai-gateway/mlflow/v1
+```
+
+Authenticate first with `make docker-login`. The token plugin also runs the CLI
+itself, so a valid session lets it mint the first token at start. DSH has no
+client-side OTEL yet, but the DeepSeek model service's inference-logging UC table
+still captures its traffic server-side. To iterate on the config without
+restarting the container, run `make docker-reload` (reloads all agent configs).
 
 ## MCP servers
 
