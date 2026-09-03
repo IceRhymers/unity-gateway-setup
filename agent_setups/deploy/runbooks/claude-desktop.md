@@ -82,6 +82,16 @@ sh agent_setups/deploy/install.sh --agents claude-desktop --os macos --source ag
 
 `install.sh` is a POSIX script. It does not run on Windows. Place the Windows helpers with Intune or a machine-wide script instead. Copy `databricks-token.cmd`, `databricks-token.ps1`, and the OTEL pair to `C:\ProgramData\ClaudeDesktop`. Keep the `.ps1` beside the `.cmd`. The `.cmd` shim runs the `.ps1` from its own directory.
 
+### Local test (no root)
+
+To test the config on your own machine without root, run one target:
+
+```sh
+make claude-desktop-install-local PROFILE=<profile>
+```
+
+The target generates a bundle for this OS with the helper path set to a user-writable directory (`$HOME/Library/Application Support/ClaudeDesktop` on macOS, `$HOME/.config/claude-desktop` on Linux), then places the helper scripts there. Override the directory with `CD_LOCAL_DIR=<dir>`. The generated `claude-setup.json` references the same directory, so the import works at once. The target prints the JSON path to import.
+
 > **Windows scripts are not tested yet.** The PowerShell helpers are theoretical. Test them on a Windows machine before a production rollout.
 
 ---
