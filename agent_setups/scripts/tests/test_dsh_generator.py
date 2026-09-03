@@ -29,7 +29,7 @@ from agents.dsh import (  # noqa: E402
     PLUGIN_REF_RELATIVE,
     DshGenerator,
 )
-from gateway import Endpoint, GatewayContext  # noqa: E402
+from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
 
 HOST = "https://myws.cloud.databricks.com"
 PROFILE = "fevm-west"
@@ -218,15 +218,20 @@ class OtelDormantByDefaultTest(unittest.TestCase):
         patch_raw = files[f"dsh/{PATCH_FILENAME}"]
         # Commented example URL must contain the OTEL ingest path
         self.assertIn("/api/2.0/otel/v1/logs", patch_raw)
-        # Commented Authorization header reference present
-        self.assertIn("DATABRICKS_OTEL_TOKEN", patch_raw)
-        # But all DATABRICKS_OTEL_TOKEN lines must be comments
+        # Fix #2: YAML does not expand $VAR — the stub must use a literal placeholder,
+        # not $DATABRICKS_OTEL_TOKEN. Check for the correct placeholder and the caveat.
+        self.assertIn("MINTED-TOKEN-VALUE-HERE", patch_raw)
+        self.assertNotIn("Bearer $DATABRICKS_OTEL_TOKEN", patch_raw,
+                         "$DATABRICKS_OTEL_TOKEN implies shell expansion that YAML does not do")
+        # The $VAR expansion warning must be present in comment lines
+        self.assertIn("YAML does NOT expand shell variables", patch_raw)
+        # All lines containing the token placeholder must be comments
         for line in patch_raw.splitlines():
-            if "DATABRICKS_OTEL_TOKEN" in line:
+            if "MINTED-TOKEN-VALUE-HERE" in line:
                 stripped = line.strip()
                 self.assertTrue(
                     stripped.startswith("#"),
-                    f"DATABRICKS_OTEL_TOKEN appears in non-comment line: {line!r}",
+                    f"Token placeholder appears in non-comment line: {line!r}",
                 )
 
 
@@ -292,6 +297,93 @@ class TelemetryOffTest(unittest.TestCase):
         # The active (non-commented) YAML must not reference DATABRICKS_OTEL_TOKEN
         for item in patch:
             self.assertNotIn("DATABRICKS_OTEL_TOKEN", str(item))
+
+
+def _context_with_telemetry() -> GatewayContext:
+    """A context with OTEL tables (logs) so the dormant stub can use real table names."""
+    tel = Telemetry(
+        schema_full_name="cat.telemetry",
+        tables={"logs": "cat.telemetry.otel_logs"},
+        secret_full_name="cat.telemetry.otel_sp_creds",
+        service_principal_application_id="12345",
+    )
+    ep = Endpoint(
+        key="deepseek/deepseek-v4-flash",
+        schema="deepseek",
+        name="deepseek-v4-flash",
+        full_name="cat.deepseek.deepseek-v4-flash",
+        foundation_model="models/system.ai.deepseek-v4-flash",
+        inference_table=None,
+    )
+    return GatewayContext(
+        host=HOST,
+        catalog_name="cat",
+        provider_schemas={"deepseek": "cat.deepseek"},
+        endpoints=[ep],
+        telemetry=tel,
+    )
+
+
+class OtelPerSignalHeaderInStubTest(unittest.TestCase):
+    """Finding 1: dormant stub must include X-Databricks-UC-Table-Name header."""
+
+    def test_uc_table_name_header_in_stub(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        self.assertIn("X-Databricks-UC-Table-Name", patch_raw)
+
+    def test_uc_table_name_header_in_comment_only(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        for line in patch_raw.splitlines():
+            if "X-Databricks-UC-Table-Name" in line:
+                stripped = line.strip()
+                self.assertTrue(stripped.startswith("#"),
+                                f"X-Databricks-UC-Table-Name in non-comment line: {line!r}")
+
+    def test_actual_logs_table_used_when_telemetry_present(self):
+        files = DshGenerator().generate(_context_with_telemetry(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        self.assertIn("cat.telemetry.otel_logs", patch_raw)
+
+    def test_placeholder_used_when_no_telemetry(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        self.assertIn("<otel-logs-table>", patch_raw)
+
+
+class NoYamlShellExpansionTest(unittest.TestCase):
+    """Finding 2: the dormant stub must NOT imply shell variable expansion.
+
+    The old '$DATABRICKS_OTEL_TOKEN' placeholder implied $VAR expansion which YAML
+    does not perform; the operator would silently send the literal placeholder string.
+    The fix uses '<MINTED-TOKEN-VALUE-HERE>' and documents the caveat.
+    """
+
+    def test_no_dollar_var_in_auth_header(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        # Must not use $VAR syntax (YAML does not expand it)
+        self.assertNotIn("Bearer $DATABRICKS_OTEL_TOKEN", patch_raw)
+
+    def test_yaml_no_shell_expansion_note_present(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        self.assertIn("YAML does NOT expand shell variables", patch_raw)
+
+    def test_literal_placeholder_present(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        self.assertIn("MINTED-TOKEN-VALUE-HERE", patch_raw)
+
+    def test_all_literal_placeholder_lines_are_comments(self):
+        files = DshGenerator().generate(_context(), _args())
+        patch_raw = files[f"dsh/{PATCH_FILENAME}"]
+        for line in patch_raw.splitlines():
+            if "MINTED-TOKEN-VALUE-HERE" in line:
+                stripped = line.strip()
+                self.assertTrue(stripped.startswith("#"),
+                                f"Token placeholder in non-comment line: {line!r}")
 
 
 if __name__ == "__main__":

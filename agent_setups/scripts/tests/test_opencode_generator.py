@@ -99,7 +99,7 @@ def _args(**over) -> argparse.Namespace:
         default_model=None,
         user_config=False,
         hook_telemetry="off",
-        hook_categories="usage,governance,adoption",
+        hook_categories="usage",  # only 'usage' is implemented in the TS plugin
         hook_log_content=False,
         hook_token_ttl_seconds=600,
         zerobus_endpoint=None,
@@ -527,6 +527,165 @@ class AuthProfileDiscoveryTest(unittest.TestCase):
         mock_derive.assert_called_once()
         called_profile = mock_derive.call_args[0][1]
         self.assertEqual(called_profile, PROFILE)  # "fevm-west"
+
+
+class OtelPerSignalHeaderTest(unittest.TestCase):
+    """Finding 1: install_notes OTEL recipe must show per-signal X-Databricks-UC-Table-Name headers."""
+
+    def _notes(self, ctx=None) -> str:
+        gen = OpenCodeGenerator()
+        gen.generate(ctx or _context_with_telemetry(), _args(hook_telemetry="off"))
+        return gen.install_notes(_args())
+
+    def test_per_signal_metrics_header_in_notes(self):
+        notes = self._notes()
+        self.assertIn("OTEL_EXPORTER_OTLP_METRICS_HEADERS", notes)
+        self.assertIn("X-Databricks-UC-Table-Name", notes)
+
+    def test_per_signal_logs_header_in_notes(self):
+        notes = self._notes()
+        self.assertIn("OTEL_EXPORTER_OTLP_LOGS_HEADERS", notes)
+
+    def test_per_signal_traces_header_in_notes(self):
+        notes = self._notes()
+        self.assertIn("OTEL_EXPORTER_OTLP_TRACES_HEADERS", notes)
+
+    def test_actual_table_names_used_when_available(self):
+        notes = self._notes(_context_with_telemetry())
+        # The context has metrics and traces tables
+        self.assertIn("cat.telemetry.otel_metrics", notes)
+        self.assertIn("cat.telemetry.otel_traces", notes)
+
+    def test_placeholder_used_when_no_telemetry(self):
+        gen = OpenCodeGenerator()
+        gen.generate(_context(), _args())
+        notes = gen.install_notes(_args())
+        self.assertIn("<otel-metrics-table>", notes)
+        self.assertIn("<otel-logs-table>", notes)
+        self.assertIn("<otel-traces-table>", notes)
+
+
+class ZbEndpointEnvVarTest(unittest.TestCase):
+    """Finding 4: ZB_ENDPOINT must read process.env.ZEROBUS_ENDPOINT first so an
+    offline-generated dormant bundle can be activated without a source edit."""
+
+    def _plugin_src(self) -> str:
+        files = OpenCodeGenerator().generate(
+            _context_with_telemetry(), _args(hook_telemetry="auto")
+        )
+        return _plugin(files)
+
+    def test_zb_endpoint_reads_process_env_first(self):
+        src = self._plugin_src()
+        self.assertIn("process.env.ZEROBUS_ENDPOINT", src)
+
+    def test_zb_endpoint_falls_back_to_baked_value(self):
+        src = self._plugin_src()
+        # Should be: process.env.ZEROBUS_ENDPOINT || '<baked-value>'
+        self.assertIn("process.env.ZEROBUS_ENDPOINT ||", src)
+        self.assertIn(ZB_HOST, src)
+
+
+class SendingFileRecoveryTest(unittest.TestCase):
+    """Findings 3b+5: _zbSweep must recover .sending.<pid> files (orphaned mid-flush batches)."""
+
+    def _plugin_src(self) -> str:
+        files = OpenCodeGenerator().generate(
+            _context_with_telemetry(), _args(hook_telemetry="auto")
+        )
+        return _plugin(files)
+
+    def test_sweep_handles_sending_files(self):
+        src = self._plugin_src()
+        # The sweep must match .sending.<pid> pattern
+        self.assertIn(".sending.", src)
+        # The rename-back pattern: rename .sending.* to base .jsonl
+        self.assertIn("renameSync", src)
+
+    def test_sending_regex_present_in_sweep(self):
+        src = self._plugin_src()
+        # The filter regex that catches .sending.<pid> files
+        self.assertIn(r"\.jsonl\.sending\.\d+", src)
+
+    def test_upstream_limitation_documented_in_plugin(self):
+        src = self._plugin_src()
+        # The upstream limitation comment must be present in the plugin source
+        self.assertIn("UPSTREAM LIMITATION", src)
+        # Must cite the void hook dispatch
+        self.assertIn("void hook", src)
+
+
+class CategoriesRestrictedToImplementedTest(unittest.TestCase):
+    """Finding 6: governance/adoption have no producers — they must be rejected,
+    not silently accepted."""
+
+    def test_governance_rejected_when_telemetry_on(self):
+        ctx = _context_with_telemetry()
+        with self.assertRaises(SystemExit):
+            OpenCodeGenerator().generate(ctx, _args(hook_telemetry="auto",
+                                                     hook_categories="usage,governance"))
+
+    def test_adoption_rejected_when_telemetry_on(self):
+        ctx = _context_with_telemetry()
+        with self.assertRaises(SystemExit):
+            OpenCodeGenerator().generate(ctx, _args(hook_telemetry="auto",
+                                                     hook_categories="adoption"))
+
+    def test_usage_only_accepted(self):
+        ctx = _context_with_telemetry()
+        files = OpenCodeGenerator().generate(ctx, _args(hook_telemetry="auto",
+                                                         hook_categories="usage"))
+        src = _plugin(files)
+        self.assertIn("tool.execute.after", src)
+
+    def test_default_hook_categories_is_usage(self):
+        from agents.opencode import HOOK_CATEGORIES
+        self.assertEqual(HOOK_CATEGORIES, ("usage",))
+
+
+class UserMachineIdentityTest(unittest.TestCase):
+    """Finding 7: opencode events must include user and machine fields."""
+
+    def _plugin_src(self) -> str:
+        files = OpenCodeGenerator().generate(
+            _context_with_telemetry(), _args(hook_telemetry="auto")
+        )
+        return _plugin(files)
+
+    def test_hostname_import_present(self):
+        src = self._plugin_src()
+        # hostname must be imported from node:os
+        self.assertIn("hostname", src)
+        idx = src.index("from 'node:os'")
+        import_line = src[:idx + len("from 'node:os'")]
+        self.assertIn("hostname", import_line)
+
+    def test_ws_user_resolver_present(self):
+        src = self._plugin_src()
+        self.assertIn("_zbGetWsUser", src)
+        self.assertIn("current-user me", src)
+        self.assertIn("PROFILE", src)
+
+    def test_user_field_in_event(self):
+        src = self._plugin_src()
+        # The event object spooled by tool.execute.after must include user and machine
+        idx = src.index("tool.execute.after")
+        handler = src[idx: idx + 800]
+        self.assertIn("user,", handler)
+        self.assertIn("machine,", handler)
+
+    def test_machine_uses_hostname(self):
+        src = self._plugin_src()
+        idx = src.index("tool.execute.after")
+        handler = src[idx: idx + 800]
+        self.assertIn("hostname()", handler)
+
+    def test_upstream_limitation_in_install_notes(self):
+        gen = OpenCodeGenerator()
+        gen.generate(_context_with_telemetry(), _args(hook_telemetry="auto"))
+        notes = gen.install_notes(_args(hook_telemetry="auto"))
+        self.assertIn("UPSTREAM LIMITATION", notes)
+        self.assertIn("best-effort", notes)
 
 
 if __name__ == "__main__":

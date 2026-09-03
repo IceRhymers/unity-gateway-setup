@@ -127,14 +127,17 @@ PROFILE_IDENTIFIER = "ai.opencode.managed.profile"
 USER_CONFIG_PATH = "~/.config/opencode/opencode.json"
 
 # --- Hook telemetry (Zerobus REST custom reporting events) ------------------
-# Categories available for opencode: usage (tool_used via tool.execute.after)
-# and governance/adoption (future: shell command inspection when a shell-env or
-# tool-args seam is confirmed). Hook names confirmed from anomalyco/opencode
-# packages/plugin/src/index.ts (commit f12e14cf1640cbf0dfb6b1ff425b2daaef459eec):
+# Categories available for opencode: only 'usage' (tool_used via tool.execute.after)
+# has an implemented producer in the TS plugin. governance and adoption have no
+# confirmed hook seam in opencode (no shell-tool PreToolUse or Read-file event),
+# so they are excluded until a seam is confirmed. A selection with no implemented
+# producer would silently never emit; restrict HOOK_CATEGORIES to the ones wired.
+# Hook names confirmed from anomalyco/opencode packages/plugin/src/index.ts
+# (commit f12e14cf1640cbf0dfb6b1ff425b2daaef459eec):
 #   tool.execute.after     — fires after every tool call with tool name + args
 #   event (session.status idle) — normal session-completion signal; primary flush boundary
 #   event (session.deleted)    — explicit session deletion; backup drain
-HOOK_CATEGORIES = ("usage", "governance", "adoption")
+HOOK_CATEGORIES = ("usage",)
 
 
 @dataclass(frozen=True)
@@ -314,7 +317,7 @@ export default {
 _PLUGIN_TELEMETRY_IMPORTS = (
     "import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync,"
     " readFileSync, renameSync, unlinkSync } from 'node:fs'\n"
-    "import { homedir } from 'node:os'\n"
+    "import { homedir, hostname } from 'node:os'\n"
     "import { join } from 'node:path'"
 )
 
@@ -341,7 +344,9 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
   // session.status idle: event.properties.sessionID, event.properties.status.type === 'idle'
   // session.deleted:     event.properties.sessionID (v1 schema; info.id as fallback)
 
-  const ZB_ENDPOINT = '__ZB_ENDPOINT__'
+  // Read endpoint from runtime env first so a dormant offline-generated bundle can be
+  // activated by setting ZEROBUS_ENDPOINT in the launch environment — no source edit.
+  const ZB_ENDPOINT = process.env.ZEROBUS_ENDPOINT || '__ZB_ENDPOINT__'
   const ZB_TABLE = '__ZB_TABLE__'
   const ZB_SECRET = '__ZB_SECRET__'
   const ZB_CATEGORIES = '__ZB_CATEGORIES__'.split(',').filter(Boolean)
@@ -353,6 +358,23 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
   // Different principal (telemetry SP) and audience (zerobusDirectWriteApi).
   let _zbCached    // { token: string, expiresAt: number } | undefined
   let _zbInflight  // Promise<string | null> | undefined
+
+  // Workspace user identity — resolved once per session, cached in memory.
+  // Mirrors claude_code.py _ws_user: workspace email (from databricks CLI), not OS login.
+  let _zbWsUser = null // string | null  (null = not yet resolved)
+  const _zbGetWsUser = async () => {
+    if (_zbWsUser !== null) return _zbWsUser
+    try {
+      const res = await $`databricks current-user me --profile ${PROFILE} -o json`.quiet().nothrow()
+      if (res.exitCode === 0) {
+        const data = JSON.parse(res.stdout.toString())
+        _zbWsUser = data.userName ?? data.emails?.[0]?.value ?? process.env.USER ?? 'unknown'
+        return _zbWsUser
+      }
+    } catch { /* non-fatal */ }
+    _zbWsUser = process.env.USER ?? 'unknown'
+    return _zbWsUser
+  }
 
   const _zbSpoolDir = join(homedir(), '.cache', 'unity-gateway', 'opencode-spool')
   const _zbSpoolFile = (sid) => {
@@ -443,6 +465,17 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
   const _zbSweep = async () => {
     try {
       if (!existsSync(_zbSpoolDir)) return
+      // Recover interrupted flushes (finding 5): a .jsonl.sending.<pid> file left by a
+      // prior process that exited mid-flush is renamed back to the base .jsonl so the next
+      // flush retries it (at-least-once). Best-effort: if the owning process is still alive
+      // the rename races with its unlinkSync, but both outcomes are safe (content is either
+      // re-queued or already deleted). This pairs with finding 3 — see UPSTREAM LIMITATION
+      // note below: a batch interrupted by immediate process exit is recovered here on the
+      // next session start, not delivered synchronously at exit.
+      for (const f of readdirSync(_zbSpoolDir).filter(f => /\.jsonl\.sending\.\d+$/.test(f))) {
+        const base = join(_zbSpoolDir, f.replace(/\.sending\.\d+$/, ''))
+        try { renameSync(join(_zbSpoolDir, f), base) } catch { /* non-fatal */ }
+      }
       for (const f of readdirSync(_zbSpoolDir).filter(f => f.endsWith('.jsonl'))) {
         await _zbFlush(f.slice(0, -6))
       }
@@ -455,21 +488,37 @@ _PLUGIN_TELEMETRY_BLOCK = r"""
   await _zbSweep()
 
   // Tool invocation: spool locally (no network, no token on the hot path).
+  // user + machine mirror the fields claude_code.py emits so coverage.sql joins work.
   if (_zbCatEnabled('usage')) {
     _ret["tool.execute.after"] = async (input, output) => {
       try {
         const ts = Date.now() * 1000
+        const user = await _zbGetWsUser()
+        const machine = hostname()
         _zbAppend(input.sessionID, {
           event_id: `${input.sessionID || 'u'}-${input.callID || 'c'}-${ts}`,
           event_time: ts, category: 'usage', event_name: 'tool_used',
           session_id: input.sessionID, agent: ZB_AGENT,
+          user, machine,
           attributes: JSON.stringify({ tool: input.tool, call_id: input.callID, ...(ZB_CONTENT ? { args: JSON.stringify(input.args) } : {}) }),
         })
       } catch { /* non-fatal */ }
     }
   }
 
-  // Session idle/end: AWAIT flush (process is still alive; not fire-and-forget).
+  // UPSTREAM LIMITATION (finding 3): opencode dispatches plugin event hooks as
+  //   void hook["event"]?.({ ... })
+  // (anomalyco/opencode packages/opencode/src/plugin/index.ts, commit
+  // f12e14cf1640cbf0dfb6b1ff425b2daaef459eec) — the returned Promise is NOT awaited.
+  // If the process exits immediately after the session ends, the in-flight flush may be
+  // lost. This is an upstream limitation; the generator cannot make opencode await it.
+  // Recovery: _zbSweep() (above) renames any orphaned .jsonl.sending.<pid> files back
+  // to .jsonl on the next session start, so a batch interrupted mid-flush is retried
+  // at-least-once. Delivery is best-effort: telemetry may be delayed to the next session
+  // start but is not permanently lost unless the spool dir is cleared.
+  //
+  // Session idle/end: flush is awaited INSIDE the async handler body (process is alive
+  // while opencode waits for other hooks; we get a best-effort window here).
   // session.status idle is the normal turn-completion signal (fires every time a
   // session goes idle after a run). session.deleted fires only on explicit deletion
   // and is kept as a backup drain for sessions that end without an idle transition.
@@ -676,9 +725,11 @@ class OpenCodeGenerator(AgentGenerator):
             "--hook-categories",
             default=",".join(HOOK_CATEGORIES),
             help=(
-                "Comma-separated reporting categories to wire up (any of: "
-                f"{', '.join(HOOK_CATEGORIES)}). Only hooks for the selected "
-                "categories are registered. Default: all three."
+                "Comma-separated reporting categories to wire up. Currently only "
+                f"'usage' is implemented (tool.execute.after). Valid: "
+                f"{', '.join(HOOK_CATEGORIES)}. Default: usage. "
+                "governance/adoption have no confirmed hook seam in opencode and "
+                "are excluded; a selection with no implemented producer is rejected."
             ),
         )
         parser.add_argument(
@@ -866,6 +917,7 @@ class OpenCodeGenerator(AgentGenerator):
         self._managed = managed
         self._providers = sorted(providers)
         self._emitted_hooks = hook_block is not None
+        self._tel_tables: dict[str, str] = ctx.telemetry.tables if ctx.telemetry else {}
 
         files = {
             "opencode/opencode.json": config_json,
@@ -938,6 +990,12 @@ class OpenCodeGenerator(AgentGenerator):
             "  REST at session end. It uses a SECOND bearer token cache (distinct from the",
             "  gateway token): a separate telemetry service principal, down-scoped to the",
             "  hook_events UC table via authorization_details.",
+            "  UPSTREAM LIMITATION: opencode dispatches event hooks as void hook[...] — the",
+            "  Promise is NOT awaited by the runtime. Telemetry delivery is best-effort: a",
+            "  batch interrupted by an immediate process exit is recovered on the NEXT session",
+            "  start (the plugin renames orphaned .sending.<pid> files back to .jsonl and",
+            "  retries them), not delivered synchronously at exit. Events are not permanently",
+            "  lost unless the spool dir (~/.cache/unity-gateway/opencode-spool/) is cleared.",
             "  Preconditions:",
             "    1. The developer must hold READ_SECRET on the telemetry UC secret",
             "       (the same one the OTEL helper uses; grant via telemetry_reader_groups).",
@@ -953,6 +1011,24 @@ class OpenCodeGenerator(AgentGenerator):
 
     def _otel_install_lines(self) -> list[str]:
         """Install notes for native OTEL (launch-env recipe, always documented)."""
+        tables: dict[str, str] = getattr(self, "_tel_tables", {})
+
+        def _table(sig: str) -> str:
+            return tables.get(sig, f"<otel-{sig}-table>")
+
+        # Per-signal *_HEADERS carry X-Databricks-UC-Table-Name for routing; the
+        # generic OTEL_EXPORTER_OTLP_HEADERS carries the shared static bearer.
+        # Mirrors the claude_code.py split: content-type + table in static env,
+        # Authorization in a helper (here: static bearer + env rotation).
+        signal_lines = []
+        for sig in ("metrics", "logs", "traces"):
+            env_key = f"OTEL_EXPORTER_OTLP_{sig.upper()}_HEADERS"
+            signal_lines.append(
+                f"    export {env_key}="
+                f"'content-type=application/x-protobuf,"
+                f"X-Databricks-UC-Table-Name={_table(sig)}'"
+            )
+
         return [
             "",
             "Native OTEL (launch-environment recipe — NOT emitted in opencode.json):",
@@ -962,6 +1038,9 @@ class OpenCodeGenerator(AgentGenerator):
             "    export OTEL_EXPORTER_OTLP_ENDPOINT=<workspace>/api/2.0/otel",
             "    export OTEL_LOGS_EXPORTER=otlp",
             "    export OTEL_TRACES_EXPORTER=otlp",
+            "    # Generic bearer (merged with per-signal headers by the OTEL SDK):",
             "    export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer <static-bearer>'",
+            "    # Per-signal headers carry X-Databricks-UC-Table-Name for table routing:",
+        ] + signal_lines + [
             "  Verify: open opencode after setting these; check the OTEL UC tables for rows.",
         ]

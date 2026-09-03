@@ -599,7 +599,7 @@ def _requirements_toml(hooks_enabled: bool) -> str:
     return "\n".join(lines)
 
 
-def _otel_toml_stub() -> str:
+def _otel_toml_stub(tables: dict[str, str] | None = None) -> str:
     """COMMENTED [otel] stub for managed_config.toml (telemetry parity note).
 
     The exact [otel] field shape is unconfirmed for the current codex-cli version.
@@ -607,17 +607,31 @@ def _otel_toml_stub() -> str:
     This stub ships as COMMENTS so operators can activate it after validating with
     `codex --strict-config doctor`. The auth bearer must be static at config-load
     time (no per-export header refresh). Mint it as $CODEX_OTEL_TOKEN in the launch
-    environment and pass it via otel.environment or OTEL_EXPORTER_OTLP_HEADERS.
+    environment.
+
+    Per-signal OTEL_EXPORTER_OTLP_*_HEADERS carry X-Databricks-UC-Table-Name for
+    routing (mirrors claude_code.py). The generic OTEL_EXPORTER_OTLP_HEADERS carries
+    the shared static bearer; most OTEL SDKs merge per-signal and generic headers.
+    `tables` is the signal -> fq-table map from telemetry output; uses placeholders
+    when absent (the stub is always commented so placeholders are fine).
     """
+    def _table(sig: str) -> str:
+        return (tables or {}).get(sig, f"<otel-{sig}-table>")
+
     return "\n".join([
         "",
         "# ---- OTEL telemetry stub (COMMENTED — confirm schema for your codex version) ---",
         "# Codex has a native [otel] table. Its exact field shape is unconfirmed for this",
         "# version; a wrong shape makes config load fail entirely (verified). Activate by",
         "# uncommenting and validating with: codex --strict-config doctor",
-        "# Bearer must be static (no per-export refresh). Set in the launch environment:",
+        "# Bearer must be static (no per-export refresh). Launch-environment recipe:",
         "#   export CODEX_OTEL_TOKEN=\"<short-lived-M2M-bearer>\"",
+        "#   # Generic bearer (merged with per-signal headers by the OTEL SDK):",
         "#   export OTEL_EXPORTER_OTLP_HEADERS=\"Authorization=Bearer $CODEX_OTEL_TOKEN\"",
+        "#   # Per-signal headers carry X-Databricks-UC-Table-Name for table routing:",
+        f"#   export OTEL_EXPORTER_OTLP_METRICS_HEADERS='content-type=application/x-protobuf,X-Databricks-UC-Table-Name={_table('metrics')}'",
+        f"#   export OTEL_EXPORTER_OTLP_LOGS_HEADERS='content-type=application/x-protobuf,X-Databricks-UC-Table-Name={_table('logs')}'",
+        f"#   export OTEL_EXPORTER_OTLP_TRACES_HEADERS='content-type=application/x-protobuf,X-Databricks-UC-Table-Name={_table('traces')}'",
         "#",
         "# [otel]",
         "#   log_user_prompt = false   # Content off by default; enable with care.",
@@ -938,6 +952,7 @@ class CodexGenerator(AgentGenerator):
         # only written when telemetry.hook_events is deployed — see _hook_parts).
         self._managed = managed
         self._emitted_hooks = hook_script is not None
+        self._tel_tables: dict[str, str] = ctx.telemetry.tables if ctx.telemetry else {}
         # Managed hooks are invoked UNQUOTED in the TOML command, so any whitespace
         # (space, tab, newline) in the path would mis-split the command at runtime and
         # break the TOML string. Fail loudly rather than emit a broken enforced file.
@@ -974,7 +989,7 @@ class CodexGenerator(AgentGenerator):
                 body += ["", _hooks_toml_section(script_path, hook_categories)]
             # COMMENTED [otel] stub: schema unconfirmed; activate only after validating
             # with `codex --strict-config doctor`. See _otel_toml_stub for details.
-            body += [_otel_toml_stub()]
+            body += [_otel_toml_stub(self._tel_tables)]
             files = {
                 f"codex/etc/{MANAGED_CONFIG_FILENAME}": "\n".join(body) + "\n",
                 f"codex/etc/{REQUIREMENTS_FILENAME}": _requirements_toml(hook_script is not None),
@@ -1075,6 +1090,11 @@ class CodexGenerator(AgentGenerator):
                 "unconfirmed for this Codex version (a wrong shape fails config load), so validate",
                 "with `codex --strict-config doctor` before enabling it.",
             ]
+        tel_tables: dict[str, str] = getattr(self, "_tel_tables", {})
+
+        def _table(sig: str) -> str:
+            return tel_tables.get(sig, f"<otel-{sig}-table>")
+
         lines += [
             "",
             "OTEL telemetry (COMMENTED stub in managed_config.toml):",
@@ -1086,9 +1106,14 @@ class CodexGenerator(AgentGenerator):
             "    # OTEL UC tables); export it before launching Codex:",
             "    export CODEX_OTEL_TOKEN=\"$(databricks auth token --output json | \\",
             "      python3 -c 'import json,sys; print(json.load(sys.stdin)[\"access_token\"])')",
+            "    # Generic bearer (merged with per-signal headers by the OTEL SDK):",
             "    export OTEL_EXPORTER_OTLP_HEADERS=\"Authorization=Bearer $CODEX_OTEL_TOKEN\"",
             "    export OTEL_EXPORTER_OTLP_ENDPOINT=\"<workspace>/api/2.0/otel\"",
             "    export OTEL_LOGS_EXPORTER=otlp",
+            "    # Per-signal headers carry X-Databricks-UC-Table-Name for table routing:",
+            f"    export OTEL_EXPORTER_OTLP_METRICS_HEADERS='content-type=application/x-protobuf,X-Databricks-UC-Table-Name={_table('metrics')}'",
+            f"    export OTEL_EXPORTER_OTLP_LOGS_HEADERS='content-type=application/x-protobuf,X-Databricks-UC-Table-Name={_table('logs')}'",
+            f"    export OTEL_EXPORTER_OTLP_TRACES_HEADERS='content-type=application/x-protobuf,X-Databricks-UC-Table-Name={_table('traces')}'",
             "  Then uncomment [otel] in managed_config.toml and verify with codex doctor.",
             "  Verify session rows: live row appears in the telemetry OTEL UC table.",
         ]

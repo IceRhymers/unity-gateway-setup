@@ -26,7 +26,7 @@ from agents.codex import (  # noqa: E402
     MANAGED_CONFIG_FILENAME,
     REQUIREMENTS_FILENAME,
 )
-from gateway import Endpoint, GatewayContext  # noqa: E402
+from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
 
 HOST = "https://myws.cloud.databricks.com"
 PROFILE = "fevm-west"
@@ -217,6 +217,84 @@ class NoActiveOtelBlockTest(unittest.TestCase):
         toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
         self.assertIn("# [otel]", toml_blob)
         self.assertIn("log_user_prompt", toml_blob)
+
+
+def _context_with_telemetry() -> GatewayContext:
+    """A context with OTEL tables deployed (no hook_events needed for OTEL stub tests)."""
+    tel = Telemetry(
+        schema_full_name="cat.telemetry",
+        tables={
+            "metrics": "cat.telemetry.otel_metrics",
+            "logs": "cat.telemetry.otel_logs",
+            "traces": "cat.telemetry.otel_traces",
+        },
+        secret_full_name="cat.telemetry.otel_sp_creds",
+        service_principal_application_id="12345",
+    )
+    ep = Endpoint(
+        key="openai/gpt",
+        schema="openai",
+        name="gpt",
+        full_name="cat.openai.gpt",
+        foundation_model="models/system.ai.gpt-5",
+        inference_table=None,
+    )
+    return GatewayContext(
+        host=HOST,
+        catalog_name="cat",
+        provider_schemas={"openai": "cat.openai"},
+        endpoints=[ep],
+        telemetry=tel,
+    )
+
+
+class OtelPerSignalHeaderTest(unittest.TestCase):
+    """Finding 1: the OTEL stub and install_notes must show per-signal
+    X-Databricks-UC-Table-Name headers, not just a single Authorization header."""
+
+    def test_per_signal_headers_in_toml_stub(self):
+        files = CodexGenerator().generate(_context(), _args())
+        toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
+        # Per-signal headers must appear in the commented stub
+        self.assertIn("X-Databricks-UC-Table-Name", toml_blob)
+        self.assertIn("OTEL_EXPORTER_OTLP_METRICS_HEADERS", toml_blob)
+        self.assertIn("OTEL_EXPORTER_OTLP_LOGS_HEADERS", toml_blob)
+        self.assertIn("OTEL_EXPORTER_OTLP_TRACES_HEADERS", toml_blob)
+
+    def test_all_per_signal_lines_in_stub_are_comments(self):
+        files = CodexGenerator().generate(_context(), _args())
+        toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
+        for line in toml_blob.splitlines():
+            if "X-Databricks-UC-Table-Name" in line:
+                stripped = line.strip()
+                self.assertTrue(stripped.startswith("#"),
+                                f"X-Databricks-UC-Table-Name in uncommented line: {line!r}")
+
+    def test_actual_table_names_in_stub_when_telemetry_present(self):
+        # generate() stores _tel_tables; _otel_toml_stub uses them
+        gen = CodexGenerator()
+        files = gen.generate(_context_with_telemetry(), _args())
+        toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
+        self.assertIn("cat.telemetry.otel_metrics", toml_blob)
+        self.assertIn("cat.telemetry.otel_logs", toml_blob)
+        self.assertIn("cat.telemetry.otel_traces", toml_blob)
+
+    def test_placeholder_in_stub_when_no_telemetry(self):
+        files = CodexGenerator().generate(_context(), _args())
+        toml_blob = files[f"codex/etc/{MANAGED_CONFIG_FILENAME}"]
+        self.assertIn("<otel-metrics-table>", toml_blob)
+        self.assertIn("<otel-logs-table>", toml_blob)
+        self.assertIn("<otel-traces-table>", toml_blob)
+
+    def test_per_signal_headers_in_install_notes(self):
+        gen = CodexGenerator()
+        gen.generate(_context_with_telemetry(), _args())
+        notes = gen.install_notes(_args())
+        self.assertIn("OTEL_EXPORTER_OTLP_METRICS_HEADERS", notes)
+        self.assertIn("OTEL_EXPORTER_OTLP_LOGS_HEADERS", notes)
+        self.assertIn("OTEL_EXPORTER_OTLP_TRACES_HEADERS", notes)
+        self.assertIn("X-Databricks-UC-Table-Name", notes)
+        self.assertIn("cat.telemetry.otel_metrics", notes)
 
 
 if __name__ == "__main__":
