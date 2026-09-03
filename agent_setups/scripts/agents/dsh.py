@@ -298,6 +298,16 @@ class _Selection:
     default: Endpoint
 
 
+# --- Cross-agent hardening knobs NOT wired here (custom CA + version floor) --
+# Claude Code exposes --ssl-cert-file and --required-min-version. DSH has no config
+# equivalent this generator can emit, so neither flag is offered:
+#   * Custom CA / TLS: DSH REFUSES NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / SSL_CERT_DIR
+#     in any .env or config layer — they are bootstrap-only (see app-boot's
+#     BOOTSTRAP_NAMES: "they change what is trusted, not where traffic goes") — and
+#     cordis.patch.yml cannot set process env. They must be exported before launch.
+#   * Version floor: DSH ships only a package.json Node engines floor (node >=22.19),
+#     an install-time runtime requirement, not a config-enforceable DSH self-version
+#     lock. Not faked.
 class DshGenerator(AgentGenerator):
     name = "dsh"
     help = "Generate a DeepSeek Harness (dsh) home patch + token plugin for the Unity AI Gateway."

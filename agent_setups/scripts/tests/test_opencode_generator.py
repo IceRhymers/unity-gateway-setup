@@ -104,5 +104,25 @@ class UserModeXdgTest(unittest.TestCase):
                 os.environ["XDG_CONFIG_HOME"] = prior
 
 
+class NoUnsupportedHardeningKnobsTest(unittest.TestCase):
+    """opencode has no config-emittable custom-CA or version-floor knob (CA is the
+    NODE_EXTRA_CA_CERTS launch env var; the config schema has no env-injection or
+    version-lock key), so the generator must not leak one."""
+
+    def test_no_ca_or_version_keys_in_managed_output(self):
+        files = OpenCodeGenerator().generate(_context(), _args(user_config=False))
+        blob = "".join(files.values())
+        for forbidden in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+                          "minVersion", "minimum_version", "requiredMinimumVersion"):
+            self.assertNotIn(forbidden, blob, f"{forbidden} unexpectedly emitted")
+
+    def test_no_ca_or_version_keys_in_user_output(self):
+        files = OpenCodeGenerator().generate(_context(), _args(user_config=True))
+        blob = "".join(files.values())
+        for forbidden in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+                          "minVersion", "minimum_version", "requiredMinimumVersion"):
+            self.assertNotIn(forbidden, blob, f"{forbidden} unexpectedly emitted")
+
+
 if __name__ == "__main__":
     unittest.main()

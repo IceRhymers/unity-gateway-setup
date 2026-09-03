@@ -176,6 +176,8 @@ cat_enabled() { case ",${ENABLED_CATEGORIES}," in *",$1,"*) return 0 ;; *) retur
 # headers helper uses. Returns non-zero on any failure (caller degrades to no-op).
 _mint_token() {
   mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+  # Restrict the cache dir before a token is ever written into it.
+  chmod 700 "$CACHE_DIR" 2>/dev/null || true
   local secret_json token
   secret_json="$("$DATABRICKS_BIN" api get \
     "/api/2.1/unity-catalog/secrets/${SECRET_FULL_NAME}?include_value=true" \
@@ -210,7 +212,13 @@ with urllib.request.urlopen(req, timeout=30) as r:
     sys.stdout.write(json.load(r)["access_token"])
 ' 2>/dev/null)" || return 1
   [ -n "$token" ] || return 1
-  printf '%s' "$token" > "${TOKEN_FILE}.tmp" 2>/dev/null && mv -f "${TOKEN_FILE}.tmp" "$TOKEN_FILE" 2>/dev/null || return 1
+  # Write the token 0600 from creation (umask 077 in a subshell, so there is no
+  # world-readable window), then chmod 600 explicitly before the atomic rename
+  # (mv preserves the temp file's mode). The cached bearer must not be readable
+  # by other local users.
+  ( umask 077; printf '%s' "$token" > "${TOKEN_FILE}.tmp"; ) 2>/dev/null \
+    && chmod 600 "${TOKEN_FILE}.tmp" 2>/dev/null \
+    && mv -f "${TOKEN_FILE}.tmp" "$TOKEN_FILE" 2>/dev/null || return 1
   echo "$(( $(date +%s) + TOKEN_TTL ))" > "$EXP_FILE" 2>/dev/null || true
   return 0
 }
@@ -591,6 +599,19 @@ def _requirements_toml(hooks_enabled: bool) -> str:
     return "\n".join(lines)
 
 
+# --- Cross-agent hardening knobs NOT wired here (custom CA + version floor) --
+# Claude Code exposes --ssl-cert-file (SSL_CERT_FILE + NODE_EXTRA_CA_CERTS in its
+# managed env) and --required-min-version (requiredMinimumVersion). Codex has no
+# equivalent this generator can emit honestly, so neither flag is offered:
+#   * Custom CA / TLS: Codex is a Rust CLI, so NODE_EXTRA_CA_CERTS (a Node-only var)
+#     does not apply to it, and no CA-bundle key in config.toml / managed_config.toml
+#     is confirmed for this Codex version. This file emits only binary-CONFIRMED keys
+#     (see _requirements_toml), so no CA config key is invented — set the trust store
+#     in the launch environment instead.
+#   * Version floor: requirements.toml is the enforcement surface, but no
+#     minimum-version key is confirmed in its schema for this version, and a wrong
+#     requirements shape makes Codex fail to load config entirely (see
+#     _requirements_toml). Not faked.
 class CodexGenerator(AgentGenerator):
     name = "codex"
     help = "Generate a Codex CLI config.toml that routes through the Unity AI Gateway."

@@ -180,6 +180,9 @@ test: ## Run the deploy install.sh test suite (self-contained: no infra, no netw
 test-mcp: ## Run the Python unit tests for the `mcp` installer (needs: pip install -r agent_setups/scripts/requirements.txt)
 	$(PYTHON) -m unittest discover -s agent_setups/scripts/tests -v
 
+.PHONY: check
+check: tf-fmt-check tf-validate test test-mcp ## Run all static checks (tf-fmt-check + tf-validate + deploy tests + mcp unit tests; no creds needed)
+
 # ---- deployment packaging ----
 
 .PHONY: deploy-package
@@ -193,6 +196,15 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	  echo "[deploy-package] ERROR: $(OUT_DIR)/codex is user-mode (no etc/managed_config.toml)."; \
 	  echo "                 install.sh would skip it. Regenerate codex in managed mode:"; \
 	  echo "                   make agent-codex OUT_DIR=$(OUT_DIR)"; \
+	  exit 1; \
+	fi
+	@# Same guard for opencode: install.sh SILENTLY skips a user-mode opencode
+	@# (opencode.json at root, no ai.opencode.managed.mobileconfig), which would ship
+	@# a tarball whose opencode is quietly dropped at deploy time. Require managed mode.
+	@if [ -d "$(OUT_DIR)/opencode" ] && [ ! -f "$(OUT_DIR)/opencode/ai.opencode.managed.mobileconfig" ]; then \
+	  echo "[deploy-package] ERROR: $(OUT_DIR)/opencode is user-mode (no ai.opencode.managed.mobileconfig)."; \
+	  echo "                 install.sh would skip it. Regenerate opencode in managed mode:"; \
+	  echo "                   make agent-opencode OUT_DIR=$(OUT_DIR)"; \
 	  exit 1; \
 	fi
 	@for os in macos linux; do \
@@ -210,6 +222,10 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	    mkdir -p "$${tmpdir}/codex"; \
 	    cp -r "$(OUT_DIR)/codex/." "$${tmpdir}/codex/"; \
 	  fi; \
+	  if [ -d "$(OUT_DIR)/opencode" ]; then \
+	    mkdir -p "$${tmpdir}/opencode"; \
+	    cp -r "$(OUT_DIR)/opencode/." "$${tmpdir}/opencode/"; \
+	  fi; \
 	  cp $(INSTALL_SH) "$${tmpdir}/install.sh"; \
 	  printf '%s' "$(VERSION)" > "$${tmpdir}/VERSION"; \
 	  if ls agent_setups/deploy/runbooks/*.md >/dev/null 2>&1; then \
@@ -218,6 +234,13 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	  tar -czf "$${tarball}" -C "$${tmpdir}" .; \
 	  rm -rf "$${tmpdir}"; \
 	  echo "[deploy-package] Built $${tarball}"; \
+	  _base="$$(basename "$${tarball}")"; \
+	  if command -v sha256sum >/dev/null 2>&1; then \
+	    ( cd "$(DIST_DIR)" && sha256sum "$${_base}" > "$${_base}.sha256" ); \
+	  else \
+	    ( cd "$(DIST_DIR)" && shasum -a 256 "$${_base}" > "$${_base}.sha256" ); \
+	  fi; \
+	  echo "[deploy-package] Wrote $${tarball}.sha256"; \
 	done
 	@echo "[deploy-package] Done. Tarballs in $(DIST_DIR)/"
 

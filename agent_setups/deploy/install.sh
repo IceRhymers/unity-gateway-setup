@@ -10,7 +10,7 @@
 #
 # Options:
 #   --dry-run               Print planned actions, touch nothing (exit 0)
-#   --agents <list>         Comma-separated: claude-code,codex,opencode  (default: claude-code,codex)
+#   --agents <list>         Comma-separated: claude-code,codex,opencode  (default: claude-code,codex,opencode)
 #   --profile <name>        Databricks profile (default: fevm-west; Phase-B hint only)
 #   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/ + <root>/opencode/
 #                           (default: .)
@@ -40,7 +40,7 @@ set -eu
 # ---------------------------------------------------------------------------
 TARGET_ROOT=""
 DRY_RUN=0
-AGENTS="claude-code,codex"
+AGENTS="claude-code,codex,opencode"
 PROFILE="fevm-west"
 SOURCE="."
 CLAUDE_SOURCE=""
@@ -80,7 +80,7 @@ Run as root (production) or with --target-root (unprivileged staging).
 
 Options:
   --dry-run               Print planned actions, touch nothing (exit 0)
-  --agents <list>         Comma-separated agents: claude-code,codex,opencode (default: claude-code,codex)
+  --agents <list>         Comma-separated agents: claude-code,codex,opencode (default: claude-code,codex,opencode)
   --profile <name>        Databricks profile name (default: fevm-west; Phase-B hint only)
   --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/, <root>/opencode/
                           (default: .)

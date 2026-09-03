@@ -197,6 +197,8 @@ cat_enabled() { case ",${ENABLED_CATEGORIES}," in *",$1,"*) return 0 ;; *) retur
 # headers helper uses. Returns non-zero on any failure (caller degrades to no-op).
 _mint_token() {
   mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+  # Restrict the cache dir before a token is ever written into it.
+  chmod 700 "$CACHE_DIR" 2>/dev/null || true
   local secret_json token
   secret_json="$("$DATABRICKS_BIN" api get \
     "/api/2.1/unity-catalog/secrets/${SECRET_FULL_NAME}?include_value=true" \
@@ -231,7 +233,13 @@ with urllib.request.urlopen(req, timeout=30) as r:
     sys.stdout.write(json.load(r)["access_token"])
 ' 2>/dev/null)" || return 1
   [ -n "$token" ] || return 1
-  printf '%s' "$token" > "${TOKEN_FILE}.tmp" 2>/dev/null && mv -f "${TOKEN_FILE}.tmp" "$TOKEN_FILE" 2>/dev/null || return 1
+  # Write the token 0600 from creation (umask 077 in a subshell, so there is no
+  # world-readable window), then chmod 600 explicitly before the atomic rename
+  # (mv preserves the temp file's mode). The cached bearer must not be readable
+  # by other local users.
+  ( umask 077; printf '%s' "$token" > "${TOKEN_FILE}.tmp"; ) 2>/dev/null \
+    && chmod 600 "${TOKEN_FILE}.tmp" 2>/dev/null \
+    && mv -f "${TOKEN_FILE}.tmp" "$TOKEN_FILE" 2>/dev/null || return 1
   echo "$(( $(date +%s) + TOKEN_TTL ))" > "$EXP_FILE" 2>/dev/null || true
   return 0
 }
@@ -595,7 +603,8 @@ def _derive_zerobus_endpoint(host: str, profile: str, databricks_bin: str) -> st
         return None
 
 
-def _otel_headers_helper_script(host: str, profile: str, secret_full_name: str, databricks_bin: str) -> str:
+def _otel_headers_helper_script(host: str, profile: str, secret_full_name: str, databricks_bin: str,
+                                otel_tables: list[str]) -> str:
     """Bash script for `otelHeadersHelper`: emit {"Authorization": "Bearer <token>"}.
 
     Reads the OTEL exporter OAuth credentials from the Unity Catalog secret (as the
@@ -604,16 +613,34 @@ def _otel_headers_helper_script(host: str, profile: str, secret_full_name: str, 
     content-type and per-signal X-Databricks-UC-Table-Name headers are supplied by
     the static OTEL env vars and merged in by Claude Code.
 
+    The minted token is DOWN-SCOPED to exactly the OTEL UC objects via an OAuth
+    authorization_details block (Rich Authorization Requests), mirroring the Zerobus
+    hook mint (_mint_token) instead of granting a broad all-apis token. `otel_tables`
+    is the list of fully-qualified UC tables the OTLP export writes to (the same
+    X-Databricks-UC-Table-Name targets); the SP is granted USE CATALOG / USE SCHEMA
+    on their shared catalog+schema and SELECT + MODIFY on each table. Unlike the
+    Zerobus path there is no `resource`/audience override: the OTLP ingest route
+    (/api/2.0/otel) is a normal workspace API, not the Zerobus Direct Write API.
+
     Defaults are baked in at generation time; each is overridable by environment so
     the same script works across a fleet (OTEL_UC_SECRET / DATABRICKS_PROFILE /
-    DATABRICKS_HOST / DATABRICKS_BIN).
+    DATABRICKS_HOST / DATABRICKS_BIN / OTEL_UC_TABLES).
     """
+    tables_csv = ",".join(otel_tables)
     # The embedded python uses only double quotes so it survives single-quoted `-c`.
+    # It builds authorization_details from OTEL_UC_TABLES (comma-separated fq tables,
+    # all in one catalog+schema) so the bearer can only write the OTEL tables.
     py = (
         "import base64, json, os, sys, urllib.parse, urllib.request\n"
         'obj = json.load(sys.stdin)\n'
         'creds = json.loads(obj["effective_value"])\n'
-        'data = urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "all-apis"}).encode()\n'
+        'tables = [t for t in os.environ["OTEL_UC_TABLES"].split(",") if t]\n'
+        'parts = tables[0].split(".")\n'
+        'ad = [{"type": "unity_catalog_privileges", "privileges": ["USE CATALOG"], "object_type": "CATALOG", "object_full_path": parts[0]},\n'
+        '      {"type": "unity_catalog_privileges", "privileges": ["USE SCHEMA"], "object_type": "SCHEMA", "object_full_path": ".".join(parts[:2])}]\n'
+        'for t in tables:\n'
+        '    ad.append({"type": "unity_catalog_privileges", "privileges": ["SELECT", "MODIFY"], "object_type": "TABLE", "object_full_path": t})\n'
+        'data = urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "all-apis", "authorization_details": json.dumps(ad)}).encode()\n'
         'url = os.environ["OTEL_TOKEN_HOST"].rstrip("/") + "/oidc/v1/token"\n'
         'req = urllib.request.Request(url, data=data)\n'
         'basic = base64.b64encode((creds["client_id"] + ":" + creds["client_secret"]).encode()).decode()\n'
@@ -633,9 +660,12 @@ SECRET_FULL_NAME="${{OTEL_UC_SECRET:-{secret_full_name}}}"
 PROFILE="${{DATABRICKS_PROFILE:-{profile}}}"
 DATABRICKS_BIN="${{DATABRICKS_BIN:-{databricks_bin}}}"
 export OTEL_TOKEN_HOST="${{DATABRICKS_HOST:-{host}}}"
+# The OTEL UC tables the export writes to; the token is down-scoped to just these.
+export OTEL_UC_TABLES="${{OTEL_UC_TABLES:-{tables_csv}}}"
 
 # 1. Read the SP OAuth credentials from the UC secret (CLI handles the dev's auth).
-# 2. Mint an M2M bearer token for the SP and emit it as the Authorization header.
+# 2. Mint an M2M bearer DOWN-SCOPED (authorization_details) to the OTEL UC tables
+#    and emit it as the Authorization header.
 "$DATABRICKS_BIN" api get \\
   "/api/2.1/unity-catalog/secrets/${{SECRET_FULL_NAME}}?include_value=true" \\
   --profile "$PROFILE" \\
@@ -982,6 +1012,8 @@ class ClaudeCodeGenerator(AgentGenerator):
             profile=args.__dict__.get("profile", "DEFAULT"),
             secret_full_name=tel.secret_full_name,
             databricks_bin=args.databricks_bin,
+            # Down-scope the minted token to exactly the tables the export writes to.
+            otel_tables=[tel.tables[s] for s in signals],
         )
 
     def _hook_parts(self, ctx: GatewayContext, args: argparse.Namespace) -> tuple[str | None, list[str]]:

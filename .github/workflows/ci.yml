@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# All four jobs are independent and run in parallel.
+jobs:
+
+  # ---------- Terraform: formatting + validation (no backend, no credentials) ----------
+  terraform:
+    name: Terraform format + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # Constraint in terraform/infra/versions.tf: >= 1.5.0.
+          # Pin a recent 1.x; update when a newer patch is available.
+          terraform_version: "1.9.x"
+
+      - name: Check Terraform formatting
+        run: make tf-fmt-check
+
+      - name: Validate Terraform configuration
+        # Uses -backend=false; no state access or workspace credentials required.
+        run: make tf-validate
+
+  # ---------- Python: deploy tests + MCP unit tests (fully offline) ----------
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # README: "Requires Python 3.10+"
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install -r agent_setups/scripts/requirements.txt
+
+      - name: Run deploy install tests
+        # Self-contained shell test suite; no infra, no network.
+        run: make test
+
+      - name: Run MCP unit tests
+        # Python unittest suite; no infra, no network.
+        run: make test-mcp
+
+  # ---------- ShellCheck: static analysis of all tracked .sh files ----------
+  shell:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck on all shell scripts
+        # Scripts carry inline shellcheck disable directives; they were written for it.
+        # -not -path './.git/*' keeps the traversal out of git internals.
+        run: find . -name '*.sh' -not -path './.git/*' | sort | xargs shellcheck
+
+  # ---------- Lint: ruff on agent_setups/scripts (non-blocking) ----------
+  lint:
+    name: Python lint (non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff
+        # Non-blocking until a ruff config (pyproject.toml, ruff.toml) is added.
+        run: ruff check agent_setups/scripts/
+        continue-on-error: true

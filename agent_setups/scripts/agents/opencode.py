@@ -345,6 +345,16 @@ def _mobileconfig(config: dict, providers: list[str]) -> str:
     return plistlib.dumps(profile, sort_keys=False).decode("utf-8")
 
 
+# --- Cross-agent hardening knobs NOT wired here (custom CA + version floor) --
+# Claude Code exposes --ssl-cert-file and --required-min-version. opencode has no
+# config equivalent this generator can emit, so neither flag is offered:
+#   * Custom CA / TLS: opencode's documented mechanism is the NODE_EXTRA_CA_CERTS
+#     ENVIRONMENT variable, exported before launch (see opencode docs/network). The
+#     opencode config schema (Config.Info) has no env-injection key, and Node reads
+#     NODE_EXTRA_CA_CERTS at startup, so the auth plugin cannot set it after boot.
+#     Set it in the launch environment instead.
+#   * Version floor: the opencode config schema has no minimum-version / version-lock
+#     key (autoupdate controls updates, not a floor). Not faked.
 class OpenCodeGenerator(AgentGenerator):
     name = "opencode"
     help = "Generate an opencode.json (native providers + auth plugin) for the Unity AI Gateway."
