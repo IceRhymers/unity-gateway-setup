@@ -32,21 +32,16 @@ fi
 if [ -f /opt/agent-config-codex/etc/managed_config.toml ]; then
   _install_agents="${_install_agents:+${_install_agents},}codex"
 fi
-if [ -f /opt/agent-config-opencode/ai.opencode.managed.mobileconfig ]; then
-  _install_agents="${_install_agents:+${_install_agents},}opencode"
-fi
 
 if [ -n "${_install_agents}" ]; then
   /usr/local/lib/unity-gateway/install.sh \
     --agents "${_install_agents}" \
     --claude-source /opt/agent-config \
     --codex-source /opt/agent-config-codex \
-    --opencode-source /opt/agent-config-opencode \
     --profile "${DATABRICKS_PROFILE_NAME}"
 else
   echo "[entrypoint] note: no Claude Code config at /opt/agent-config (run 'make docker-config')." >&2
   echo "[entrypoint] note: no Codex config at /opt/agent-config-codex (run 'make docker-config-codex')." >&2
-  echo "[entrypoint] note: no opencode config at /opt/agent-config-opencode (run 'make docker-config-opencode')." >&2
 fi
 
 # 2b. Stage the DeepSeek Harness config. DSH has no managed system path: its home

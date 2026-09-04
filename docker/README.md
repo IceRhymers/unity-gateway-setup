@@ -10,7 +10,7 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 
 ## What's inside
 
-- **Claude Code** + **Codex** + **opencode** + **DeepSeek Harness** (`dsh`) + the
+- **Claude Code** + **Codex** + **opencode** + **DeepSeek Harness** (`dsh`) CLIs + the
   **databricks CLI** + **python3** (for the api-key, otel-headers, and Codex auth
   helpers).
 - **`ug`** (Unity AI Gateway coding CLI), installed via `uv` and available on
@@ -24,10 +24,9 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
   artifact a Linux deploy ships. The harness stages the generated **Codex**
   `config.toml` at the dev user's `~/.codex/config.toml` (Codex has no
   system-managed path). The image installs `jq` for the hook.
-- The generated **opencode** config (npm pkg `opencode-ai`, bin `opencode`). The
-  harness stages `opencode.json` and `databricks-auth.ts` at the Linux managed path
-  `/etc/opencode/` (opencode reads managed config last; it overrides user config).
-  The macOS `.mobileconfig` hard-lock does not apply inside a Linux container.
+- The **opencode** CLI (npm pkg `opencode-ai`, bin `opencode`). The repo generates
+  no opencode config. `ug opencode` configures and launches it, so the CLI ships
+  here only to exercise that path. See [Testing opencode](#testing-opencode).
 - The generated **DeepSeek Harness** config. The harness stages the home patch
   (`cordis.patch.yml`) and its token plugin (`databricks-token-refresh.mjs`) at
   the dev user's `~/.dsh/` (DSH has no system-managed path). The entrypoint runs
@@ -56,7 +55,7 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 ```bash
 make tf-apply           # provision the telemetry infra first (creates tables, SP, secret)
 make docker-build       # build the image (once) — Claude Code + Codex + opencode + dsh + databricks CLI + ug
-make docker-config-all  # generate all agent configs (or docker-config / docker-config-codex / docker-config-opencode / docker-config-dsh)
+make docker-config-all  # generate all agent configs (or docker-config / docker-config-codex / docker-config-dsh)
 make docker-up          # start the container (maps 8020, mounts configs, writes the profile)
 make docker-login       # runs `databricks auth login` inside — see browser note below
 make docker-shell       # exec in as the dev user
@@ -141,26 +140,20 @@ comment header). To iterate on the config without restarting the container, run
 
 ### Testing opencode
 
-The harness stages `opencode.json` and `databricks-auth.ts` at `/etc/opencode/`
-inside the container. The container sets `OPENCODE_CONFIG=/etc/opencode/opencode.json`
-so the pinned opencode reads the staged managed config. This env var override is
-required because opencode 1.1.4 predates automatic `/etc/opencode` directory loading.
-That feature was added in a later release. The `OPENCODE_CONFIG` env var is the
-documented override that tells opencode to load a specific config file.
+`ug` owns opencode. The repo generates no opencode config, so there is nothing to
+stage and no `make docker-config-opencode` target. `ug configure` writes opencode's
+config into its own isolated dir, and `ug opencode` launches the CLI against it.
 
-Run `make docker-config-opencode` to generate the config first, then start the
-container with `make docker-up`. Inside `make docker-shell`:
+Authenticate first with `make docker-login`. Then, inside `make docker-shell`:
 
 ```bash
 opencode --version   # confirm the pinned version is installed
-opencode             # launches opencode, routed through <host>/ai-gateway/anthropic/v1
-                     # (or gemini/v1beta / mlflow/v1 depending on model family)
+ug opencode          # ug configures opencode, then launches it through the gateway
 ```
 
-Authenticate first with `make docker-login`. The `databricks-auth.ts` plugin mints
-a fresh OAuth token on each request via the Databricks CLI. To iterate on the
-config without restarting the container, run `make docker-reload` (reloads all
-agent configs including opencode).
+`ug` sets the three gateway routes per model family (`anthropic/v1`,
+`gemini/v1beta`, `mlflow/v1`) and installs its own plugin, which mints a fresh
+OAuth token per request and retries once on a 401.
 
 ### Testing DeepSeek Harness
 

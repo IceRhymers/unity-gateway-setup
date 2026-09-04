@@ -27,7 +27,7 @@ jobs:
         # Uses -backend=false; no state access or workspace credentials required.
         run: make tf-validate
 
-  # ---------- Python: deploy tests + MCP unit tests (fully offline) ----------
+  # ---------- Python: deploy tests + generator unit tests (fully offline) ----------
   python:
     name: Python tests
     runs-on: ubuntu-latest
@@ -46,9 +46,9 @@ jobs:
         # Self-contained shell test suite; no infra, no network.
         run: make test
 
-      - name: Run MCP unit tests
+      - name: Run generator unit tests
         # Python unittest suite; no infra, no network.
-        run: make test-mcp
+        run: make test-generators
 
       - name: Run Lakebase state bootstrap tests
         # Offline shell test suite for terraform/bootstrap; no infra, no network,

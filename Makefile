@@ -23,30 +23,14 @@ endif
 # route through it; it is a no-op passthrough when this checkout is not
 # wired to the remote backend.
 TF_WRAP   ?= terraform/bootstrap/with-state.sh
-# Generator invocations that READ Terraform outputs need the backend, so they
-# go through the wrapper. The `mcp` subcommand does not: generate.py returns
-# from run_mcp() before build_context(), and the mcp targets can be
-# interactive, so requiring a credential there would be a regression.
-AGENT_GEN     ?= $(TF_WRAP) $(PYTHON) agent_setups/scripts/generate.py
-AGENT_GEN_RAW ?= $(PYTHON) agent_setups/scripts/generate.py
+# Every generator invocation READS Terraform outputs, so it goes through the
+# wrapper that injects the Lakebase state credentials.
+AGENT_GEN ?= $(TF_WRAP) $(PYTHON) agent_setups/scripts/generate.py
 # Share one provider download between .terraform and .terraform.validate.
 export TF_PLUGIN_CACHE_DIR ?= $(HOME)/.terraform.d/plugin-cache
 # Where generated configs land. The docker-config* targets override this to the
 # container dir so the harness tests exactly what `agent-*` generates.
 OUT_DIR   ?= agent_setups/generated
-
-# ---- mcp installer selection (override on the command line) ----
-# CATALOG/SCHEMA scope the discovery (default: the system.ai managed MCP schema).
-# Selection: SELECT=names (comma list) or ALL=1. Selection is declarative: the chosen
-# set becomes the complete config for each harness. With neither SELECT nor ALL, the
-# `mcp*` targets run interactively (an arrow-key menu).
-CATALOG   ?= system
-SCHEMA    ?= ai
-SELECT    ?=
-ALL       ?=
-MCP_CAT_ARG := $(if $(CATALOG),--catalog $(CATALOG),)
-MCP_SCH_ARG := $(if $(SCHEMA),--schema $(SCHEMA),)
-MCP_SEL_ARG := $(if $(ALL),--all,$(if $(SELECT),--select $(SELECT),))
 
 # Computed once so the tarball filename and embedded VERSION file are identical
 # (no double git-describe drift). Format: <describe-or-sha>-<YYYYMMDD>.
@@ -161,14 +145,6 @@ agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, OUT_DIR=, 
 agent-codex-preview: ## Print the generated Codex config.toml without writing
 	$(AGENT_GEN) codex --profile $(PROFILE) --stdout $(ARGS)
 
-.PHONY: agent-opencode
-agent-opencode: ## Generate opencode.json from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
-	$(AGENT_GEN) opencode --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
-
-.PHONY: agent-opencode-preview
-agent-opencode-preview: ## Print the generated opencode.json without writing
-	$(AGENT_GEN) opencode --profile $(PROFILE) --stdout $(ARGS)
-
 .PHONY: agent-dsh
 agent-dsh: ## Generate the DeepSeek Harness home patch + token plugin from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
 	$(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
@@ -186,12 +162,7 @@ agent-claude-desktop-preview: ## Print the generated Claude Desktop bundle witho
 	$(AGENT_GEN) claude-desktop --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agents
-agents: agent-claude-code agent-claude-desktop agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + claude-desktop + codex + opencode + dsh)
-
-.PHONY: opencode-install-local
-opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/.config/opencode for a local, non-managed install (PROFILE=, ARGS=)
-	$(AGENT_GEN) opencode --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
-	sh agent_setups/deploy/install-opencode-local.sh --source $(OUT_DIR)/opencode/opencode.json
+agents: agent-claude-code agent-claude-desktop agent-codex agent-dsh ## Generate every agent config (claude-code + claude-desktop + codex + dsh)
 
 .PHONY: claude-code-install-local
 claude-code-install-local: ## Generate settings.json (user mode) + install it to ~/.claude for a local, non-managed install (PROFILE=, ARGS=)
@@ -226,28 +197,8 @@ claude-desktop-install-local: ## Generate a Claude Desktop bundle pointed at a u
 		--source "$(OUT_DIR)/claude-desktop/$(CD_OS)" --target-dir "$(CD_LOCAL_DIR)"
 
 .PHONY: agents-install-local
-agents-install-local: claude-code-install-local codex-install-local opencode-install-local dsh-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
-	@echo "[agents-install-local] Claude Code, Codex, opencode, and DeepSeek Harness installed locally."
-
-# ---- mcp services ----
-# Discover AI Gateway MCP services and merge selected ones into the harness USER
-# configs. With neither ENABLE nor ALL set, the target runs interactively.
-
-.PHONY: mcp
-mcp: ## Select AI Gateway MCP services and install into ALL harnesses (PROFILE=, CATALOG=, SCHEMA=, SELECT=names, ALL=1, ARGS=)
-	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
-
-.PHONY: mcp-claude-code
-mcp-claude-code: ## Select AI Gateway MCP services and install into Claude Code only (same vars as `mcp`)
-	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) --harness claude-code $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
-
-.PHONY: mcp-codex
-mcp-codex: ## Select AI Gateway MCP services and install into Codex only (same vars as `mcp`)
-	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) --harness codex $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
-
-.PHONY: mcp-opencode
-mcp-opencode: ## Select AI Gateway MCP services and install into opencode only (same vars as `mcp`)
-	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) --harness opencode $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+agents-install-local: claude-code-install-local codex-install-local dsh-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
+	@echo "[agents-install-local] Claude Code, Codex, and DeepSeek Harness installed locally."
 
 # ---- tests ----
 
@@ -255,12 +206,12 @@ mcp-opencode: ## Select AI Gateway MCP services and install into opencode only (
 test: ## Run the deploy install.sh test suite (self-contained: no infra, no network, no pre-generated bundles)
 	sh agent_setups/deploy/tests/run.sh
 
-.PHONY: test-mcp
-test-mcp: ## Run the Python unit tests for the `mcp` installer (needs: pip install -r agent_setups/scripts/requirements.txt)
+.PHONY: test-generators
+test-generators: ## Run the Python unit tests for the config generators (needs Python 3.11+ and: pip install -r agent_setups/scripts/requirements.txt)
 	$(PYTHON) -m unittest discover -s agent_setups/scripts/tests -v
 
 .PHONY: check
-check: tf-fmt-check tf-validate test test-mcp test-tfstate ## Run all static checks (tf-fmt-check + tf-validate + deploy tests + mcp unit tests; no creds needed)
+check: tf-fmt-check tf-validate test test-generators test-tfstate ## Run all static checks (tf-fmt-check + tf-validate + deploy tests + generator unit tests; no creds needed)
 
 # ---- deployment packaging ----
 
@@ -277,15 +228,6 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	  echo "                   make agent-codex OUT_DIR=$(OUT_DIR)"; \
 	  exit 1; \
 	fi
-	@# Same guard for opencode: install.sh SILENTLY skips a user-mode opencode
-	@# (opencode.json at root, no ai.opencode.managed.mobileconfig), which would ship
-	@# a tarball whose opencode is quietly dropped at deploy time. Require managed mode.
-	@if [ -d "$(OUT_DIR)/opencode" ] && [ ! -f "$(OUT_DIR)/opencode/ai.opencode.managed.mobileconfig" ]; then \
-	  echo "[deploy-package] ERROR: $(OUT_DIR)/opencode is user-mode (no ai.opencode.managed.mobileconfig)."; \
-	  echo "                 install.sh would skip it. Regenerate opencode in managed mode:"; \
-	  echo "                   make agent-opencode OUT_DIR=$(OUT_DIR)"; \
-	  exit 1; \
-	fi
 	@for os in macos linux; do \
 	  tarball="$(DIST_DIR)/unity-gateway-agents-$(VERSION)-$${os}.tar.gz"; \
 	  echo "[deploy-package] Building $${tarball} ..."; \
@@ -300,10 +242,6 @@ deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generat
 	  if [ -d "$(OUT_DIR)/codex" ]; then \
 	    mkdir -p "$${tmpdir}/codex"; \
 	    cp -r "$(OUT_DIR)/codex/." "$${tmpdir}/codex/"; \
-	  fi; \
-	  if [ -d "$(OUT_DIR)/opencode" ]; then \
-	    mkdir -p "$${tmpdir}/opencode"; \
-	    cp -r "$(OUT_DIR)/opencode/." "$${tmpdir}/opencode/"; \
 	  fi; \
 	  if [ -d "$(OUT_DIR)/claude-desktop/$${os}" ]; then \
 	    mkdir -p "$${tmpdir}/claude-desktop/$${os}"; \
@@ -347,11 +285,6 @@ CODEX_CFG_MOUNT   = $(if $(or $(wildcard $(CONTAINER_CFG)/codex/config.toml),$(w
 # Mount the DeepSeek Harness config only when it has been generated
 # (docker-config-dsh). The entrypoint stages it into the dev user's ~/.dsh.
 DSH_CFG_MOUNT     = $(if $(wildcard $(CONTAINER_CFG)/dsh/cordis.patch.yml),-v "$(abspath $(CONTAINER_CFG)/dsh)":/opt/agent-config-dsh:ro,)
-# Mount the opencode config only when it has been generated (docker-config-opencode).
-# Guard on the .mobileconfig — the managed-vs-user signal (both modes emit
-# opencode.json; only managed mode emits the .mobileconfig). The entrypoint stages
-# it into /etc/opencode/ (Linux managed path) inside the container.
-OPENCODE_CFG_MOUNT = $(if $(wildcard $(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig),-v "$(abspath $(CONTAINER_CFG)/opencode)":/opt/agent-config-opencode:ro,)
 # Workspace host for PROFILE, read from ~/.databrickscfg at parse time.
 WS_HOST := $(shell $(PYTHON) -c "import configparser,pathlib; c=configparser.ConfigParser(); c.read(str(pathlib.Path.home()/'.databrickscfg')); print(c.get('$(PROFILE)','host',fallback=''))")
 # Forward a non-default npm registry (e.g. a corporate mirror) into the build so
@@ -371,7 +304,7 @@ PYPI_INDEX       ?= $(shell if [ -n "$$UV_DEFAULT_INDEX" ]; then echo "$$UV_DEFA
 PYPI_INDEX_ARG   := $(if $(PYPI_INDEX),--build-arg PYPI_INDEX=$(PYPI_INDEX),)
 
 .PHONY: docker-build
-docker-build: ## Build the test-harness image (Claude Code + Codex + opencode + dsh + databricks CLI + python3 + ug)
+docker-build: ## Build the test-harness image (Claude Code + Codex + dsh + databricks CLI + python3 + ug)
 	docker build -t $(DOCKER_IMAGE) $(NPM_REGISTRY_ARG) $(UCODE_SOURCE_ARG) $(PYPI_INDEX_ARG) -f docker/Dockerfile .
 
 # The docker-config* targets delegate to the SAME agent-* generation, only
@@ -391,16 +324,8 @@ docker-config-codex: ## Generate Codex config.toml for the container (routes thr
 docker-config-dsh: ## Generate the DeepSeek Harness home patch + token plugin for the container (routes the DeepSeek adapter through the gateway mlflow/v1 route)
 	$(MAKE) agent-dsh PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
 
-.PHONY: docker-config-opencode
-docker-config-opencode: ## Generate opencode config for the container (routes through the gateway; stages Linux managed at /etc/opencode/)
-	@if echo "$(ARGS)" | grep -q -- '--user-config'; then \
-	  echo "ERROR: docker-config-opencode does not support --user-config. The container harness requires managed opencode only. Remove --user-config and run again."; \
-	  exit 1; \
-	fi
-	$(MAKE) agent-opencode PROFILE=$(PROFILE) OUT_DIR=$(CONTAINER_CFG) ARGS="$(ARGS)"
-
 .PHONY: docker-config-all
-docker-config-all: docker-config docker-config-codex docker-config-opencode docker-config-dsh ## Generate every agent config for the container (claude-code + codex + opencode + dsh)
+docker-config-all: docker-config docker-config-codex docker-config-dsh ## Generate every agent config for the container (claude-code + codex + dsh)
 
 .PHONY: docker-reload
 docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload into the RUNNING container via install.sh (no restart)
@@ -427,17 +352,11 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 	  docker cp "$(CONTAINER_CFG)/codex/." $(DOCKER_CONTAINER):/tmp/ugw-reload/codex/; \
 	  _agents="$${_agents:+$${_agents},}codex"; \
 	fi; \
-	if [ -f "$(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig" ]; then \
-	  docker exec -u root $(DOCKER_CONTAINER) mkdir -p /tmp/ugw-reload/opencode; \
-	  docker cp "$(CONTAINER_CFG)/opencode/." $(DOCKER_CONTAINER):/tmp/ugw-reload/opencode/; \
-	  _agents="$${_agents:+$${_agents},}opencode"; \
-	fi; \
 	if [ -n "$${_agents}" ]; then \
 	  docker exec -u root $(DOCKER_CONTAINER) /tmp/ugw-reload/install.sh \
 	    --agents "$${_agents}" \
 	    --claude-source /tmp/ugw-reload/claude \
 	    --codex-source /tmp/ugw-reload/codex \
-	    --opencode-source /tmp/ugw-reload/opencode \
 	    --os linux; \
 	  _staged="$${_agents}"; \
 	fi; \
@@ -455,12 +374,12 @@ docker-reload: docker-config-all ## Regenerate BOTH agent configs and hot-reload
 	  echo "[docker-reload] No configs found in $(CONTAINER_CFG). Run make docker-config-all first."; \
 	fi
 	@docker exec -u root $(DOCKER_CONTAINER) rm -rf /tmp/ugw-reload
-	@echo "Harness reloaded (Claude Code + Codex + opencode + DeepSeek Harness). Restart your \`claude\` / \`codex\` / \`opencode\` / \`dsh\` session (exit and re-run) to pick it up."
+	@echo "Harness reloaded (Claude Code + Codex + DeepSeek Harness). Restart your \`claude\` / \`codex\` / \`dsh\` session (exit and re-run) to pick it up."
 
 .PHONY: docker-up
 docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes the profile)
-	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/opencode/ai.opencode.managed.mobileconfig" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
-		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config', 'make docker-config-codex', 'make docker-config-opencode', and/or 'make docker-config-dsh' first."; exit 1; }
+	@test -f "$(CONTAINER_CFG)/claude-code/linux/managed-settings.json" -o -f "$(CONTAINER_CFG)/codex/config.toml" -o -f "$(CONTAINER_CFG)/codex/etc/managed_config.toml" -o -f "$(CONTAINER_CFG)/dsh/cordis.patch.yml" \
+		|| { echo "No config in $(CONTAINER_CFG)/ — run 'make docker-config', 'make docker-config-codex', and/or 'make docker-config-dsh' first."; exit 1; }
 	@test -n "$(WS_HOST)" \
 		|| { echo "Could not resolve host for profile '$(PROFILE)' in ~/.databrickscfg."; exit 1; }
 	docker run -d --name $(DOCKER_CONTAINER) \
@@ -471,7 +390,6 @@ docker-up: ## Start the container (mounts configs, maps OAuth port 8020, writes 
 		-v "$(abspath $(CONTAINER_CFG)/claude-code/linux)":/opt/agent-config:ro \
 		$(CODEX_CFG_MOUNT) \
 		$(DSH_CFG_MOUNT) \
-		$(OPENCODE_CFG_MOUNT) \
 		$(DOCKER_IMAGE)
 	@echo ""
 	@echo "Container '$(DOCKER_CONTAINER)' up (profile '$(PROFILE)' -> $(WS_HOST))."

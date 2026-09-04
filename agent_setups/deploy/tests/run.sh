@@ -19,8 +19,6 @@ for _script in \
     "${TESTS_DIR}/test_07_idempotent_upgrade.sh" \
     "${TESTS_DIR}/test_08_codex_managed_user.sh" \
     "${TESTS_DIR}/test_09_agents_validation.sh" \
-    "${TESTS_DIR}/test_10_opencode_managed_user.sh" \
-    "${TESTS_DIR}/test_11_opencode_local_install.sh" \
     "${TESTS_DIR}/test_12_codex_local_install.sh" \
     "${TESTS_DIR}/test_13_claude_code_local_install.sh" \
     "${TESTS_DIR}/test_14_backup_on_overwrite.sh" \

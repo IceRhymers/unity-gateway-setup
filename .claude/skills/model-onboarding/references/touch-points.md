@@ -30,17 +30,13 @@ The reusable module that creates one serving endpoint. It accepts `foundation_mo
 ### `agent_setups/scripts/agents/codex.py`
 - **`DEFAULT_MODEL_PREFERENCES`** — the ordered fallback for the codex default model. Edit only when the codex default must change.
 
-### `agent_setups/scripts/agents/opencode.py`
-- **`DEFAULT_MODEL_PREFERENCES`** — the ordered fallback for the opencode default model.
-- **`Family`** entries (`_ANTHROPIC`, `_GOOGLE`, `_OSS`) and the schema-to-family map — one provider per native dialect, each with its own gateway `route`. Add a `Family` and a schema mapping only for a new provider surface (Case D).
-
 ### `agent_setups/scripts/agents/dsh.py`
 - **`DEFAULT_MODEL_PREFERENCES`** — the DeepSeek Harness default order. DeepSeek routes through the OSS mlflow surface (`GATEWAY_OSS_ROUTE`).
 
 ## Layer 3 — Tests and docs
 
 ### `agent_setups/scripts/tests/`
-- `test_claude_code_generator.py`, `test_codex_generator.py`, `test_opencode_generator.py`, `test_dsh_generator.py`. Add or update a test when a tier mapping, a default, or a route changes.
+- `test_claude_code_generator.py`, `test_claude_desktop_generator.py`, `test_codex_generator.py`, `test_dsh_generator.py`. Add or update a test when a tier mapping, a default, or a route changes.
 
 ### Docs
 - `agent_setups/scripts/README.md` — the "What the Claude Code config encodes" section names the tier mapping and the pin strategy. Update it when either changes. It names aliases (`fable`→`claude-fable`), so a version bump alone needs no change here.
