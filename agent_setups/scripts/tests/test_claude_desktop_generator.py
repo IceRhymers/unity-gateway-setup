@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -280,6 +281,25 @@ class BootstrapEmissionTest(unittest.TestCase):
         self.assertIn("configure --agents claude", sh)
         self.assertIn("--skip-validate", sh)
 
+    def test_generated_shell_scripts_are_posix(self):
+        """The runbook invokes these with `sh`, and /bin/sh is dash on Debian/Ubuntu.
+
+        macOS /bin/sh is bash in POSIX mode, so a bashism passes locally and fails
+        on CI. Assert the absence of the ones that actually bite.
+        """
+        files = ClaudeDesktopGenerator().generate(_context(), _args(platforms="macos"))
+        bashisms = ("pipefail", "[[", "local ", "<<<", "declare ", "mapfile", "readarray")
+        for name in (BOOTSTRAP_FILENAME, CRED_HELPER_SH):
+            script = files[f"claude-desktop/macos/{name}"]
+            self.assertTrue(script.startswith("#!/usr/bin/env sh"), name)
+            for token in bashisms:
+                # Skip the comment lines that name the bashisms we are banning.
+                offending = [
+                    ln for ln in script.split("\n")
+                    if token in ln and not ln.lstrip().startswith("#")
+                ]
+                self.assertEqual(offending, [], f"{name} uses {token!r}: {offending}")
+
     def test_bootstrap_has_no_placeholders_left(self):
         files = ClaudeDesktopGenerator().generate(_context(), _args(platforms="macos"))
         sh = files[f"claude-desktop/macos/{BOOTSTRAP_FILENAME}"]
@@ -298,6 +318,11 @@ class BootstrapExecutionTest(unittest.TestCase):
 
     WORKSPACE = "https://myws.cloud.databricks.com"
 
+    # /bin/sh is dash on Debian and Ubuntu but bash-in-POSIX-mode on macOS, so a
+    # bashism passes on a developer laptop and fails on CI. Prefer a real dash when
+    # the machine has one, so both environments exercise the same interpreter.
+    SHELL = shutil.which("dash") or "sh"
+
     def _run(self, ug_state: dict, extra_args: list[str] | None = None,
              args_over: dict | None = None) -> tuple[int, dict | None, str]:
         files = ClaudeDesktopGenerator().generate(
@@ -315,7 +340,7 @@ class BootstrapExecutionTest(unittest.TestCase):
 
             env = dict(os.environ, UCODE_STATE=str(state))
             proc = subprocess.run(
-                ["sh", str(script), "--skip-configure", *(extra_args or [])],
+                [self.SHELL, str(script), "--skip-configure", *(extra_args or [])],
                 capture_output=True, text=True, env=env, cwd=td,
             )
             merged_path = tdp / MERGED_CONFIG_FILENAME
@@ -419,7 +444,7 @@ class BootstrapExecutionTest(unittest.TestCase):
             state = tdp / "state.json"
             state.write_text(json.dumps(self._state()))
             proc = subprocess.run(
-                ["sh", str(script), "--skip-configure", "--dry-run"],
+                [self.SHELL, str(script), "--skip-configure", "--dry-run"],
                 capture_output=True, text=True,
                 env=dict(os.environ, UCODE_STATE=str(state)), cwd=td,
             )
@@ -471,7 +496,7 @@ class BootstrapExecutionTest(unittest.TestCase):
             script.write_text(files[f"claude-desktop/macos/{BOOTSTRAP_FILENAME}"])
             script.chmod(0o755)
             proc = subprocess.run(
-                ["sh", str(script), "--use-pat"],
+                [self.SHELL, str(script), "--use-pat"],
                 capture_output=True, text=True,
                 env={k: v for k, v in os.environ.items() if k != "DATABRICKS_PROFILE"},
                 cwd=td,
