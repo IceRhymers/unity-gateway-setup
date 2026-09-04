@@ -6,8 +6,8 @@ services you provisioned. It then emits opinionated, deployable config for a
 coding agent.
 
 **Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
-deployment), **Claude Desktop** (an importable config plus per-OS helper
-scripts), **Codex** (`config.toml` routed through the gateway's MLflow serving
+deployment), **Claude Desktop** (a policy + telemetry config, a headless `ug`
+bootstrap, and per-OS helper scripts), **Codex** (`config.toml` routed through the gateway's MLflow serving
 route, `mlflow/v1/responses`), and the **DeepSeek Harness** (a home patch plus a
 token-refresh plugin). The design is a registry. You can add other agents as new
 generators.
@@ -456,6 +456,10 @@ Two rules follow from that split:
    Codex stay here because both read a root-owned managed file that an MDM tool
    must push. Claude Desktop and the DeepSeek Harness stay here because `ug`
    does not support either one.
+3. Do not emit a model list for an agent `ug` can configure. Claude Desktop shows
+   the pattern: the generator emits policy and telemetry only, and the generated
+   `ug-bootstrap-claude-desktop.sh` reads the models `ug` resolved out of
+   `~/.ucode/state.json`. A second model list would fight the one `ug` publishes.
 
 ## Adding an agent
 

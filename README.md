@@ -115,7 +115,9 @@ table to decide where a change belongs.
 | The gateway itself (model services, inference logging, OTEL stack, hook-event table) | **Terraform** (`terraform/`) | Workspace infrastructure. `ug` provisions nothing. |
 | Fleet inference baseline (base URL, model pins, allow-list, permission deny-list) | **generator** (`agent_setups/`) | It must work before a developer installs anything, and an MDM tool must push it. |
 | OTEL export and hook events | **generator** | `ug` emits no OTEL and no hook events. Its own telemetry is a `User-Agent` string plus Claude Code MLflow tracing. |
-| Claude Desktop, DeepSeek Harness | **generator** | `ug` does not support either agent. |
+| DeepSeek Harness | **generator** | `ug` does not support the agent. |
+| Claude Desktop policy and telemetry | **generator** | `ug` has no Claude Desktop target, and neither the OTEL target nor the Claude.ai sign-in lockout can come from `ug`. |
+| Claude Desktop models, base URL, identity | **`ug`** | The generated `ug-bootstrap-claude-desktop.sh` runs `ug configure`, then reads the workspace, profile, base URL, and Claude model pins from `~/.ucode/state.json`. The generator pushes no model list. |
 | Launching an agent | **`ug`** | `ug claude`, `ug codex`, and so on. |
 | Per-request OAuth for model calls | **both, by agent** | Claude Code and Codex get it from `apiKeyHelper` in the managed file. For every agent `ug` launches, `ug` mints the token. |
 | MCP discovery and registration | **`ug`** | `ug mcp add` covers seven agents, removes stale servers, and bridges each server through the bundled `ug mcp-proxy`. |

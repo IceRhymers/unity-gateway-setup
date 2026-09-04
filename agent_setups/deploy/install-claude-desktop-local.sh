@@ -7,10 +7,14 @@
 # script places those helper scripts into a user-writable directory so you can test
 # the config locally without root or MDM.
 #
-# The generated claude-setup.json's credential.command is baked at generation time.
-# So --target-dir MUST match the directory the JSON points at. The `make
+# The credential.command path is baked into ug-bootstrap-claude-desktop.sh at
+# generation time (claude-setup.json itself holds policy + telemetry only). So
+# --target-dir MUST match the directory the bootstrap points at. The `make
 # claude-desktop-install-local` target keeps the two in sync by generating the
 # bundle with --install-dir-<os> set to this same directory.
+#
+# Run the bootstrap from the BUNDLE dir (where claude-setup.json sits) to produce
+# claude-setup.merged.json, and import that.
 #
 # Target (a user-writable helper dir; matches the JSON's baked absolute path):
 #   macOS default: $HOME/Library/Application Support/ClaudeDesktop
@@ -54,9 +58,11 @@ NO_BACKUP=0
 PRINT_TARGET=0
 
 # The helper scripts a macOS/Linux bundle carries. databricks-token.sh is required
-# (the credential.command target); otel-headers-helper.sh is optional (telemetry on).
+# (the credential.command target). otel-headers-helper.sh is optional (telemetry on).
+# ug-bootstrap-claude-desktop.sh is what writes the inference + models block.
 REQUIRED_HELPER="databricks-token.sh"
-OPTIONAL_HELPERS="otel-headers-helper.sh"
+OPTIONAL_HELPERS="otel-headers-helper.sh ug-bootstrap-claude-desktop.sh"
+BOOTSTRAP_HELPER="ug-bootstrap-claude-desktop.sh"
 
 # ---------------------------------------------------------------------------
 # Logging helpers (match install.sh)
@@ -133,20 +139,23 @@ if [ ! -f "${SOURCE}/${REQUIRED_HELPER}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Consistency check: the JSON's baked command path must point into TARGET_DIR.
-# The command value is an absolute path; its directory must equal TARGET_DIR.
+# Consistency check: the credential.command path must point into TARGET_DIR.
+#
+# claude-setup.json no longer carries that path — it holds policy + telemetry only,
+# and the bootstrap writes the inference block. So the baked path now lives in
+# ug-bootstrap-claude-desktop.sh, and that is what we check.
 # ---------------------------------------------------------------------------
-_cfg="${SOURCE}/claude-setup.json"
-if [ -f "${_cfg}" ]; then
-  # Extract the first "command": "<path>" value. Generator output is stable and
-  # predictable, so a plain sed is enough (no jq dependency).
-  _cmd="$(sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${_cfg}" | head -n 1)"
+_bootstrap="${SOURCE}/${BOOTSTRAP_HELPER}"
+if [ -f "${_bootstrap}" ]; then
+  # Extract the baked "command": "<path>" the bootstrap writes into the config.
+  # Generator output is stable and predictable, so a plain sed is enough (no jq).
+  _cmd="$(sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${_bootstrap}" | head -n 1)"
   if [ -n "${_cmd}" ]; then
     _cmd_dir="$(dirname "${_cmd}")"
     if [ "${_cmd_dir}" != "${TARGET_DIR}" ]; then
-      _warn "The JSON's credential.command dir does not match --target-dir:"
-      _warn "  JSON command : ${_cmd}"
-      _warn "  target-dir   : ${TARGET_DIR}"
+      _warn "The bootstrap's credential.command dir does not match --target-dir:"
+      _warn "  baked command : ${_cmd}"
+      _warn "  target-dir    : ${TARGET_DIR}"
       _warn "  The imported config will look for the helper elsewhere. Regenerate with"
       _warn "  --install-dir-<os> \"${TARGET_DIR}\" (make claude-desktop-install-local keeps them in sync)."
     fi
@@ -202,12 +211,19 @@ done
 # Next steps (import + auth)
 # ---------------------------------------------------------------------------
 printf '\nHelper scripts placed. To test the config:\n'
-printf '  1. Start Claude Desktop.\n'
-printf '  2. Help -> Troubleshooting -> Enable Developer Mode.\n'
-printf '  3. Developer -> Configure third-party inference -> import:\n'
-printf '       %s\n' "${SOURCE}/claude-setup.json"
-printf '  4. Test the connection.\n'
-printf 'Authenticate once (browser OAuth):\n'
-printf '  databricks auth login --host <host> --profile <profile>\n\n'
+printf '  1. Build the importable config from ug (adds inference + models).\n'
+printf '     Run it from the bundle dir, where claude-setup.json sits:\n'
+printf '       sh "%s/%s" --profile <profile>\n' "${SOURCE}" "${BOOTSTRAP_HELPER}"
+printf '     This runs "ug configure --agents claude", then reads the workspace,\n'
+printf '     profile, base URL, and model pins back out of ~/.ucode/state.json.\n'
+printf '     Add --dry-run first to inspect the merged JSON.\n'
+printf '  2. Start Claude Desktop.\n'
+printf '  3. Help -> Troubleshooting -> Enable Developer Mode.\n'
+printf '  4. Developer -> Configure third-party inference -> import:\n'
+printf '       %s\n' "${SOURCE}/claude-setup.merged.json"
+printf '  5. Test the connection.\n\n'
+printf 'The credential helper delegates to "ucode auth-token", so Claude Desktop\n'
+printf 'authenticates as the same identity ug uses. "ug configure" performs the\n'
+printf 'one-time browser OAuth login for you.\n\n'
 
 exit 0
