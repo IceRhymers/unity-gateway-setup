@@ -1,0 +1,8 @@
+{
+  "status": {
+    "hosts": {
+      "host": "instance-abc123.database.cloud.databricks.com",
+      "port": "5432"
+    }
+  }
+}

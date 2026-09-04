@@ -10,7 +10,27 @@ ARGS      ?=
 
 PYTHON    ?= python3
 PROFILE   ?= fevm-west
-AGENT_GEN ?= agent_setups/scripts/generate.py
+# Export PROFILE_EXPLICIT=1 only when PROFILE was set on the command line or
+# in the environment — never when it came from the default above. with-state.sh
+# uses this flag to skip the profile-mismatch check for the Makefile default,
+# so operators with a different profile name are not blocked on every tf-* call.
+ifeq ($(origin PROFILE),command line)
+export PROFILE_EXPLICIT := 1
+else ifeq ($(origin PROFILE),environment)
+export PROFILE_EXPLICIT := 1
+endif
+# Wrapper that injects Lakebase state credentials. State-touching targets
+# route through it; it is a no-op passthrough when this checkout is not
+# wired to the remote backend.
+TF_WRAP   ?= terraform/bootstrap/with-state.sh
+# Generator invocations that READ Terraform outputs need the backend, so they
+# go through the wrapper. The `mcp` subcommand does not: generate.py returns
+# from run_mcp() before build_context(), and the mcp targets can be
+# interactive, so requiring a credential there would be a regression.
+AGENT_GEN     ?= $(TF_WRAP) $(PYTHON) agent_setups/scripts/generate.py
+AGENT_GEN_RAW ?= $(PYTHON) agent_setups/scripts/generate.py
+# Share one provider download between .terraform and .terraform.validate.
+export TF_PLUGIN_CACHE_DIR ?= $(HOME)/.terraform.d/plugin-cache
 # Where generated configs land. The docker-config* targets override this to the
 # container dir so the harness tests exactly what `agent-*` generates.
 OUT_DIR   ?= agent_setups/generated
@@ -58,100 +78,134 @@ tf-fmt-check: ## Check Terraform formatting (no writes; non-zero if unformatted)
 
 .PHONY: tf-init
 tf-init: ## Initialize the infra working directory (downloads providers, configures backend)
-	$(TF) -chdir=$(TF_DIR) init -input=false $(ARGS)
+	$(TF_WRAP) $(TF) -chdir=$(TF_DIR) init -input=false $(ARGS)
 
+# `init -backend=false` still LOADS an initialized backend, and the pg
+# backend dials Postgres eagerly - so once tf-init has run, validate would
+# fail offline. A separate data dir has no backend record, so nothing dials.
+# Do not remove this: it is load-bearing, not cosmetic.
 .PHONY: tf-validate
+tf-validate: export TF_DATA_DIR := .terraform.validate
 tf-validate: ## Validate the infra configuration (no credentials/network required)
 	$(TF) -chdir=$(TF_DIR) init -backend=false -input=false >/dev/null
 	$(TF) -chdir=$(TF_DIR) validate
 
 .PHONY: tf-plan
 tf-plan: ## Show the execution plan against the target workspace (read-only)
-	$(TF) -chdir=$(TF_DIR) plan -input=false $(ARGS)
+	$(TF_WRAP) $(TF) -chdir=$(TF_DIR) plan -input=false $(ARGS)
 
 .PHONY: tf-apply
 tf-apply: ## Apply the configuration (prompts for confirmation)
-	$(TF) -chdir=$(TF_DIR) apply -input=false $(ARGS)
+	$(TF_WRAP) $(TF) -chdir=$(TF_DIR) apply -input=false $(ARGS)
 
 .PHONY: tf-destroy
 tf-destroy: ## Destroy the managed resources (prompts for confirmation)
-	$(TF) -chdir=$(TF_DIR) destroy -input=false $(ARGS)
+	$(TF_WRAP) $(TF) -chdir=$(TF_DIR) destroy -input=false $(ARGS)
 
 .PHONY: tf-output
 tf-output: ## Show the infra outputs
-	$(TF) -chdir=$(TF_DIR) output $(ARGS)
+	$(TF_WRAP) $(TF) -chdir=$(TF_DIR) output $(ARGS)
 
 .PHONY: tf-check
 tf-check: tf-fmt-check tf-validate ## Run fmt-check + validate (CI-friendly)
 
 .PHONY: tf-clean
 tf-clean: ## Remove local Terraform working artifacts (.terraform, lock, plan files)
-	find $(TF_ROOT) -type d -name '.terraform' -prune -exec rm -rf {} +
+	@# Never removes backend.tf or .lakebase.env - see tf-state-unwire.
+	find $(TF_ROOT) -type d \( -name '.terraform' -o -name '.terraform.validate' \) -prune -exec rm -rf {} +
 	find $(TF_ROOT) -type f \( -name '.terraform.lock.hcl' -o -name '*.tfplan' \) -delete
+
+.PHONY: tf-bootstrap-state
+tf-bootstrap-state: ## Create the Lakebase state project/role/objects and write .lakebase.env (PROFILE=, ARGS=)
+	sh terraform/bootstrap/bootstrap-state.sh --profile $(PROFILE) $(ARGS)
+
+.PHONY: tf-snapshot
+tf-snapshot: ## Create a pre-apply Lakebase branch snapshot of remote state (PROFILE=)
+	$(TF_WRAP) sh terraform/bootstrap/snapshot-state.sh --profile $(PROFILE) $(ARGS)
+
+.PHONY: tf-state-info
+tf-state-info: ## Show remote state host, schema, rows, and current advisory locks
+	$(TF_WRAP) sh terraform/bootstrap/state-info.sh $(ARGS)
+
+.PHONY: tf-state-backup
+tf-state-backup: ## Pull remote state to a timestamped local file (emergency use only)
+	$(TF_WRAP) $(TF) -chdir=$(TF_DIR) state pull > "$(TF_DIR)/state-backup-$$(date -u +%Y%m%dT%H%M%SZ).tfstate"
+
+.PHONY: tf-state-unwire
+tf-state-unwire: ## Step 1 of 2 - stop using the remote backend (see terraform/bootstrap/RUNBOOK.md)
+	@test -f $(TF_DIR)/backend.tf || { echo "[tf-state-unwire] $(TF_DIR)/backend.tf already absent."; exit 0; }
+	mv $(TF_DIR)/backend.tf $(TF_DIR)/backend.tf.rollback
+	@echo "[tf-state-unwire] Moved backend.tf aside. This is NOT yet local state:"
+	@echo "                  .terraform still records the pg backend."
+	@echo "                  Follow step 2 in terraform/bootstrap/RUNBOOK.md."
+
+.PHONY: test-tfstate
+test-tfstate: ## Run the offline Lakebase bootstrap tests (no credentials needed)
+	sh terraform/bootstrap/tests/run.sh
 
 # ---- agent configs ----
 
 .PHONY: agent-claude-code
 agent-claude-code: ## Generate Claude Code managed-settings.json from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) claude-code --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-claude-code-preview
 agent-claude-code-preview: ## Print the generated Claude Code managed-settings.json without writing
-	$(PYTHON) $(AGENT_GEN) claude-code --profile $(PROFILE) --stdout $(ARGS)
+	$(AGENT_GEN) claude-code --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agent-codex
 agent-codex: ## Generate Codex config.toml from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) codex --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-codex-preview
 agent-codex-preview: ## Print the generated Codex config.toml without writing
-	$(PYTHON) $(AGENT_GEN) codex --profile $(PROFILE) --stdout $(ARGS)
+	$(AGENT_GEN) codex --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agent-opencode
 agent-opencode: ## Generate opencode.json from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) opencode --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) opencode --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-opencode-preview
 agent-opencode-preview: ## Print the generated opencode.json without writing
-	$(PYTHON) $(AGENT_GEN) opencode --profile $(PROFILE) --stdout $(ARGS)
+	$(AGENT_GEN) opencode --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agent-dsh
 agent-dsh: ## Generate the DeepSeek Harness home patch + token plugin from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-dsh-preview
 agent-dsh-preview: ## Print the generated DeepSeek Harness patch + plugin without writing
-	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --stdout $(ARGS)
+	$(AGENT_GEN) dsh --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agent-claude-desktop
 agent-claude-desktop: ## Generate the importable Claude Desktop config + helper scripts from TF outputs (PROFILE=, OUT_DIR=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 
 .PHONY: agent-claude-desktop-preview
 agent-claude-desktop-preview: ## Print the generated Claude Desktop bundle without writing
-	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --stdout $(ARGS)
+	$(AGENT_GEN) claude-desktop --profile $(PROFILE) --stdout $(ARGS)
 
 .PHONY: agents
 agents: agent-claude-code agent-claude-desktop agent-codex agent-opencode agent-dsh ## Generate every agent config (claude-code + claude-desktop + codex + opencode + dsh)
 
 .PHONY: opencode-install-local
 opencode-install-local: ## Generate opencode.json (user mode) + install it to ~/.config/opencode for a local, non-managed install (PROFILE=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) opencode --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) opencode --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-opencode-local.sh --source $(OUT_DIR)/opencode/opencode.json
 
 .PHONY: claude-code-install-local
 claude-code-install-local: ## Generate settings.json (user mode) + install it to ~/.claude for a local, non-managed install (PROFILE=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) claude-code --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) claude-code --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-claude-code-local.sh --source $(OUT_DIR)/claude-code/user/settings.json
 
 .PHONY: codex-install-local
 codex-install-local: ## Generate config.toml (user mode) + install it to ~/.codex for a local, non-managed install (PROFILE=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) codex --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) codex --user-config --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-codex-local.sh --source $(OUT_DIR)/codex/config.toml
 
 .PHONY: dsh-install-local
 dsh-install-local: ## Generate the DeepSeek Harness patch + plugin + install them to $DSH_HOME (default ~/.dsh) for a local install (PROFILE=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
+	$(AGENT_GEN) dsh --profile $(PROFILE) --out-dir $(OUT_DIR) $(ARGS)
 	sh agent_setups/deploy/install-dsh-local.sh --source $(OUT_DIR)/dsh/cordis.patch.yml
 
 # ---- claude-desktop local test install ----
@@ -166,7 +220,7 @@ CD_LOCAL_DIR ?= $(if $(filter macos,$(CD_OS)),$(HOME)/Library/Application Suppor
 
 .PHONY: claude-desktop-install-local
 claude-desktop-install-local: ## Generate a Claude Desktop bundle pointed at a user dir + place its helper scripts there for local testing (PROFILE=, CD_LOCAL_DIR=, CD_OS=, ARGS=)
-	$(PYTHON) $(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) \
+	$(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) \
 		--platforms $(CD_OS) --install-dir-$(CD_OS) "$(CD_LOCAL_DIR)" $(ARGS)
 	sh agent_setups/deploy/install-claude-desktop-local.sh \
 		--source "$(OUT_DIR)/claude-desktop/$(CD_OS)" --target-dir "$(CD_LOCAL_DIR)"
@@ -181,19 +235,19 @@ agents-install-local: claude-code-install-local codex-install-local opencode-ins
 
 .PHONY: mcp
 mcp: ## Select AI Gateway MCP services and install into ALL harnesses (PROFILE=, CATALOG=, SCHEMA=, SELECT=names, ALL=1, ARGS=)
-	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
 
 .PHONY: mcp-claude-code
 mcp-claude-code: ## Select AI Gateway MCP services and install into Claude Code only (same vars as `mcp`)
-	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) --harness claude-code $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) --harness claude-code $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
 
 .PHONY: mcp-codex
 mcp-codex: ## Select AI Gateway MCP services and install into Codex only (same vars as `mcp`)
-	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) --harness codex $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) --harness codex $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
 
 .PHONY: mcp-opencode
 mcp-opencode: ## Select AI Gateway MCP services and install into opencode only (same vars as `mcp`)
-	$(PYTHON) $(AGENT_GEN) mcp --profile $(PROFILE) --harness opencode $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
+	$(AGENT_GEN_RAW) mcp --profile $(PROFILE) --harness opencode $(MCP_CAT_ARG) $(MCP_SCH_ARG) $(MCP_SEL_ARG) $(ARGS)
 
 # ---- tests ----
 
@@ -206,7 +260,7 @@ test-mcp: ## Run the Python unit tests for the `mcp` installer (needs: pip insta
 	$(PYTHON) -m unittest discover -s agent_setups/scripts/tests -v
 
 .PHONY: check
-check: tf-fmt-check tf-validate test test-mcp ## Run all static checks (tf-fmt-check + tf-validate + deploy tests + mcp unit tests; no creds needed)
+check: tf-fmt-check tf-validate test test-mcp test-tfstate ## Run all static checks (tf-fmt-check + tf-validate + deploy tests + mcp unit tests; no creds needed)
 
 # ---- deployment packaging ----
 

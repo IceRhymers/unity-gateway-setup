@@ -19,6 +19,15 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# Generated Lakebase state wiring (see terraform/bootstrap/README.md).
+# NOTE: terraform/infra/backend.tf is deliberately NOT ignored - it is
+# committed so the backend travels with every worktree and CI checkout.
+terraform/infra/.lakebase.env
+terraform/infra/backend.tf.rollback
+# Separate Terraform data dir used by `make tf-validate`. The `**/.terraform/`
+# pattern above does not match this name, so this entry is required.
+.terraform.validate/
+
 # Generated agent configs (workspace-specific; regenerate from TF outputs)
 agent_setups/generated/
 # Deploy packages (build output from `make deploy-package`)

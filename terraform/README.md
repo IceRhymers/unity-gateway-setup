@@ -50,6 +50,20 @@ terraform init && terraform plan
 
 See `infra/README.md` and each module's README for details.
 
+## State
+
+`terraform/infra` uses one remote backend: Lakebase Postgres, configured in the
+committed `terraform/infra/backend.tf`.
+
+Run the bootstrap once before the first `init`:
+
+```bash
+make tf-bootstrap-state PROFILE=<p>
+```
+
+For first-bootstrap steps, day-to-day commands, rollback, and stuck-lock recovery,
+see [`terraform/bootstrap/RUNBOOK.md`](bootstrap/RUNBOOK.md).
+
 ## Requirements
 
 - Terraform ≥ 1.5.0

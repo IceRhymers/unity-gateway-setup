@@ -1,0 +1,14 @@
+[
+  {
+    "project_id": "unity-gateway-tfstate",
+    "name": "projects/unity-gateway-tfstate",
+    "uid": "0000-0000",
+    "status": {}
+  },
+  {
+    "project_id": "code-search",
+    "name": "projects/code-search",
+    "uid": "1111-1111",
+    "status": {}
+  }
+]

@@ -1,0 +1,9 @@
+{
+  "id": "99999999999999",
+  "displayName": "terraform_writers",
+  "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+  "members": [
+    { "value": "2352405730157715", "display": "tanner.wendland@databricks.com" },
+    { "value": "75278364382696", "display": "fevm-sage-sp", "$ref": "ServicePrincipals/75278364382696" }
+  ]
+}
