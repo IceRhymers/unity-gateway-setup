@@ -13,11 +13,13 @@ It has three layers plus a launch surface:
    the custom reporting signals that native OTEL does not emit (agent-usage,
    reliability, governance, adoption).
 2. **Config generator** (`agent_setups/`) reads the Terraform outputs and emits
-   opinionated, deployable agent configs. These are the routing baseline: Claude
-   Code `managed-settings.json` (+ an OTEL headers helper) and a Codex
-   `config.toml`.
+   the **fleet baseline**: Claude Code `managed-settings.json` (+ an OTEL headers
+   helper), a Codex `config.toml`, a Claude Desktop bundle, and a DeepSeek
+   Harness patch. It covers inference routing and telemetry only. It does not
+   register MCP servers.
 3. **`ug`** is the **intended entrypoint** developers use to launch agents. It
-   adds MCP discovery and a governed OAuth surface on top of that baseline.
+   owns everything on the developer's own machine: launch, per-request OAuth, MCP
+   registration, and skills.
 4. **Docker harness** (`docker/`) tests the generated configs (routing,
    telemetry, and MCP) in an isolated container. The container never touches the
    host's real settings.
@@ -36,7 +38,8 @@ It has three layers plus a launch surface:
 ```
 
 The MDM baseline makes **inference** work. `ug` is how agents are meant to be
-**launched**. The two are complementary. Details are below.
+**launched**. The two are complementary, and they do not overlap — see
+[Division of labour](#division-of-labour-the-generator-and-ug).
 
 ---
 
@@ -99,6 +102,41 @@ emits telemetry with no `ug` involvement. The direct path gives up two
 things: the discovered Databricks MCP tools and the per-launch auth
 re-validation. Treat the direct path as a supported fallback. **Prefer `ug`**
 for normal work.
+
+---
+
+## Division of labour: the generator and `ug`
+
+The generator and `ug` do different jobs. Nothing is implemented twice. Use this
+table to decide where a change belongs.
+
+| Concern | Owner | Why |
+|---|---|---|
+| The gateway itself (model services, inference logging, OTEL stack, hook-event table) | **Terraform** (`terraform/`) | Workspace infrastructure. `ug` provisions nothing. |
+| Fleet inference baseline (base URL, model pins, allow-list, permission deny-list) | **generator** (`agent_setups/`) | It must work before a developer installs anything, and an MDM tool must push it. |
+| OTEL export and hook events | **generator** | `ug` emits no OTEL and no hook events. Its own telemetry is a `User-Agent` string plus Claude Code MLflow tracing. |
+| Claude Desktop, DeepSeek Harness | **generator** | `ug` does not support either agent. |
+| Launching an agent | **`ug`** | `ug claude`, `ug codex`, and so on. |
+| Per-request OAuth for model calls | **both, by agent** | Claude Code and Codex get it from `apiKeyHelper` in the managed file. For every agent `ug` launches, `ug` mints the token. |
+| MCP discovery and registration | **`ug`** | `ug mcp add` covers seven agents, removes stale servers, and bridges each server through the bundled `ug mcp-proxy`. |
+| Skills, spend tiers, workspace-level managed config | **`ug`** | `ug setup` and `ug publish` author a workspace-side `CodingAgentConfig` that developers pull. |
+| OpenCode, Gemini CLI, Copilot CLI, Pi, Cursor | **`ug`** | `ug` configures and launches each one. The generator emits nothing for them. |
+
+Two consequences worth knowing:
+
+- **This repo used to register MCP servers itself, and no longer does.** `make mcp`
+  and the harness-merge code are gone. Run `ug mcp add` instead. It is a superset:
+  it targets seven agents rather than three, it removes stale servers, and it needs
+  no `uvx` hop.
+- **This repo used to generate an OpenCode config, and no longer does.** `ug`
+  configures OpenCode with the same three gateway routes and its own
+  token-refresh plugin, so a second config competed with it. Run `ug opencode`.
+
+One interaction to keep in mind: when `ug` runs on a machine, it **reconciles** the
+managed settings file this repo deploys. It asks for `sudo`, keeps a backup, and
+`ug revert` restores it. So an MDM push and a later `ug` run can both change
+`managed-settings.json`. Check `ug status` when the deployed file does not look
+like the file you pushed.
 
 ---
 
@@ -198,7 +236,7 @@ terraform/          Provision the gateway
   infra/              Applyable deployment (defaults: fevm-west sandbox)
   modules/            unity-foundation · model-service · telemetry
 agent_setups/       Generate agent configs from the TF outputs
-  scripts/            The generator (Claude Code + Codex; registry for more agents)
+  scripts/            The generator (Claude Code · Claude Desktop · Codex · dsh)
   generated/          Output (gitignored — embeds a workspace host)
 docker/             Isolated test harness (Claude Code + Codex + databricks CLI + ug)
 Makefile            Task runner — `make help` lists targets

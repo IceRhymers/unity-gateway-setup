@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # install.sh — single runtime placement authority for unity-gateway agent configs.
 #
-# Deploys generated Claude Code, Codex, and opencode config bundles to system
+# Deploys generated Claude Code, Codex, and Claude Desktop config bundles to system
 # paths. Run as root for production deployment, or with --target-root for
 # unprivileged staging and unit tests.
 #
@@ -10,23 +10,21 @@
 #
 # Options:
 #   --dry-run               Print planned actions, touch nothing (exit 0)
-#   --agents <list>         Comma-separated: claude-code,codex,opencode,claude-desktop
-#                           (default: claude-code,codex,opencode; claude-desktop is opt-in)
+#   --agents <list>         Comma-separated: claude-code,codex,claude-desktop
+#                           (default: claude-code,codex; claude-desktop is opt-in)
 #   --profile <name>        Databricks profile (default: fevm-west; Phase-B hint only)
-#   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/ + <root>/opencode/
+#   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/
 #                           + <root>/claude-desktop/<os>/  (default: .)
 #   --claude-source <dir>   Dir holding Claude files directly; overrides --source
 #                           (managed-settings.json, otel-headers-helper.sh, emit_hook_events.sh)
 #   --codex-source <dir>    Dir holding codex/ tree; overrides --source
 #                           (etc/managed_config.toml for managed mode)
-#   --opencode-source <dir> Dir holding opencode/ tree; overrides --source
-#                           (opencode.json + ai.opencode.managed.mobileconfig for managed mode)
 #   --claude-desktop-source <dir>  Dir holding Claude Desktop helper scripts directly; overrides
 #                           --source (databricks-token.sh, otel-headers-helper.sh). The JSON is
 #                           operator-imported, not placed here.
 #   --target-root <prefix>  Install prefix for unprivileged staging (default: "")
 #   --os macos|linux        Force OS (default: autodetect via uname -s)
-#   --agent claude-code|codex|opencode|claude-desktop  Pair with --print-target-dir
+#   --agent claude-code|codex|claude-desktop  Pair with --print-target-dir
 #   --print-target-dir      Print resolved install dir for --os/--agent and exit 0
 #   --uninstall             Remove placed files and version marker; exit 0 on success
 #   -h, --help              Show this message
@@ -46,12 +44,11 @@ set -eu
 # ---------------------------------------------------------------------------
 TARGET_ROOT=""
 DRY_RUN=0
-AGENTS="claude-code,codex,opencode"
+AGENTS="claude-code,codex"
 PROFILE="fevm-west"
 SOURCE="."
 CLAUDE_SOURCE=""
 CODEX_SOURCE=""
-OPENCODE_SOURCE=""
 CLAUDE_DESKTOP_SOURCE=""
 # Placement dir override for claude-desktop helpers. Must match the absolute path
 # baked into claude-setup.json when the generator used --install-dir-<os>. Empty =
@@ -88,23 +85,22 @@ _usage() {
 Usage: install.sh [OPTIONS]
 
 Single root-run placement authority for unity-gateway agent configs.
-Deploys Claude Code, Codex, and opencode config bundles to system paths.
+Deploys Claude Code, Codex, and Claude Desktop config bundles to system paths.
 Run as root (production) or with --target-root (unprivileged staging).
 
 Options:
   --dry-run               Print planned actions, touch nothing (exit 0)
-  --agents <list>         Comma-separated agents: claude-code,codex,opencode,claude-desktop
-                          (default: claude-code,codex,opencode; claude-desktop is opt-in)
+  --agents <list>         Comma-separated agents: claude-code,codex,claude-desktop
+                          (default: claude-code,codex; claude-desktop is opt-in)
   --profile <name>        Databricks profile name (default: fevm-west; Phase-B hint only)
-  --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/, <root>/opencode/,
+  --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/,
                           <root>/claude-desktop/<os>/  (default: .)
   --claude-source <dir>   Dir holding Claude files directly (overrides --source)
   --codex-source <dir>    Dir holding codex/ tree (overrides --source)
-  --opencode-source <dir> Dir holding opencode/ tree (overrides --source)
   --claude-desktop-source <dir>  Dir holding Claude Desktop helper scripts (overrides --source)
   --target-root <prefix>  Install prefix for unprivileged staging (default: "")
   --os macos|linux        Force OS (default: autodetect via uname -s)
-  --agent claude-code|codex|opencode|claude-desktop
+  --agent claude-code|codex|claude-desktop
                           Pair with --print-target-dir to select which agent
   --print-target-dir      Print resolved install dir for --os/--agent, then exit 0
   --uninstall             Remove placed files and version marker (needs --os and --target-root;
@@ -134,7 +130,6 @@ while [ $# -gt 0 ]; do
     --source)            shift; SOURCE="${1:?--source requires a value}" ;;
     --claude-source)     shift; CLAUDE_SOURCE="${1:?--claude-source requires a value}" ;;
     --codex-source)      shift; CODEX_SOURCE="${1:?--codex-source requires a value}" ;;
-    --opencode-source)   shift; OPENCODE_SOURCE="${1:?--opencode-source requires a value}" ;;
     --claude-desktop-source) shift; CLAUDE_DESKTOP_SOURCE="${1:?--claude-desktop-source requires a value}" ;;
     --claude-desktop-dir) shift; CLAUDE_DESKTOP_DIR="${1:?--claude-desktop-dir requires a value}" ;;
     --target-root)       shift; TARGET_ROOT="${1:?--target-root requires a value}" ;;
@@ -157,9 +152,9 @@ while [ -n "${_agents_rest}" ]; do
     *)   _agent_tok="${_agents_rest}";     _agents_rest="" ;;
   esac
   case "${_agent_tok}" in
-    claude-code|codex|opencode|claude-desktop) ;;
+    claude-code|codex|claude-desktop) ;;
     "") ;;
-    *) _fatal 1 "Unknown agent in --agents: '${_agent_tok}' (valid: claude-code, codex, opencode, claude-desktop)." ;;
+    *) _fatal 1 "Unknown agent in --agents: '${_agent_tok}' (valid: claude-code, codex, claude-desktop)." ;;
   esac
 done
 
@@ -187,8 +182,6 @@ esac
 # macos claude:    "/Library/Application Support/ClaudeCode"  (NOTE: space — quote always)
 # linux claude:    "/etc/claude-code"
 # codex both:      "/etc/codex"
-# macos opencode:  "/Library/Application Support/opencode"     (NOTE: space — quote always)
-# linux opencode:  "/etc/opencode"
 _raw_dir_for() {
   # Usage: _raw_dir_for <os> <agent>
   # Prints the raw install dir (no TARGET_ROOT prefix) without a trailing newline.
@@ -200,11 +193,6 @@ _raw_dir_for() {
       esac ;;
     codex)
       printf '/etc/codex' ;;
-    opencode)
-      case "$1" in
-        macos) printf '/Library/Application Support/opencode' ;;
-        linux) printf '/etc/opencode' ;;
-      esac ;;
     claude-desktop)
       # Where the credential + OTEL helper scripts live. Must match the absolute
       # paths baked into claude-setup.json (see the claude-desktop generator's
@@ -231,7 +219,7 @@ _raw_dir_for() {
 # ---------------------------------------------------------------------------
 if [ "${PRINT_TARGET_DIR}" = "1" ]; then
   if [ -z "${PRINT_AGENT}" ]; then
-    _fatal 1 "--print-target-dir requires --agent <claude-code|codex|opencode|claude-desktop>"
+    _fatal 1 "--print-target-dir requires --agent <claude-code|codex|claude-desktop>"
   fi
   _ptd_raw="$(_raw_dir_for "${OS}" "${PRINT_AGENT}")"
   printf '%s\n' "${TARGET_ROOT:-}${_ptd_raw}"
@@ -273,12 +261,6 @@ if [ -n "${CODEX_SOURCE}" ]; then
   _codex_src="${CODEX_SOURCE}"
 else
   _codex_src="${SOURCE}/codex"
-fi
-
-if [ -n "${OPENCODE_SOURCE}" ]; then
-  _opencode_src="${OPENCODE_SOURCE}"
-else
-  _opencode_src="${SOURCE}/opencode"
 fi
 
 # Claude Desktop bundles are per-OS (like Claude Code): <root>/claude-desktop/<os>/.
@@ -383,11 +365,6 @@ _default_files_for() {
     codex)
       printf 'managed_config.toml requirements.toml'
       [ -e "${_dff_dir}/emit_hook_events.sh" ] && printf ' emit_hook_events.sh'
-      ;;
-    opencode)
-      printf 'opencode.json'
-      [ -e "${_dff_dir}/databricks-auth.ts" ]              && printf ' databricks-auth.ts'
-      [ -e "${_dff_dir}/ai.opencode.managed.mobileconfig" ] && printf ' ai.opencode.managed.mobileconfig'
       ;;
     claude-desktop)
       # Helper scripts only (the JSON is imported into the app, never placed here).
@@ -560,15 +537,15 @@ _check_prereqs() {
     fi
   }
 
-  # python3 is used by the claude-code/codex/opencode auth helpers and by every
-  # OTEL/hook helper (they shell out to 'python3 -c' on each token mint). It is NOT
-  # used by the claude-desktop credential helper (bash + sed only). So it is critical
-  # only when a selected agent actually needs it: claude-code, codex, or opencode, or
+  # python3 is used by the claude-code/codex auth helpers and by every OTEL/hook
+  # helper (they shell out to 'python3 -c' on each token mint). It is NOT used by
+  # the claude-desktop credential helper (bash + sed only). So it is critical only
+  # when a selected agent actually needs it: claude-code or codex, or
   # claude-desktop WITH its OTEL helper present. A claude-desktop-only, telemetry-off
   # install therefore does not require python3. A DATABRICKS_BEARER-only deployment
   # also short-circuits the auth helpers, so python3 is informational there too.
   _prereq_py=0
-  if _contains "${AGENTS}" "claude-code" || _contains "${AGENTS}" "codex" || _contains "${AGENTS}" "opencode"; then
+  if _contains "${AGENTS}" "claude-code" || _contains "${AGENTS}" "codex"; then
     _prereq_py=1
   fi
   if _contains "${AGENTS}" "claude-desktop" && [ -f "${_claude_desktop_src}/otel-headers-helper.sh" ]; then
@@ -704,76 +681,6 @@ _install_codex() {
 }
 
 # ---------------------------------------------------------------------------
-# opencode installation
-# ---------------------------------------------------------------------------
-_install_opencode() {
-  _oc_raw="$(_raw_dir_for "${OS}" "opencode")"
-  _oc_dir="${TARGET_ROOT:-}${_oc_raw}"
-  _oc_src="${_opencode_src}"
-
-  _info ""
-  _info "=== opencode (${OS}) ==="
-  _info "  source : ${_oc_src}"
-  _info "  target : ${_oc_dir}"
-
-  # Managed mode is signaled by the macOS Configuration Profile alongside opencode.json.
-  # Both modes emit opencode.json, so the .mobileconfig is the managed-vs-user signal.
-  if [ -f "${_oc_src}/ai.opencode.managed.mobileconfig" ]; then
-    # MANAGED mode: root-owned per-OS managed config dir. opencode reads managed
-    # config LAST and it overrides user config.
-    _info "  mode   : managed (enterprise)"
-
-    _action_mkdir "${_oc_dir}"
-
-    _action_copy  "${_oc_src}/opencode.json" "${_oc_dir}/opencode.json"
-    _action_chmod 644 "${_oc_dir}/opencode.json"
-    _oc_files="opencode.json"
-
-    # The auth plugin. opencode.json references it by a relative path, so it must
-    # sit beside opencode.json in the managed dir. The .mobileconfig references
-    # the same file by its absolute macOS path.
-    if [ -f "${_oc_src}/databricks-auth.ts" ]; then
-      _action_copy  "${_oc_src}/databricks-auth.ts" "${_oc_dir}/databricks-auth.ts"
-      _action_chmod 644 "${_oc_dir}/databricks-auth.ts"
-      _oc_files="${_oc_files} databricks-auth.ts"
-    else
-      _warn "opencode: databricks-auth.ts not found in '${_oc_src}'."
-      _warn "  The config references it, so opencode auth will fail without it."
-      _warn "  Re-generate with 'make agent-opencode'."
-    fi
-
-    # macOS hard-lock profile. An MDM normally DELIVERS the profile to
-    # /Library/Managed Preferences/ai.opencode.managed.plist (Jamf, or
-    # `profiles install`). Here we stage it into the managed dir so a manual or
-    # staged install has it on disk. Non-macOS fleets rely on opencode.json only.
-    if [ "${OS}" = "macos" ]; then
-      _action_copy  "${_oc_src}/ai.opencode.managed.mobileconfig" "${_oc_dir}/ai.opencode.managed.mobileconfig"
-      _action_chmod 644 "${_oc_dir}/ai.opencode.managed.mobileconfig"
-      _oc_files="${_oc_files} ai.opencode.managed.mobileconfig"
-      _warn "opencode: staged ai.opencode.managed.mobileconfig into \"${_oc_dir}\"."
-      _warn "  An MDM must INSTALL this profile to activate the macOS hard-lock at"
-      _warn "  /Library/Managed Preferences/ai.opencode.managed.plist (Jamf, or"
-      _warn "  'profiles install -path <file>'). Staging it here alone does not activate it."
-    fi
-
-    _action_chown "${_owner}" "${_oc_dir}"
-
-    _write_version_marker "opencode" "${_oc_dir}" "${_oc_src}" "${_oc_files}"
-
-  elif [ -f "${_oc_src}/opencode.json" ]; then
-    # USER mode: per-user ~/.config/opencode — not a root-managed system placement
-    _warn "opencode source '${_oc_src}/opencode.json' is user-mode (no .mobileconfig)."
-    _warn "User-mode config is NOT a root-managed system placement; skipping."
-    _warn "Re-generate without --user-config for a managed system deploy."
-  else
-    _warn "No opencode config found at '${_oc_src}'."
-    _warn "  Checked: ${_oc_src}/ai.opencode.managed.mobileconfig  (managed mode signal)"
-    _warn "  Checked: ${_oc_src}/opencode.json                     (user mode — would be skipped anyway)"
-    _warn "Run 'make agent-opencode' to generate."
-  fi
-}
-
-# ---------------------------------------------------------------------------
 # Claude Desktop installation
 # ---------------------------------------------------------------------------
 # Claude Desktop reads an OPERATOR-IMPORTED config, so install.sh does NOT place
@@ -879,7 +786,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ "${UNINSTALL}" = "1" ]; then
   _info "  mode       : UNINSTALL"
-  for _main_agent in claude-code codex opencode claude-desktop; do
+  for _main_agent in claude-code codex claude-desktop; do
     if _contains "${AGENTS}" "${_main_agent}"; then
       _uninstall_agent "${_main_agent}"
     fi
@@ -895,10 +802,6 @@ fi
 
 if _contains "${AGENTS}" "codex"; then
   _install_codex
-fi
-
-if _contains "${AGENTS}" "opencode"; then
-  _install_opencode
 fi
 
 if _contains "${AGENTS}" "claude-desktop"; then

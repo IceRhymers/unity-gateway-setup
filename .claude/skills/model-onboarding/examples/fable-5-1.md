@@ -57,7 +57,7 @@ The alias `claude-fable` still resolves first, so the tier tracks the bump on it
 
 ### Other generators
 
-`codex.py`, `opencode.py`, and `dsh.py` need no edit. None of their defaults route to fable.
+`codex.py` and `dsh.py` need no edit. Neither default routes to fable.
 
 ### Docs
 

@@ -1,6 +1,6 @@
 ---
 name: model-onboarding
-description: "Use when you add, bump, or remove a Databricks foundation model on this gateway surface (a system.ai.databricks-* model exposed through the Unity AI Gateway). Triggers: add a model, onboard a model, bump the alias, add claude/gpt/gemini/deepseek, new model version, add a provider schema, deprecate a model, wire a model into agent configs. Drives the edits across terraform/infra and agent_setups so a new model reaches Terraform, Claude Code, codex, opencode, and dsh consistently."
+description: "Use when you add, bump, or remove a Databricks foundation model on this gateway surface (a system.ai.databricks-* model exposed through the Unity AI Gateway). Triggers: add a model, onboard a model, bump the alias, add claude/gpt/gemini/deepseek, new model version, add a provider schema, deprecate a model, wire a model into agent configs. Drives the edits across terraform/infra and agent_setups so a new model reaches Terraform, Claude Code, Claude Desktop, codex, and dsh consistently."
 version: 0.1.0
 ---
 
@@ -9,7 +9,7 @@ version: 0.1.0
 This skill onboards a new Databricks foundation model into this gateway surface. The surface has two layers:
 
 1. **Terraform** (`terraform/infra`) provisions one Unity Catalog serving endpoint per model. This layer is the source of truth.
-2. **Agent generators** (`agent_setups/scripts`) read the Terraform endpoints and write config for Claude Code, codex, opencode, and dsh.
+2. **Agent generators** (`agent_setups/scripts`) read the Terraform endpoints and write config for Claude Code, Claude Desktop, codex, and dsh.
 
 A model reaches an agent only after both layers know about it. This skill asks the right questions for the model type, then applies the edits in the right places.
 
@@ -55,7 +55,7 @@ Ask these with `AskUserQuestion` before you edit. Ask early. A wrong guess force
 
 1. **Schema key and comment (required).** What schema key (the provider name) and schema comment does the provider get?
 2. **Alias and version sets (required).** Which aliases and which versioned models does the schema start with?
-3. **Gateway surface (required).** Which API surface does the provider expose: the Anthropic Messages surface, the Gemini surface, or the OpenAI-compatible mlflow surface? The answer decides whether the model appears in Claude Code `availableModels` discovery and which opencode route it uses.
+3. **Gateway surface (required).** Which API surface does the provider expose: the Anthropic Messages surface, the Gemini surface, or the OpenAI-compatible mlflow surface? The answer decides whether the model appears in Claude Code `availableModels` discovery and which gateway route the agent generators use.
 
 ### Case E — removal
 
@@ -69,7 +69,7 @@ Edit only the locations the case needs. `references/touch-points.md` lists every
 
 1. `terraform/infra/variables.tf` — the `model_providers` default. Edit `aliases` and `versioned_models`. This is always the first edit.
 2. `agent_setups/scripts/agents/claude_code.py` — `TIER_PREFERENCES`, and for a new tier also `TIER_CAPABILITIES`, `TIER_DISPLAY`, and `LARGE_CONTEXT_FAMILIES`.
-3. `agent_setups/scripts/agents/codex.py`, `opencode.py`, `dsh.py` — the `DEFAULT_MODEL_PREFERENCES` in each, and the opencode `Family` set for a new provider surface. Edit these only when a default must change.
+3. `agent_setups/scripts/agents/codex.py`, `dsh.py` — the `DEFAULT_MODEL_PREFERENCES` in each. Edit these only when a default must change.
 4. `agent_setups/scripts/tests/` — add or update the generator tests.
 5. `agent_setups/scripts/README.md` and the Terraform READMEs — update the model text only when a tier mapping or the pin strategy changes.
 

@@ -48,14 +48,26 @@ unset PGHOSTADDR PGSERVICE PGSERVICEFILE PGPASSFILE PGOPTIONS \
       PGSSLROOTCERT PGSSLCERT PGSSLKEY PGGSSENCMODE \
       PGTARGETSESSIONATTRS PGCHANNELBINDING
 
-# ---- 3. find the Terraform working directory from -chdir= ----
-# Default to "." when no -chdir= is present (e.g. tf-state-info, tf-snapshot).
-_tf_dir="."
-for _arg in "$@"; do
-    case "${_arg}" in
-        -chdir=*) _tf_dir="${_arg#-chdir=}"; break ;;
-    esac
-done
+# ---- 3. resolve the Terraform working directory ----
+# Precedence:
+#   1. TF_STATE_DIR, when the caller sets it. This is REQUIRED whenever the
+#      wrapped command is not terraform itself. The config generator, for
+#      example, runs `terraform -chdir=<dir> output -json` from inside Python,
+#      so no -chdir= appears in this script's argv and the scan below cannot
+#      see it. Without this override the generator fell through to the clean-
+#      passthrough quadrant, execed with no PG* set, and the pg backend then
+#      used libpq's default target (127.0.0.1:5432) instead of Lakebase.
+#   2. a -chdir= argument in the wrapped command (the plain terraform targets).
+#   3. "." — the repo root.
+_tf_dir="${TF_STATE_DIR:-}"
+if [ -z "${_tf_dir}" ]; then
+    _tf_dir="."
+    for _arg in "$@"; do
+        case "${_arg}" in
+            -chdir=*) _tf_dir="${_arg#-chdir=}"; break ;;
+        esac
+    done
+fi
 
 # ---- 4. four-quadrant dispatch ----
 _backend="${_tf_dir}/backend.tf"

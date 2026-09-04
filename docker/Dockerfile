@@ -12,8 +12,14 @@ FROM node:22-bookworm-slim@${BASE_DIGEST}
 # jq (the emit_hook_events.sh reporting hook builds its JSON payloads with it),
 # socat (bridges the OAuth loopback callback to the host), gosu (drop to non-root).
 # uv + ug (below) provide MCP-service discovery/registration.
+#
+# sudo is required by `ug`, not by this repo's own scripts. `ug` reconciles the
+# root-owned managed settings file that install.sh places, and it shells out to
+# an absolute /usr/bin/sudo to do it. Without the binary present it raises an
+# unhandled FileNotFoundError rather than degrading, so the container needs it
+# for any `ug` run. The dev user gets a passwordless rule below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq python3 socat gosu unzip \
+      ca-certificates curl git jq python3 socat gosu sudo unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Databricks CLI -> /usr/local/bin/databricks. Downloads the versioned zip and
@@ -40,7 +46,9 @@ RUN arch="$(dpkg --print-architecture)" \
 # DeepSeek Harness (dsh): pkg @deepseek-ai/dsh, bin dsh. Requires Node 22.19+,
 #   satisfied by the node:22 base. `command -v dsh` verifies the bin without booting
 #   the harness.
-# opencode: pkg opencode-ai, bin opencode. Pinned to the latest-1 stable (1.x) channel.
+# opencode: pkg opencode-ai, bin opencode. Pinned to the latest-1 stable (1.x)
+#   channel. The repo generates no opencode config: `ug opencode` configures and
+#   launches it. The CLI ships here so the harness can exercise that path.
 # NPM_REGISTRY forwards a non-default registry (e.g. a corporate mirror); empty (the
 # default) uses the public npm registry.
 ARG NPM_REGISTRY=""
@@ -89,15 +97,15 @@ RUN if [ -n "$PYPI_INDEX" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi \
 RUN useradd -m -u 1001 -s /bin/bash dev \
     && mkdir -p /home/dev/work \
     && chown -R dev:dev /home/dev
+# Passwordless sudo for `dev`, so `ug` can reconcile the root-owned managed
+# settings file the way it does on a developer machine whose owner can
+# authenticate. This is a THROWAWAY TEST CONTAINER: do not copy this rule to
+# anything a fleet runs. `ug` invokes sudo for mkdir/chown/chmod/mktemp/cp/mv/rm
+# plus chattr, so the rule is not narrowed to a command list.
+RUN printf 'dev ALL=(root) NOPASSWD: ALL\n' > /etc/sudoers.d/ucode-managed \
+    && chmod 0440 /etc/sudoers.d/ucode-managed \
+    && visudo -cf /etc/sudoers.d/ucode-managed
 ENV HOME=/home/dev
-# opencode 1.1.4 predates automatic /etc/opencode directory loading (that
-# feature was added after v1.1.4 in managed.ts). Point opencode at the staged
-# managed config file explicitly. install.sh stages the file before exec gosu
-# drops to dev, so the file is present when any opencode invocation runs.
-# OPENCODE_CONFIG is a documented env var in opencode; it loads the named file
-# as an additional config layer on top of the user config. If the file does not
-# exist (no docker-config-opencode run), opencode's loadFile returns {} safely.
-ENV OPENCODE_CONFIG=/etc/opencode/opencode.json
 WORKDIR /home/dev/work
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

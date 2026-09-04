@@ -1,6 +1,6 @@
 # Claude Desktop runbook — Unity AI Gateway third-party inference (MDM)
 
-Claude Desktop reads an operator-imported configuration, not a file that MDM places on disk. So the deployment differs from Claude Code, Codex, and opencode. The operator imports the generated JSON into the app, tests the connection, and then exports the OS-native MDM profile from the app.
+Claude Desktop reads an operator-imported configuration, not a file that MDM places on disk. So the deployment differs from Claude Code and Codex. The operator imports the generated JSON into the app, tests the connection, and then exports the OS-native MDM profile from the app.
 
 This generator produces two things per OS:
 

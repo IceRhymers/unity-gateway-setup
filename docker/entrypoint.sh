@@ -32,21 +32,24 @@ fi
 if [ -f /opt/agent-config-codex/etc/managed_config.toml ]; then
   _install_agents="${_install_agents:+${_install_agents},}codex"
 fi
-if [ -f /opt/agent-config-opencode/ai.opencode.managed.mobileconfig ]; then
-  _install_agents="${_install_agents:+${_install_agents},}opencode"
-fi
 
 if [ -n "${_install_agents}" ]; then
-  /usr/local/lib/unity-gateway/install.sh \
+  # HOME=/root is deliberate. install.sh runs as root here, and the image sets
+  # HOME=/home/dev so the dev user gets the right home after gosu below. Together
+  # those mean any tool install.sh shells out to writes into the DEV user's home
+  # AS ROOT. install.sh's verification step runs `codex doctor`, which creates
+  # $HOME/.codex/ — root-owned. dev then cannot write ucode.config.toml into it,
+  # so `ug codex` fails with "Failed to write config file". Every managed
+  # placement install.sh performs is an absolute path (/etc/..., /Library/...),
+  # so nothing it does depends on HOME.
+  HOME=/root /usr/local/lib/unity-gateway/install.sh \
     --agents "${_install_agents}" \
     --claude-source /opt/agent-config \
     --codex-source /opt/agent-config-codex \
-    --opencode-source /opt/agent-config-opencode \
     --profile "${DATABRICKS_PROFILE_NAME}"
 else
   echo "[entrypoint] note: no Claude Code config at /opt/agent-config (run 'make docker-config')." >&2
   echo "[entrypoint] note: no Codex config at /opt/agent-config-codex (run 'make docker-config-codex')." >&2
-  echo "[entrypoint] note: no opencode config at /opt/agent-config-opencode (run 'make docker-config-opencode')." >&2
 fi
 
 # 2b. Stage the DeepSeek Harness config. DSH has no managed system path: its home
@@ -61,6 +64,15 @@ if [ -f /opt/agent-config-dsh/cordis.patch.yml ]; then
 else
   echo "[entrypoint] note: no DeepSeek Harness config at /opt/agent-config-dsh (run 'make docker-config-dsh')." >&2
 fi
+
+# 2c. Enforce the invariant that everything in the dev user's home belongs to dev.
+#     The HOME=/root above stops this container from creating root-owned state
+#     there, but a container started on an older image already has it, and any
+#     future root-side helper could reintroduce it. A root-owned dir under
+#     /home/dev silently breaks `ug`, which writes its per-agent config into the
+#     user's home (e.g. ~/.codex/ucode.config.toml). Only chown what is not
+#     already dev-owned, so a normal start does no work.
+find /home/dev \( ! -user dev -o ! -group dev \) -exec chown dev:dev {} + 2>/dev/null || true
 
 # 3. Bridge the OAuth loopback callback. The databricks CLI's login listener binds
 #    127.0.0.1:8020 (loopback only), which a docker -p mapping cannot reach. socat

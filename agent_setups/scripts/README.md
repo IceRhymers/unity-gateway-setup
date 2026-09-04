@@ -6,11 +6,15 @@ services you provisioned. It then emits opinionated, deployable config for a
 coding agent.
 
 **Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
-deployment), **Codex** (`config.toml` routed through the gateway's MLflow
-serving route, `mlflow/v1/responses`), **and opencode** (`opencode.json` with
-native providers per model family, plus an auth plugin that mints a fresh token
-per request). The design is a registry. You can add Gemini CLI and other agents
-as new generators.
+deployment), **Claude Desktop** (an importable config plus per-OS helper
+scripts), **Codex** (`config.toml` routed through the gateway's MLflow serving
+route, `mlflow/v1/responses`), and the **DeepSeek Harness** (a home patch plus a
+token-refresh plugin). The design is a registry. You can add other agents as new
+generators.
+
+The generator covers only what a fleet baseline must carry: inference routing and
+telemetry. It does not register MCP servers and it does not configure agents that
+`ug` already configures. See [Division of labour with `ug`](../../README.md#division-of-labour-the-generator-and-ug) in the repo README.
 
 ## How it works
 
@@ -431,169 +435,27 @@ UC secret. No new Terraform — Claude Code shares the table/SP/secret/grants fr
 wrong shape makes Codex fail to load config entirely, so validate any additions with
 `codex --strict-config doctor` before you enable them.
 
-## opencode (`opencode`)
+## Division of labour with `ug`
 
-The generator emits an **enforced, root-owned managed bundle** by default (the
-opencode analogue of Claude Code's managed settings), or a per-user bundle with
-`--user-config`. The bundle carries a config file and an auth plugin. The plugin
-mints a fresh Databricks token on every request, so the config needs no
-environment variable and the launcher needs no token step.
+The generator and `ug` cover different jobs. Keep new work on the correct side of
+the line. The repo README holds the full table — see [Division of labour](../../README.md#division-of-labour-the-generator-and-ug).
 
-opencode is built on the Vercel AI SDK. Each model family speaks its own dialect
-to its own gateway route. The generator emits one provider per family that has
-deployed endpoints:
+In short, the generator owns the fleet baseline that must work before a developer
+installs anything: inference routing, model pins, the allow-list, OTEL export, and
+hook events. `ug` owns the developer's own machine: launch, per-request OAuth, MCP
+registration, and skills.
 
-| Provider | npm package | Gateway route |
-|---|---|---|
-| `databricks-anthropic` | `@ai-sdk/anthropic` | `<host>/ai-gateway/anthropic/v1` |
-| `databricks-google` | `@ai-sdk/google` | `<host>/ai-gateway/gemini/v1beta` |
-| `databricks-oss` | `@ai-sdk/openai` | `<host>/ai-gateway/mlflow/v1` |
+Two rules follow from that split:
 
-Each endpoint buckets into a family by its schema. The `anthropic` schema routes
-to the anthropic provider. The `gemini` schema routes to the google provider.
-Every other schema routes to the oss provider. This is the native surface, so the
-generator needs no live api-type discovery.
-
-opencode reads managed config LAST, and managed config overrides user config
-(verified in the opencode source, v1.18.25). Two managed layers exist:
-
-- The per-OS managed config dir: `/etc/opencode/opencode.json` (Linux),
-  `/Library/Application Support/opencode/opencode.json` (macOS),
-  `%ProgramData%\opencode\opencode.json` (Windows).
-- macOS Managed Preferences: an MDM `.mobileconfig` for the plist domain
-  `ai.opencode.managed`, delivered to
-  `/Library/Managed Preferences/ai.opencode.managed.plist`. This layer overrides
-  everything. It is the true hard-lock on macOS.
-
-The default (managed) mode writes the bundle to `opencode/`:
-
-| File | Role |
-|---|---|
-| `opencode.json` | Gateway routing + native providers + default model + `enabled_providers` + the plugin reference. The OS-independent managed config. Overrides user config. |
-| `databricks-auth.ts` | The auth plugin. It mints a fresh Databricks token on every request. |
-| `ai.opencode.managed.mobileconfig` | A macOS Configuration Profile that carries the same config keys. The macOS hard-lock layer. |
-
-The `opencode.json` content is OS-independent, so one file serves every managed
-config dir. The config references the plugin by a relative path
-(`./databricks-auth.ts`), so the plugin must sit beside `opencode.json`. Non-macOS
-fleets rely on the managed dir files only. With `--user-config` the generator
-emits the same two files for `~/.config/opencode/`, with no enforcement. This is
-useful for laptops without root.
-
-### What the opencode config encodes
-
-- **Routing:** one `provider.<id>` block per native family. Each block sets `npm`
-  to the family's AI SDK package and `options.baseURL` to the family's gateway
-  route. `model` pins a default endpoint (a preferred alias by default), prefixed
-  with its family provider id (for example `databricks-anthropic/<full-name>`).
-- **Auth:** the config loads the `databricks-auth.ts` plugin through the `plugin`
-  key. A `chat.headers` hook in the plugin sets `Authorization: Bearer <token>` on
-  every request to the databricks-* providers. The plugin mints the token with the
-  Databricks CLI (`databricks auth token`). The CLI refreshes access tokens
-  silently from its cached OAuth session, so routine expiry needs no login. The
-  plugin runs `databricks auth login` only when no valid session exists. This
-  matches Claude Code's `apiKeyHelper`. The `options.apiKey` value is a
-  placeholder, because the gateway authenticates on the header the plugin sets.
-- **Model surface:** every deployed endpoint becomes a switchable model in its
-  family provider's `models` map, keyed by its full UC name. Anthropic models also
-  set `options.toolStreaming = false`, because the gateway's strict validator
-  rejects the AI SDK's `eager_input_streaming` flag.
-- **Lockdown:** `enabled_providers` restricts opencode to the databricks-*
-  providers only.
-
-### Key options (`opencode`)
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `--profile` | `fevm-west` | Databricks profile (host + auth). |
-| `--host` | (from profile) | Override the workspace URL. |
-| `--default-model` | preferred alias | Model opencode starts on (endpoint leaf or full UC name). |
-| `--auth-profile` | (the `--profile` value) | Databricks CLI profile the plugin uses to mint tokens. Every developer must have this profile in `~/.databrickscfg`. |
-| `--user-config` | off | Emit the per-user bundle instead of the default managed bundle. |
-
-### Deploying the output
-
-**`agent_setups/deploy/install.sh` handles all file placement.** It is the single
-placement authority. Do not copy files by hand. Select opencode with
-`--agents opencode`. The deployment workflow is:
-
-```bash
-# 0. Generate the managed bundle (requires Terraform outputs + network access).
-make agent-opencode      # → opencode/opencode.json + opencode/databricks-auth.ts + opencode/ai.opencode.managed.mobileconfig
-
-# 1. Distribute and run on each machine (see MDM runbooks below).
-./install.sh --agents opencode
-```
-
-MDM runbooks for fleet deployment:
-
-- **macOS (Jamf):** `agent_setups/deploy/runbooks/jamf.md`
-- **Linux/servers (Ansible):** `agent_setups/deploy/runbooks/ansible.md`
-
-**Managed (default):** `install.sh` places `opencode.json` and
-`databricks-auth.ts` into the per-OS managed config dir (`/etc/opencode` on Linux,
-`/Library/Application Support/opencode` on macOS), root-owned, with mode 644.
-`install.sh` detects managed mode from the `.mobileconfig` next to `opencode.json`.
-On macOS `install.sh` also stages the `.mobileconfig` into the managed dir. An MDM
-must INSTALL that profile to activate the macOS hard-lock at
-`/Library/Managed Preferences/ai.opencode.managed.plist` (Jamf, or
-`profiles install -path <file>`). Staging the file alone does not activate it. The
-`.mobileconfig` references the plugin by its absolute macOS path, so the plugin
-must exist at `/Library/Application Support/opencode/databricks-auth.ts`.
-
-**User (local, non-managed):** for a per-user install without root or MDM, run
-`make opencode-install-local`. It generates a user-mode bundle and installs
-`opencode.json` and `databricks-auth.ts` to
-`${XDG_CONFIG_HOME:-$HOME/.config}/opencode/`. The placement script
-`agent_setups/deploy/install-opencode-local.sh` does the copy. It saves a
-timestamped backup of any existing config first. Run the script directly with
-`--dry-run` to preview the actions, `--target-dir <dir>` to write elsewhere, or
-`--no-backup` to overwrite in place. This mode has no enforcement. The managed
-`install.sh` warns and skips a user-mode bundle, because it is not a root-managed
-system placement.
-
-**All three at once:** `make agents-install-local` runs the Claude Code, Codex,
-and opencode local installs together. Each install backs up its existing config
-file with a timestamp first, so it keeps a history. Each target also takes
-`PROFILE=` and `ARGS=`.
-
-**Two-phase auth:** `install.sh` handles Phase A (root config placement) only.
-Each developer runs `databricks auth login --host <url> --profile <profile>` once,
-interactively. Browser OAuth (U2M) cannot be pushed. The plugin also runs this
-login itself when it finds no valid session, so a developer who skips the manual
-step gets a browser prompt at first launch.
-
-## MCP services (`mcp`)
-
-The `mcp` subcommand discovers the Databricks AI Gateway MCP services in a catalog
-or schema. It then merges stdio entries for the services you select into the USER
-config of each harness (Claude Code, Codex, and opencode). Each entry runs the
-`uvx uc-mcp-proxy` bridge. The merge is idempotent. It touches only keys with the
-`--server-prefix` (default `uc_`). A second run with the same selection makes no
-change.
-
-You choose which services to install. The selection is uniform across all three
-harnesses. The selection is declarative: the set you choose becomes the complete
-config. The merge removes any installed prefixed server that you do not select.
-
-- `--list` prints the discovered services and exits. It marks the services that are
-  already installed. It writes nothing.
-- `--all` selects every discovered service.
-- `--select NAMES` selects services by name (comma-separated or repeatable). A token
-  matches the leaf name (`slack`), the `<schema>.<name>`, the full
-  `<catalog>.<schema>.<name>`, or the server key (`uc_system_ai_slack`).
-- With none of these flags, the run is interactive. It prints a numbered menu and
-  prompts you for numbers or names. It pre-marks the installed services. An empty
-  answer confirms the marked set. The words `all` and `none` are also valid. You must
-  use `all` or `none` on its own.
-
-An interactive run needs a terminal. Without a terminal, pass `--select` or `--all`.
-Use `--dry-run` to preview the merge as a diff. Discovery of zero services refuses to
-change the configs, unless you pass `--allow-empty`.
-
-Makefile targets: `make mcp` installs into all three harnesses. `make mcp-claude-code`,
-`make mcp-codex`, and `make mcp-opencode` each scope the install to one harness. Set
-`CATALOG`, `SCHEMA`, and either `SELECT=names` or `ALL=1`.
+1. Do not add MCP registration to a generator. `ug mcp add` does this for seven
+   agents, and it also removes stale servers. A second implementation would
+   compete with it.
+2. Do not add an agent that `ug` already configures, unless the agent needs a
+   fleet-managed file that `ug` cannot deliver. `ug` configures Claude Code,
+   Codex, Gemini CLI, OpenCode, Copilot CLI, Pi, and Cursor. Claude Code and
+   Codex stay here because both read a root-owned managed file that an MDM tool
+   must push. Claude Desktop and the DeepSeek Harness stay here because `ug`
+   does not support either one.
 
 ## Adding an agent
 
