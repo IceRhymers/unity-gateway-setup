@@ -1,9 +1,11 @@
 # Python dependencies for the config generator (agent_setups/scripts).
 #
-# There are none. Every generator (claude-code, claude-desktop, codex, dsh) uses
-# the standard library only.
+# The generators themselves (claude-code, claude-desktop, codex, dsh) use the
+# standard library only. Nothing here is needed to generate a config.
 #
-# `tomlkit` used to live here for the `mcp` subcommand's Codex config.toml merge,
-# which round-tripped the TOML document so a user's comments and formatting
-# survived an in-place merge. That subcommand is gone — `ug mcp add` registers MCP
-# servers now — so the dependency went with it.
+# This file lists the TEST dependencies. The dsh generator emits YAML as text,
+# but its test suite parses that YAML back to assert the structure, so the tests
+# need PyYAML. The codex tests parse TOML with `tomllib`, which is standard
+# library from Python 3.11 — so the test suite needs 3.11+, while the generators
+# still run on 3.10.
+PyYAML>=6.0,<7

@@ -36,8 +36,9 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # README: "Requires Python 3.10+"
-          python-version: "3.10"
+          # The generators run on 3.10+, but the test suite parses TOML with
+          # `tomllib` (standard library from 3.11), so the tests need 3.11+.
+          python-version: "3.11"
 
       - name: Install Python dependencies
         run: pip install -r agent_setups/scripts/requirements.txt
@@ -68,7 +69,12 @@ jobs:
       - name: Run shellcheck on all shell scripts
         # Scripts carry inline shellcheck disable directives; they were written for it.
         # -not -path './.git/*' keeps the traversal out of git internals.
-        run: find . -name '*.sh' -not -path './.git/*' | sort | xargs shellcheck
+        # -e SC1091: the test scripts source _fixtures.sh through a computed
+        # "${TESTS_DIR}" path. shellcheck cannot resolve that at parse time, and
+        # neither -x nor a `source=` directive helps, because the path is relative
+        # to the invocation dir. SC1091 is info-level, so excluding it drops noise
+        # only. Every other check still runs.
+        run: find . -name '*.sh' -not -path './.git/*' | sort | xargs shellcheck -e SC1091
 
   # ---------- Lint: ruff on agent_setups/scripts (non-blocking) ----------
   lint:
