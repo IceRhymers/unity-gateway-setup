@@ -12,8 +12,14 @@ FROM node:22-bookworm-slim@${BASE_DIGEST}
 # jq (the emit_hook_events.sh reporting hook builds its JSON payloads with it),
 # socat (bridges the OAuth loopback callback to the host), gosu (drop to non-root).
 # uv + ug (below) provide MCP-service discovery/registration.
+#
+# sudo is required by `ug`, not by this repo's own scripts. `ug` reconciles the
+# root-owned managed settings file that install.sh places, and it shells out to
+# an absolute /usr/bin/sudo to do it. Without the binary present it raises an
+# unhandled FileNotFoundError rather than degrading, so the container needs it
+# for any `ug` run. The dev user gets a passwordless rule below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq python3 socat gosu unzip \
+      ca-certificates curl git jq python3 socat gosu sudo unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Databricks CLI -> /usr/local/bin/databricks. Downloads the versioned zip and
@@ -91,6 +97,14 @@ RUN if [ -n "$PYPI_INDEX" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi \
 RUN useradd -m -u 1001 -s /bin/bash dev \
     && mkdir -p /home/dev/work \
     && chown -R dev:dev /home/dev
+# Passwordless sudo for `dev`, so `ug` can reconcile the root-owned managed
+# settings file the way it does on a developer machine whose owner can
+# authenticate. This is a THROWAWAY TEST CONTAINER: do not copy this rule to
+# anything a fleet runs. `ug` invokes sudo for mkdir/chown/chmod/mktemp/cp/mv/rm
+# plus chattr, so the rule is not narrowed to a command list.
+RUN printf 'dev ALL=(root) NOPASSWD: ALL\n' > /etc/sudoers.d/ucode-managed \
+    && chmod 0440 /etc/sudoers.d/ucode-managed \
+    && visudo -cf /etc/sudoers.d/ucode-managed
 ENV HOME=/home/dev
 WORKDIR /home/dev/work
 

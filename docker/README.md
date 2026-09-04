@@ -16,6 +16,16 @@ own `~/.dsh/cordis.patch.yml`, so it never touches the host's files.
 - **`ug`** (Unity AI Gateway coding CLI), installed via `uv` and available on
   `PATH` by default. The harness uses it to discover Databricks MCP services and
   register them into Claude Code's user-level config. See [MCP servers](#mcp-servers).
+- **`sudo`**, with a passwordless rule for the `dev` user
+  (`/etc/sudoers.d/ucode-managed`). `ug` needs it: it reconciles the root-owned
+  managed settings file that `install.sh` places, and it shells out to an
+  absolute `/usr/bin/sudo` to do so. Without the binary, any `ug` run inside the
+  container fails with `FileNotFoundError: '/usr/bin/sudo'`, because `ug` does
+  not degrade when sudo is absent. The rule mirrors a developer machine whose
+  owner can authenticate. **This is a throwaway test container — do not copy
+  that rule anywhere a fleet runs.** Note that each `sudo` call also prints
+  `sudo: unable to send audit message` when the container runs without
+  `CAP_AUDIT_WRITE`. That warning is cosmetic and the call still succeeds.
 - The generated **Claude Code** config. The harness stages it as Linux
   enterprise-managed settings at `/etc/claude-code/` (the `managed-settings.json`,
   the `otel-headers-helper.sh`, and the `emit_hook_events.sh` reporting hook). The
