@@ -489,18 +489,39 @@ class BootstrapExecutionTest(unittest.TestCase):
         rc, merged, out = self._run(self._state(claude_models={"opus": "cat.anthropic.gpt-oss"}))
         self.assertEqual(rc, 4, out)
 
-    def test_use_pat_without_profile_is_a_usage_error(self):
+    def _run_bare(self, args: list[str], td: str) -> subprocess.CompletedProcess:
+        """Run the bootstrap with no ug on PATH, as a clean CI runner has.
+
+        Argument validation must not depend on whether ug happens to be installed,
+        so these cases are pinned against a stripped environment.
+        """
         files = ClaudeDesktopGenerator().generate(_context(), _args(platforms="macos"))
+        script = Path(td) / BOOTSTRAP_FILENAME
+        script.write_text(files[f"claude-desktop/macos/{BOOTSTRAP_FILENAME}"])
+        script.chmod(0o755)
+        return subprocess.run(
+            [self.SHELL, str(script), *args],
+            capture_output=True, text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": td},
+            cwd=td,
+        )
+
+    def test_use_pat_without_profile_is_a_usage_error(self):
+        """Exit 1 for the usage mistake, even when ug is absent (which exits 2)."""
         with tempfile.TemporaryDirectory() as td:
-            script = Path(td) / BOOTSTRAP_FILENAME
-            script.write_text(files[f"claude-desktop/macos/{BOOTSTRAP_FILENAME}"])
-            script.chmod(0o755)
-            proc = subprocess.run(
-                [self.SHELL, str(script), "--use-pat"],
-                capture_output=True, text=True,
-                env={k: v for k, v in os.environ.items() if k != "DATABRICKS_PROFILE"},
-                cwd=td,
-            )
+            proc = self._run_bare(["--use-pat"], td)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("--use-pat requires --profile", proc.stderr)
+
+    def test_missing_ug_exits_2(self):
+        with tempfile.TemporaryDirectory() as td:
+            proc = self._run_bare(["--profile", "someprofile"], td)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("ug not found", proc.stderr)
+
+    def test_unknown_option_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            proc = self._run_bare(["--nope"], td)
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
 
 

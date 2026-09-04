@@ -518,6 +518,12 @@ done
 
 [ -n "$OUT" ] || OUT="$(dirname "$CONFIG")/__MERGED_FILENAME__"
 
+# Validate arguments BEFORE probing the environment, so a usage mistake reports the
+# usage mistake — not whatever happens to be missing on this machine.
+if [ "$USE_PAT" = "1" ] && [ -z "$PROFILE" ]; then
+  _fatal 1 "--use-pat requires --profile (ug's --use-pat requires --profiles)."
+fi
+
 # python3 is required here (unlike the credential helper) because this script
 # merges JSON. Claude Desktop itself never runs this script.
 command -v python3 >/dev/null 2>&1 || _fatal 2 "python3 is required to merge the config."
@@ -548,8 +554,6 @@ if [ "$SKIP_CONFIGURE" = "0" ]; then
   if [ -n "$PROFILE" ]; then
     set -- "$@" --profiles "$PROFILE"
     [ "$USE_PAT" = "1" ] && set -- "$@" --use-pat
-  elif [ "$USE_PAT" = "1" ]; then
-    _fatal 1 "--use-pat requires --profile (ug's --use-pat requires --profiles)."
   fi
   _info "running: ug $*"
   "$UG" "$@" || _fatal 3 "ug configure failed."
