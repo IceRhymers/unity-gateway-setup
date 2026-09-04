@@ -76,6 +76,7 @@ resource "null_resource" "otel_table" {
       "--profile", var.databricks_profile,
       "--databricks-bin", var.databricks_bin,
     ])
+    environment = { PGPASSWORD = "", PGPASSFILE = "" }
   }
 
   depends_on = [databricks_schema.this]
@@ -107,6 +108,7 @@ resource "null_resource" "hook_events_table" {
       "--profile", var.databricks_profile,
       "--databricks-bin", var.databricks_bin,
     ])
+    environment = { PGPASSWORD = "", PGPASSFILE = "" }
   }
 
   depends_on = [databricks_schema.this]
@@ -205,14 +207,16 @@ resource "null_resource" "secret_reader" {
 
   # Add READ_SECRET for this principal.
   provisioner "local-exec" {
-    command = "${self.triggers.databricks} grants update SECRET ${self.triggers.secret} --profile ${self.triggers.profile} --json '${jsonencode({ changes = [{ principal = each.value, add = ["READ_SECRET"] }] })}'"
+    command     = "${self.triggers.databricks} grants update SECRET ${self.triggers.secret} --profile ${self.triggers.profile} --json '${jsonencode({ changes = [{ principal = each.value, add = ["READ_SECRET"] }] })}'"
+    environment = { PGPASSWORD = "", PGPASSFILE = "" }
   }
 
   # Revoke it when the principal is removed from reader_groups (or on destroy).
   # on_failure = continue so an already-absent grant does not wedge destroy.
   provisioner "local-exec" {
-    when       = destroy
-    on_failure = continue
-    command    = "${self.triggers.databricks} grants update SECRET ${self.triggers.secret} --profile ${self.triggers.profile} --json '{\"changes\":[{\"principal\":\"${self.triggers.principal}\",\"remove\":[\"READ_SECRET\"]}]}'"
+    when        = destroy
+    on_failure  = continue
+    command     = "${self.triggers.databricks} grants update SECRET ${self.triggers.secret} --profile ${self.triggers.profile} --json '{\"changes\":[{\"principal\":\"${self.triggers.principal}\",\"remove\":[\"READ_SECRET\"]}]}'"
+    environment = { PGPASSWORD = "", PGPASSFILE = "" }
   }
 }

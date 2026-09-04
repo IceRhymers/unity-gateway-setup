@@ -1,0 +1,9 @@
+{
+  "status": {
+    "hosts": {
+      "read_write_pooled_host": "instance-abc123-pooler.database.cloud.databricks.com",
+      "read_only_pooled_host": "instance-abc123-pooler-ro.database.cloud.databricks.com",
+      "port": "5432"
+    }
+  }
+}

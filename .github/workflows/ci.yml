@@ -50,6 +50,11 @@ jobs:
         # Python unittest suite; no infra, no network.
         run: make test-mcp
 
+      - name: Run Lakebase state bootstrap tests
+        # Offline shell test suite for terraform/bootstrap; no infra, no network,
+        # no credentials. `make check` does not run in CI, so call it directly.
+        run: make test-tfstate
+
   # ---------- ShellCheck: static analysis of all tracked .sh files ----------
   shell:
     name: ShellCheck

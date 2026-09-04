@@ -80,5 +80,23 @@ The generator reads the `telemetry` output and adds the OTEL env +
 
 ## State
 
-Local state by default. For team use, uncomment and configure a remote backend
-in `versions.tf` before the first `init`.
+State lives in Lakebase Postgres via the committed `terraform/infra/backend.tf`.
+`versions.tf` holds no backend block.
+
+Before the first `terraform init`, one operator runs the bootstrap once:
+
+```bash
+make tf-bootstrap-state PROFILE=<p>
+```
+
+This command creates `terraform/infra/.lakebase.env`. The file is generated and
+gitignored. It contains no credential. Every subsequent `make tf-*` target mints a
+fresh OAuth token at invocation time.
+
+`fmt` and `validate` work with no credentials. Provider resolution still requires
+network access. A fresh clone does not need credentials to pass `make tf-fmt-check`
+or `make tf-validate`.
+
+For the first-bootstrap procedure, the onboarding steps for a second operator, and
+day-to-day commands, see [`terraform/bootstrap/README.md`](../bootstrap/README.md)
+and [`terraform/bootstrap/RUNBOOK.md`](../bootstrap/RUNBOOK.md).

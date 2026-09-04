@@ -8,14 +8,14 @@ terraform {
     }
   }
 
-  # Local state by default. For team/enterprise use, switch to a remote backend
-  # (S3 + DynamoDB lock, Terraform Cloud, etc.) so state is shared and locked.
+  # State backend.
   #
-  # backend "s3" {
-  #   bucket         = "my-tfstate-bucket"
-  #   key            = "unity-gateway/fevm-west.tfstate"
-  #   region         = "us-west-2"
-  #   dynamodb_table = "my-tfstate-locks"
-  #   encrypt        = true
-  # }
+  # This file declares no backend. The backend lives in its own committed file,
+  # backend.tf, which stores state in Databricks Lakebase Postgres.
+  #
+  # Run this once to create your local connection details:
+  #   make tf-bootstrap-state ARGS=--env-only PROFILE=<your-profile>
+  #
+  # `terraform fmt` and `terraform validate` work with no credentials.
+  # See terraform/bootstrap/README.md and terraform/bootstrap/RUNBOOK.md.
 }
