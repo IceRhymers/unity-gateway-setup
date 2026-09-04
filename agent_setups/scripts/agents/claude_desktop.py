@@ -1,25 +1,48 @@
-"""Claude Desktop third-party inference config generator for the Unity AI Gateway.
+"""Claude Desktop config generator for the Unity AI Gateway.
 
-Turns the deployed anthropic model services (from Terraform outputs) into an
-importable Claude Desktop configuration (schema version 2, the nested-object
-form) plus the OAuth credential-helper scripts it needs.
+This generator emits the parts of a Claude Desktop setup that MDM owns, and a
+bootstrap script that delegates everything else to `ug`.
 
-Unlike Claude Code (which reads a managed-settings.json that MDM places on disk),
-Claude Desktop reads an operator-imported config. The deploy flow is:
+Division of labour
+------------------
+`ug` is the developer surface. It holds a workspace-published managed config
+(authored with `ug setup`, pushed with `ug publish`) that decides the agents,
+the models, the MCP servers, and the skills. `ug configure` writes the agent
+config files and records the keys it owns in ~/.ucode/state.json, so `ug revert`
+can unwind them. Model selection therefore belongs to `ug`, not to MDM: pushing
+a model list from here would duplicate — and fight — the list `ug` publishes.
 
-  1. Run this generator to emit a per-OS bundle.
-  2. Import the JSON into Claude Desktop (Developer -> Configure third-party
-     inference), then test the connection.
-  3. Export the OS-native MDM profile (.mobileconfig / .reg) from the app.
+MDM owns only what `ug` cannot enforce:
 
-So this generator does NOT emit the flat MDM plist/registry keys — the app
-exports those. It emits the importable JSON and the helper scripts the config
-references by absolute path.
+  * Telemetry (the otlp block + its headers helper). The OTEL export target is a
+    fleet decision tied to Unity Catalog tables, not a per-developer one.
+  * Enterprise lockdown (disableClaudeAiSignIn, allowedEgressHosts,
+    disabledBuiltinTools). A developer who signs in to Claude.ai bypasses the
+    gateway completely, and only a managed profile closes that.
 
-Claude Desktop starts under launchd (macOS) with a minimal PATH, so the
-credential helper resolves the Databricks CLI from an absolute-path candidate
-list, never from $PATH. The config's credential.command is an absolute path that
-must match where the helper is installed (see install.sh / the runbook).
+So this generator does NOT emit inference or models. It emits:
+
+  1. claude-setup.json — the MDM-owned policy + telemetry config.
+  2. ug-bootstrap-claude-desktop.sh — a headless script that runs
+     `ug configure`, reads the workspace, base URL, profile, and Claude model
+     pins back out of ~/.ucode/state.json, and splices an inference + models
+     block into a complete config for the app to import.
+  3. The helper scripts both reference by absolute path.
+
+The generator still does not produce the .mobileconfig or .reg artifacts. The
+Claude Desktop app exports those after an operator imports the JSON once.
+
+The credential helper is a thin wrapper around `ucode auth-token` — ug's own
+cross-platform token helper, and the same one Claude Code's apiKeyHelper and
+Codex's auth command already use. It carries no auth logic: ug resolves the
+workspace and profile from its own state, handles static PATs, retries
+token-cache lock contention, and re-authenticates non-interactively on expiry.
+So Claude Desktop authenticates as exactly the same identity, through the same
+code path, as every ug-launched agent.
+
+The wrapper exists only to strip the trailing newline ug prints and to resolve
+the ucode binary by absolute path, because Claude Desktop starts under launchd
+(macOS) with a minimal PATH.
 
 Conventions follow the internal "Onboarding Coding Agents - AI Gateway" playbook
 and the "DBX - Inference Configuration" customer document.
@@ -36,20 +59,14 @@ import urllib.parse
 
 from agents.base import AgentGenerator
 from agents.claude_code import (
-    ANTHROPIC_API_TYPE,
-    LARGE_CONTEXT_FAMILIES,
     OTEL_INGEST_PATH,
     _otel_headers_helper_script,
 )
-from gateway import Endpoint, GatewayContext, discover_api_types
+from gateway import GatewayContext
 
 # Claude Desktop config schema version (nested-object form). See the configuration
 # changelog: version 2 is the importable JSON shape used by the in-app window.
 SCHEMA_VERSION = 2
-
-# The anthropicFamilyTier values Claude Desktop recognizes for a model entry.
-KNOWN_FAMILY_TIERS = ("opus", "sonnet", "haiku")
-FAMILY_TIERS = ("opus", "sonnet", "haiku", "fable")
 
 # Per-OS bundles. Each bundle is written to claude-desktop/<platform>/ with an
 # importable claude-setup.json plus the helper scripts it references. The install
@@ -64,8 +81,20 @@ PLATFORM_INSTALL_DIRS = {
     "linux": "/etc/claude-desktop",
 }
 
-# The config filename the operator imports.
+# The MDM-owned config filename (policy + telemetry only).
 CONFIG_FILENAME = "claude-setup.json"
+
+# The headless bootstrap script, and the complete config it writes. The bootstrap
+# merges the MDM-owned config above with an inference + models block it derives
+# from ug's own state, so the merged file is what the app imports.
+BOOTSTRAP_FILENAME = "ug-bootstrap-claude-desktop.sh"
+MERGED_CONFIG_FILENAME = "claude-setup.merged.json"
+
+# Where ug records the workspace it is configured against, the Databricks CLI
+# profile it authenticates with, the per-agent gateway base URLs, and the Claude
+# model pins it resolved. Both the bootstrap and the credential helper read it, so
+# Claude Desktop tracks whatever `ug configure` last decided.
+UG_STATE_PATH = "$HOME/.ucode/state.json"
 
 # Credential-helper filenames per OS. Windows needs a .cmd shim because Claude
 # Desktop runs an executable and a .ps1 is not directly runnable; the shim runs
@@ -117,124 +146,131 @@ def _validate_bakeables(profile: str, host: str, traces_table: str | None) -> No
         )
 
 
-def _family_tier(name: str) -> str | None:
-    """Map an endpoint leaf name to its Anthropic family tier, if recognizable."""
-    for fam in FAMILY_TIERS:
-        if fam in name:
-            return fam
-    return None
-
-
 # --- Credential helper: bash (macOS / Linux) --------------------------------
-# The proven pure-bash helper. Prints ONLY the access token to stdout (no trailing
-# newline), diagnostics to stderr. Resolves the CLI from an absolute-path list so
-# it behaves identically under launchd. __PROFILE__ is baked at generation time and
-# is env-overridable (DATABRICKS_PROFILE) so one script serves a fleet.
+# A thin wrapper around `ucode auth-token`, which is ug's own token helper (a
+# hidden command: `@app.command("auth-token", hidden=True)`). It is the same helper
+# Claude Code's apiKeyHelper and Codex's auth command already use, so Claude Desktop
+# authenticates through exactly one code path as every ug-launched agent.
+#
+# Delegating means we do NOT reimplement any of this, all of which lives in ug's
+# get_databricks_token:
+#   * the DATABRICKS_BEARER CI short-circuit,
+#   * resolving the profile from the host when none is given,
+#   * static-PAT profiles (including the use_pat flag saved in ug's state),
+#   * token-cache lock contention, retried with jittered backoff — this matters,
+#     because Claude Desktop re-runs the helper whenever ttlSec expires while
+#     ug-launched agents hit the same cache,
+#   * non-interactive re-auth (`databricks auth login --no-browser`) on expiry.
+#
+# `ucode auth-token` also reads the workspace and profile from ug's own state, so
+# nothing needs to be baked here. __PROFILE__ is passed only as an explicit
+# fallback for a device whose ug state is not yet written.
+#
+# The wrapper exists for two reasons only:
+#   1. `ucode auth-token` prints the token WITH a trailing newline
+#      (cli.py: sys.stdout.write(token + "\n")). Claude Desktop's credential
+#      contract wants the bare token, so we strip it.
+#   2. Claude Desktop starts under launchd with a minimal PATH, so the binary is
+#      resolved from an absolute-path candidate list.
 _CRED_HELPER_SH_TEMPLATE = r"""#!/usr/bin/env bash
 # Generated by unity-gateway-setup (agent_setups). Do not edit by hand.
 #
-# Databricks OAuth credential helper (pure bash) for Claude Desktop.
+# Databricks credential helper for Claude Desktop.
 #
-# Fetches a fresh Databricks OAuth access token for the configured profile and
-# prints it — and only it — to stdout. If the profile is not authenticated, the
-# script runs `databricks auth login` interactively (browser SSO), routes its
-# output to stderr, then retries the token fetch.
+# This is a THIN WRAPPER around `ucode auth-token`, ug's own cross-platform token
+# helper. All token logic lives there. Do not add any here.
 #
 # Output contract:
-#   stdout — the raw access_token, no trailing newline. Nothing else.
-#   stderr — diagnostic messages, login subprocess output, errors.
-#   exit 0 — success
-#   exit 1 — token fetch / login failed
+#   stdout - the raw bearer token, no trailing newline. Nothing else.
+#   stderr - diagnostics from ucode, plus our own errors.
+#   exit 0 - success
+#   exit 1 - ucode not found, or ucode auth-token failed
 set -u
 set -o pipefail
 
-# Profile is baked at generation time; override with DATABRICKS_PROFILE.
-profile="${DATABRICKS_PROFILE:-__PROFILE__}"
-
-# Resolve an absolute path to the Databricks CLI. Honors $DATABRICKS_CLI first,
-# then walks common install locations. We deliberately avoid $PATH so this script
-# behaves identically under Claude Desktop, launchd, systemd, and other minimal-
-# environment parents that do not inherit the user's interactive PATH.
-resolve_cli() {
-  if [ -n "${DATABRICKS_CLI:-}" ]; then
-    if [ -x "$DATABRICKS_CLI" ]; then
-      printf '%s' "$DATABRICKS_CLI"
+# Resolve the ucode/ug binary WITHOUT trusting $PATH. Claude Desktop starts under
+# launchd with a minimal environment that does not inherit the user's PATH. ug
+# resolves its own absolute path for exactly this reason (see _ucode_binary), but
+# the path baked into a generated config must survive on its own.
+resolve_ucode() {
+  if [ -n "${UCODE_BIN:-}" ]; then
+    if [ -x "$UCODE_BIN" ]; then
+      printf '%s' "$UCODE_BIN"
       return 0
     fi
-    echo "databricks-token: DATABRICKS_CLI=$DATABRICKS_CLI is not executable" >&2
+    echo "databricks-token: UCODE_BIN=$UCODE_BIN is not executable" >&2
     return 1
   fi
   for candidate in \
-    /opt/homebrew/bin/databricks \
-    /usr/local/bin/databricks \
-    /usr/bin/databricks \
-    "$HOME/.local/bin/databricks" \
-    "$HOME/bin/databricks"
+    "$HOME/.local/bin/ucode" \
+    "$HOME/.local/bin/ug" \
+    /opt/homebrew/bin/ucode \
+    /opt/homebrew/bin/ug \
+    /usr/local/bin/ucode \
+    /usr/local/bin/ug \
+    /usr/bin/ucode \
+    /usr/bin/ug
   do
     if [ -x "$candidate" ]; then
       printf '%s' "$candidate"
       return 0
     fi
   done
-  echo "databricks-token: databricks CLI not found. Set DATABRICKS_CLI to its absolute path." >&2
+  echo "databricks-token: ucode/ug not found. Install ug, or set UCODE_BIN to its absolute path." >&2
   return 1
 }
 
-cli="$(resolve_cli)" || exit 1
+ucode="$(resolve_ucode)" || exit 1
 
-# Parse "access_token":"..." out of the JSON returned by `databricks auth token`.
-# Pure sed — no jq dependency.
-extract_access_token() {
-  sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
-}
-
-fetch_token() {
-  "$cli" auth token --profile "$profile" 2>/dev/null
-}
-
-response="$(fetch_token || true)"
-token="$(printf '%s' "$response" | extract_access_token)"
-
-if [ -z "$token" ]; then
-  echo "databricks-token: not authenticated for profile '$profile', opening browser login..." >&2
-  if ! "$cli" auth login --profile "$profile" >&2; then
-    echo "databricks-token: databricks auth login failed for profile '$profile'" >&2
-    exit 1
-  fi
-  response="$(fetch_token || true)"
-  token="$(printf '%s' "$response" | extract_access_token)"
+# `ucode auth-token` defaults --host and --profile to ug's saved state, so the
+# common case needs no arguments at all. __PROFILE__ is passed only when ug has no
+# saved profile yet, so a fresh device still authenticates.
+set -- auth-token
+if [ -n "${DATABRICKS_PROFILE:-}" ]; then
+  set -- "$@" --profile "$DATABRICKS_PROFILE"
+elif ! [ -r "${UCODE_STATE:-$HOME/.ucode/state.json}" ]; then
+  set -- "$@" --profile "__PROFILE__"
+  echo "databricks-token: no ug state yet, passing the baked profile '__PROFILE__'" >&2
 fi
 
+# Capture stdout so the trailing newline can be stripped. ucode writes the token
+# as `token + "\n"`; Claude Desktop wants the bare token.
+token="$("$ucode" "$@")" || {
+  echo "databricks-token: ucode auth-token failed" >&2
+  exit 1
+}
+
 if [ -z "$token" ]; then
-  echo "databricks-token: still no access_token for profile '$profile' after login attempt" >&2
+  echo "databricks-token: ucode auth-token returned an empty token" >&2
   exit 1
 fi
 
-# Bare token to stdout. No trailing newline.
+# Bare token to stdout. No trailing newline. $(...) already stripped it.
 printf '%s' "$token"
 """
 
 
 # --- Credential helper: PowerShell (Windows) --------------------------------
-# THEORETICAL: authored from the macOS bash helper. Test on Windows before a
-# production rollout (see the runbook). Claude Desktop points credential.command
-# at the .cmd shim below, which runs this .ps1.
+# Also a thin wrapper around `ucode auth-token`. ug ships ONE cross-platform token
+# helper precisely so this file needs no auth logic: no CLI discovery, no JSON
+# parsing, no login retry. That removes the whole untested PowerShell auth path the
+# earlier version carried.
+#
+# Claude Desktop points credential.command at the .cmd shim below, which runs this
+# .ps1. The .ps1 exists only to strip ucode's trailing newline and force UTF-8.
 _CRED_HELPER_PS1_TEMPLATE = r"""# Generated by unity-gateway-setup (agent_setups). Do not edit by hand.
 # databricks-token.ps1
 #
-# Databricks OAuth credential helper for Windows (pure PowerShell), for Claude
-# Desktop. Fetches a fresh Databricks OAuth access token for the baked profile
-# and prints it — and only it — to stdout. If the profile is not authenticated,
-# it runs `databricks auth login` interactively, routes output to stderr, then
-# retries.
+# Databricks credential helper for Claude Desktop on Windows.
 #
-# THEORETICAL: test on Windows before distribution.
+# A THIN WRAPPER around `ucode auth-token`. All token logic lives in ug. Do not add
+# any here.
 #
 # Output contract:
-#   stdout  - the raw access_token, no trailing newline. Nothing else.
-#   stderr  - diagnostic messages, login subprocess output, errors.
-#   exit 0  - success
-#   exit 1  - token fetch / login failed
+#   stdout - the raw bearer token, no trailing newline. Nothing else.
+#   stderr - diagnostics from ucode, plus our own errors.
+#   exit 0 - success
+#   exit 1 - ucode not found, or ucode auth-token failed
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -246,74 +282,54 @@ if (Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -Scope Global -
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
 
-# Profile is baked at generation time; override with $env:DATABRICKS_PROFILE.
-$profile_name = if ($env:DATABRICKS_PROFILE) { $env:DATABRICKS_PROFILE } else { '__PROFILE__' }
-
-# Resolve an absolute path to the Databricks CLI. Honors $env:DATABRICKS_CLI,
-# then walks common install locations. We avoid PATH so this behaves identically
-# when launched by Claude Desktop, scheduled tasks, or any minimal-environment parent.
-function Resolve-DatabricksCli {
-    if ($env:DATABRICKS_CLI) {
-        if (Test-Path -LiteralPath $env:DATABRICKS_CLI -PathType Leaf) {
-            return $env:DATABRICKS_CLI
-        }
-        [Console]::Error.WriteLine("databricks-token: DATABRICKS_CLI=$($env:DATABRICKS_CLI) is not a file")
+# Resolve the ucode/ug executable without relying on PATH.
+function Resolve-Ucode {
+    if ($env:UCODE_BIN) {
+        if (Test-Path -LiteralPath $env:UCODE_BIN -PathType Leaf) { return $env:UCODE_BIN }
+        [Console]::Error.WriteLine("databricks-token: UCODE_BIN=$($env:UCODE_BIN) is not a file")
         exit 1
     }
     $candidates = @(
-        "$env:ProgramFiles\Databricks\databricks.exe",
-        "$env:LOCALAPPDATA\Programs\Databricks\databricks.exe",
-        "$env:LOCALAPPDATA\Microsoft\WinGet\Links\databricks.exe",
-        "$env:USERPROFILE\.local\bin\databricks.exe",
-        "$env:USERPROFILE\bin\databricks.exe"
+        "$env:LOCALAPPDATA\Programs\ucode\ucode.exe",
+        "$env:LOCALAPPDATA\uv\tools\ucode\Scripts\ucode.exe",
+        "$env:LOCALAPPDATA\uv\tools\ucode\Scripts\ug.exe",
+        "$env:USERPROFILE\.local\bin\ucode.exe",
+        "$env:USERPROFILE\.local\bin\ug.exe",
+        "$env:ProgramFiles\ucode\ucode.exe"
     )
     foreach ($c in $candidates) {
-        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) {
-            return $c
-        }
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return $c }
     }
-    [Console]::Error.WriteLine("databricks-token: databricks CLI not found. Set DATABRICKS_CLI to its absolute path.")
+    $onPath = Get-Command ucode -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    [Console]::Error.WriteLine("databricks-token: ucode/ug not found. Install ug, or set UCODE_BIN to its absolute path.")
     exit 1
 }
+$ucode = Resolve-Ucode
 
-$cli = Resolve-DatabricksCli
-
-function Get-TokenJson {
-    param([string]$Profile)
-    $tmpErr = [System.IO.Path]::GetTempFileName()
-    try {
-        $out = & $cli auth token --profile $Profile 2>$tmpErr
-        if ($LASTEXITCODE -eq 0) { return ($out | Out-String) }
-        return $null
-    } finally {
-        Remove-Item -LiteralPath $tmpErr -Force -ErrorAction SilentlyContinue
+# `ucode auth-token` defaults --host and --profile to ug's saved state, so the
+# common case needs no arguments. '__PROFILE__' is passed only when ug has no saved
+# state yet, so a fresh device still authenticates.
+$ugArgs = @('auth-token')
+if ($env:DATABRICKS_PROFILE) {
+    $ugArgs += @('--profile', $env:DATABRICKS_PROFILE)
+} else {
+    $statePath = if ($env:UCODE_STATE) { $env:UCODE_STATE } else { Join-Path $env:USERPROFILE '.ucode\state.json' }
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        $ugArgs += @('--profile', '__PROFILE__')
+        [Console]::Error.WriteLine("databricks-token: no ug state yet, passing the baked profile '__PROFILE__'")
     }
 }
 
-function Get-AccessToken {
-    param([string]$Json)
-    if (-not $Json) { return $null }
-    $m = [regex]::Match($Json, '"access_token"\s*:\s*"([^"]+)"')
-    if ($m.Success) { return $m.Groups[1].Value }
-    return $null
+$token = (& $ucode @ugArgs | Out-String)
+if ($LASTEXITCODE -ne 0) {
+    [Console]::Error.WriteLine("databricks-token: ucode auth-token failed")
+    exit 1
 }
-
-$json = Get-TokenJson -Profile $profile_name
-$token = Get-AccessToken -Json $json
-
+# ucode writes the token as `token + "\n"`; Claude Desktop wants the bare token.
+$token = $token.Trim()
 if (-not $token) {
-    [Console]::Error.WriteLine("databricks-token: not authenticated for profile '$profile_name', opening browser login...")
-    & $cli auth login --profile $profile_name *>&2
-    if ($LASTEXITCODE -ne 0) {
-        [Console]::Error.WriteLine("databricks-token: databricks auth login failed for profile '$profile_name'")
-        exit 1
-    }
-    $json = Get-TokenJson -Profile $profile_name
-    $token = Get-AccessToken -Json $json
-}
-
-if (-not $token) {
-    [Console]::Error.WriteLine("databricks-token: still no access_token for profile '$profile_name' after login attempt")
+    [Console]::Error.WriteLine("databricks-token: ucode auth-token returned an empty token")
     exit 1
 }
 
@@ -416,6 +432,290 @@ $headers = @{ Authorization = "Bearer $($resp.access_token)" }
 """
 
 
+# --- Headless bootstrap: bash (macOS / Linux) -------------------------------
+# Runs `ug configure` for Claude Code, then reads the workspace, profile, gateway
+# base URL, and Claude model pins back out of ~/.ucode/state.json and splices an
+# inference + models block into the MDM-owned config. The merged file is what the
+# operator (or a device-management script) imports into Claude Desktop.
+#
+# Claude Desktop has no ug target of its own yet. It shares Claude Code's gateway
+# base URL (…/ai-gateway/anthropic) and its Claude model pins, so `--agents claude`
+# is what populates the state this script reads. When ug grows a custom model
+# surface, this script is what it replaces.
+_BOOTSTRAP_SH_TEMPLATE = r"""#!/usr/bin/env bash
+# Generated by unity-gateway-setup (agent_setups). Do not edit by hand.
+#
+# ug-bootstrap-claude-desktop.sh — configure Claude Desktop from ug, headlessly.
+#
+# MDM owns policy and telemetry (claude-setup.json). ug owns the workspace, the
+# identity, and the models. This script joins the two: it runs `ug configure`,
+# reads what ug decided, and writes a complete config for the app to import.
+#
+# Usage:
+#   ug-bootstrap-claude-desktop.sh [OPTIONS]
+#
+# Options:
+#   --profile <name>    Databricks CLI profile to configure ug against.
+#                       Default: whatever ug already uses, else $DATABRICKS_PROFILE.
+#   --config <path>     MDM-owned policy+telemetry JSON to merge.
+#                       Default: claude-setup.json beside this script.
+#   --out <path>        Where to write the merged config.
+#                       Default: claude-setup.merged.json beside --config.
+#   --default-tier <t>  Family listed first, i.e. the app default (default: sonnet).
+#   --small-context     Do not request 1M context for the opus/sonnet families.
+#   --use-pat           Pass --use-pat to ug (PAT from ~/.databrickscfg, no browser).
+#                       Use this for CI and any truly non-interactive run.
+#   --skip-configure    Do not run `ug configure`; only read existing ug state.
+#   --dry-run           Print the merged config to stdout, write nothing.
+#   -h, --help          Show this message.
+#
+# Exit codes:
+#   0 success / --dry-run
+#   1 usage error
+#   2 ug not found
+#   3 `ug configure` failed
+#   4 ug state unusable (no workspace, base URL, or Claude models)
+#   5 MDM config missing or unreadable, or the merged write failed
+set -euo pipefail
+
+_self_dir="$(cd "$(dirname "$0")" && pwd)"
+
+PROFILE="${DATABRICKS_PROFILE:-}"
+CONFIG="${_self_dir}/__CONFIG_FILENAME__"
+OUT=""
+DEFAULT_TIER="sonnet"
+SMALL_CONTEXT=0
+USE_PAT=0
+SKIP_CONFIGURE=0
+DRY_RUN=0
+
+_info() { printf '[ug-bootstrap] %s\n' "$*" >&2; }
+_fatal() { _c="$1"; shift; printf '[ug-bootstrap] FATAL: %s\n' "$*" >&2; exit "$_c"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile)        shift; PROFILE="${1:?--profile requires a value}" ;;
+    --config)         shift; CONFIG="${1:?--config requires a value}" ;;
+    --out)            shift; OUT="${1:?--out requires a value}" ;;
+    --default-tier)   shift; DEFAULT_TIER="${1:?--default-tier requires a value}" ;;
+    --small-context)  SMALL_CONTEXT=1 ;;
+    --use-pat)        USE_PAT=1 ;;
+    --skip-configure) SKIP_CONFIGURE=1 ;;
+    --dry-run)        DRY_RUN=1 ;;
+    -h|--help)        sed -n '3,34p' "$0" >&2; exit 1 ;;
+    *)                _fatal 1 "Unknown option: $1" ;;
+  esac
+  shift
+done
+
+[ -n "$OUT" ] || OUT="$(dirname "$CONFIG")/__MERGED_FILENAME__"
+
+# python3 is required here (unlike the credential helper) because this script
+# merges JSON. Claude Desktop itself never runs this script.
+command -v python3 >/dev/null 2>&1 || _fatal 2 "python3 is required to merge the config."
+
+# Resolve ug without trusting $PATH — this may run from a device-management
+# payload with a minimal environment.
+resolve_ug() {
+  if [ -n "${UG_BIN:-}" ] && [ -x "${UG_BIN}" ]; then printf '%s' "${UG_BIN}"; return 0; fi
+  for c in \
+    "$HOME/.local/bin/ug" \
+    /opt/homebrew/bin/ug \
+    /usr/local/bin/ug \
+    /usr/bin/ug
+  do
+    [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  command -v ug 2>/dev/null && return 0
+  return 1
+}
+UG_STATE="${UCODE_STATE:-$HOME/.ucode/state.json}"
+
+# --- 1. Let ug configure the workspace, identity, and models -----------------
+# ug is only needed when we actually configure; --skip-configure reads state alone.
+if [ "$SKIP_CONFIGURE" = "0" ]; then
+  UG="$(resolve_ug)" || _fatal 2 "ug not found. Install it, or set UG_BIN to its absolute path."
+  _info "using ug at ${UG}"
+  set -- configure --agents claude --skip-validate --skip-upgrade --skip-unavailable --verbose low
+  if [ -n "$PROFILE" ]; then
+    set -- "$@" --profiles "$PROFILE"
+    [ "$USE_PAT" = "1" ] && set -- "$@" --use-pat
+  elif [ "$USE_PAT" = "1" ]; then
+    _fatal 1 "--use-pat requires --profile (ug's --use-pat requires --profiles)."
+  fi
+  _info "running: ug $*"
+  "$UG" "$@" || _fatal 3 "ug configure failed."
+else
+  _info "--skip-configure: reading existing ug state only"
+fi
+
+[ -r "$UG_STATE" ] || _fatal 4 "ug state not readable at ${UG_STATE}. Run \`ug configure\` first."
+[ -r "$CONFIG" ] || _fatal 5 "MDM config not readable at ${CONFIG}."
+
+# --- 2. Merge ug's decisions into the MDM-owned policy+telemetry config ------
+# Reads ug state, builds the inference + models blocks, and splices them in. The
+# MDM-owned keys (otlp, authentication, workspace) are preserved untouched.
+python3 - "$UG_STATE" "$CONFIG" "$OUT" "$DEFAULT_TIER" "$SMALL_CONTEXT" "$DRY_RUN" <<'PYEOF' || exit $?
+import json, os, sys, tempfile
+
+state_path, cfg_path, out_path, default_tier, small_ctx, dry_run = sys.argv[1:7]
+small_ctx = small_ctx == "1"
+dry_run = dry_run == "1"
+
+def die(code, msg):
+    sys.stderr.write("[ug-bootstrap] FATAL: %s\n" % msg)
+    sys.exit(int(code))
+
+try:
+    with open(state_path) as fh:
+        state = json.load(fh)
+except Exception as exc:
+    die(4, "cannot parse ug state %s: %s" % (state_path, exc))
+
+workspace = state.get("current_workspace")
+if not workspace:
+    die(4, "ug state has no current_workspace. Run `ug configure`.")
+ws = (state.get("workspaces") or {}).get(workspace) or {}
+
+base_url = (ws.get("base_urls") or {}).get("claude")
+if not base_url:
+    die(4, "ug state has no base_urls.claude for %s. Run `ug configure --agents claude`." % workspace)
+
+# ug records the Claude pins as {tier: three-level UC name}. Claude Desktop only
+# accepts models whose name contains "claude", so drop anything else rather than
+# letting the app reject the whole import.
+pins = ws.get("claude_models") or {}
+models = {}
+for tier, name in pins.items():
+    if not name:
+        continue
+    if "claude" not in str(name).lower():
+        sys.stderr.write(
+            "[ug-bootstrap] skipping %s pin %r: Claude Desktop only accepts names "
+            "containing 'claude'.\n" % (tier, name)
+        )
+        continue
+    models[tier] = name
+if not models:
+    die(4, "ug state lists no usable Claude model pins for %s." % workspace)
+
+# Families that get 1M context, matching the Claude Code generator.
+LARGE = ("opus", "sonnet")
+# The tiers Claude Desktop recognizes for anthropicFamilyTier.
+KNOWN = ("opus", "sonnet", "haiku")
+
+def entry(tier, name):
+    one_m = (not small_ctx) and tier in LARGE
+    item = {
+        "name": name,
+        "supports1m": one_m,
+        "prefer1m": one_m,
+        # These are ug's per-family pins, so each is that family's default.
+        "isFamilyDefault": True,
+    }
+    if tier in KNOWN:
+        item["anthropicFamilyTier"] = tier
+    return item
+
+# Default tier first — Claude Desktop treats the first entry as the default.
+ordered = sorted(models.items(), key=lambda kv: (kv[0] != default_tier, kv[0]))
+model_list = [entry(t, n) for t, n in ordered]
+
+try:
+    with open(cfg_path) as fh:
+        cfg = json.load(fh)
+except Exception as exc:
+    die(5, "cannot parse MDM config %s: %s" % (cfg_path, exc))
+
+# The MDM config's telemetry endpoint was stamped from the Terraform workspace. ug
+# may be configured against a different one. That combination sends traces to one
+# workspace and inference to another, which is almost never intended, so say so
+# loudly rather than emitting a config that silently splits the two.
+otlp_endpoint = (cfg.get("otlp") or {}).get("endpoint") or ""
+if otlp_endpoint:
+    def host_of(url):
+        rest = url.split("://", 1)[-1]
+        return rest.split("/", 1)[0].lower()
+    if host_of(otlp_endpoint) != host_of(workspace):
+        sys.stderr.write(
+            "[ug-bootstrap] WARNING: telemetry and inference point at different "
+            "workspaces.\n"
+            "[ug-bootstrap]   otlp endpoint (from MDM config): %s\n"
+            "[ug-bootstrap]   ug workspace (inference):        %s\n"
+            "[ug-bootstrap] Regenerate the bundle against the workspace ug uses, or "
+            "point ug at the workspace the telemetry tables live in.\n"
+            % (host_of(otlp_endpoint), host_of(workspace))
+        )
+
+# Splice in the ug-derived halves. Everything else in cfg is MDM-owned.
+cfg["inference"] = {
+    "provider": "gateway",
+    "baseUrl": base_url,
+    "credential": {
+        "kind": "helper-script",
+        "command": "__CRED_COMMAND__",
+        "ttlSec": __TTL_SEC__,
+        "timeoutSec": __TIMEOUT_SEC__,
+    },
+}
+cfg["models"] = {"discoveryEnabled": False, "list": model_list}
+cfg["chatSurface"] = {"enabled": True}
+cfg["extensions"] = {"enabled": True}
+
+rendered = json.dumps(cfg, indent=2) + "\n"
+sys.stderr.write(
+    "[ug-bootstrap] workspace=%s\n[ug-bootstrap] baseUrl=%s\n[ug-bootstrap] models=%s\n"
+    % (workspace, base_url, ", ".join("%s=%s" % (t, n) for t, n in ordered))
+)
+
+if dry_run:
+    sys.stdout.write(rendered)
+    sys.exit(0)
+
+# Atomic write, so a partial file never gets imported.
+out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+try:
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=".claude-setup.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(rendered)
+        os.replace(tmp, out_path)
+    except Exception:
+        os.unlink(tmp)
+        raise
+except Exception as exc:
+    die(5, "cannot write %s: %s" % (out_path, exc))
+sys.stderr.write("[ug-bootstrap] wrote %s\n" % out_path)
+PYEOF
+
+if [ "$DRY_RUN" = "0" ]; then
+  printf '\nImport this file into Claude Desktop:\n  %s\n' "$OUT"
+  printf 'Help -> Troubleshooting -> Enable Developer Mode, then\n'
+  printf 'Developer -> Configure third-party inference -> import.\n\n'
+fi
+"""
+
+
+def _bootstrap_files(platform: str, install_dir: str, cred_command: str,
+                     ttl_sec: int, timeout_sec: int) -> dict[str, str]:
+    """Return the headless bootstrap script for a platform.
+
+    Only macOS and Linux get one. `ug configure` is the same command on Windows, but
+    this script is bash; a Windows port is a follow-up (see the runbook).
+    """
+    if platform == "windows":
+        return {}
+    script = (
+        _BOOTSTRAP_SH_TEMPLATE
+        .replace("__CONFIG_FILENAME__", CONFIG_FILENAME)
+        .replace("__MERGED_FILENAME__", MERGED_CONFIG_FILENAME)
+        .replace("__CRED_COMMAND__", cred_command)
+        .replace("__TTL_SEC__", str(ttl_sec))
+        .replace("__TIMEOUT_SEC__", str(timeout_sec))
+    )
+    return {BOOTSTRAP_FILENAME: script}
+
+
 def _cred_helper_files(platform: str, install_dir: str, profile: str) -> dict[str, str]:
     """Return the credential-helper file(s) for a platform, plus the command path.
 
@@ -477,35 +777,6 @@ class ClaudeDesktopGenerator(AgentGenerator):
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--skip-api-discovery",
-            action="store_true",
-            help=(
-                "Skip live discovery of each model service's supported_api_types. By "
-                "default the generator queries the workspace and includes only endpoints "
-                "that expose the Anthropic API; --skip-api-discovery falls back to the "
-                "--fallback-schema heuristic (for offline/--tf-output-json use)."
-            ),
-        )
-        parser.add_argument(
-            "--fallback-schema",
-            default="anthropic",
-            help="Schema assumed Anthropic-capable when discovery is skipped (default: anthropic).",
-        )
-        parser.add_argument(
-            "--default-tier",
-            default="sonnet",
-            choices=list(FAMILY_TIERS),
-            help="Family whose default model is listed first (Claude Desktop's default). Default: sonnet.",
-        )
-        parser.add_argument(
-            "--small-context",
-            action="store_true",
-            help=(
-                "Do not request 1M context. By default the opus and sonnet families are "
-                "listed with supports1m/prefer1m true; this flag lists them at native context."
-            ),
-        )
-        parser.add_argument(
             "--platforms",
             default=",".join(DEFAULT_PLATFORMS),
             help=(
@@ -534,13 +805,19 @@ class ClaudeDesktopGenerator(AgentGenerator):
             "--credential-ttl-sec",
             type=int,
             default=500,
-            help="credential.ttlSec: how long Claude Desktop caches the helper's token (default: 500).",
+            help=(
+                "credential.ttlSec: how long Claude Desktop caches the helper's token "
+                "(default: 500). Baked into the bootstrap, which writes the credential block."
+            ),
         )
         parser.add_argument(
             "--credential-timeout-sec",
             type=int,
             default=120,
-            help="credential.timeoutSec: how long the helper may run before timing out (default: 120).",
+            help=(
+                "credential.timeoutSec: how long the helper may run before timing out "
+                "(default: 120). Baked into the bootstrap, which writes the credential block."
+            ),
         )
         parser.add_argument(
             "--allow-websearch",
@@ -589,85 +866,6 @@ class ClaudeDesktopGenerator(AgentGenerator):
             ),
         )
 
-    # ---- model discovery (shared shape with claude-code) -------------------
-    def _select_anthropic_capable(self, ctx: GatewayContext, args: argparse.Namespace) -> list[Endpoint]:
-        candidates = ctx.endpoints
-        if not candidates:
-            raise SystemExit("No endpoints found in the Terraform outputs.")
-
-        if args.skip_api_discovery:
-            eps = [e for e in candidates if e.schema == args.fallback_schema]
-            print(f"[claude-desktop] discovery skipped; using schema '{args.fallback_schema}' "
-                  f"({len(eps)} endpoints).", file=sys.stderr)
-        else:
-            print(f"[claude-desktop] discovering supported_api_types for {len(candidates)} endpoints...",
-                  file=sys.stderr)
-            api_types = discover_api_types([e.full_name for e in candidates], args.profile)
-            eps = [e for e in candidates if ANTHROPIC_API_TYPE in api_types.get(e.full_name, [])]
-            skipped = sorted({e.schema for e in candidates} - {e.schema for e in eps})
-            print(f"[claude-desktop] {len(eps)}/{len(candidates)} endpoints expose {ANTHROPIC_API_TYPE}"
-                  + (f"; schemas without it: {', '.join(skipped)}" if skipped else ""),
-                  file=sys.stderr)
-
-        if not eps:
-            raise SystemExit(
-                f"No endpoints expose the Anthropic API ({ANTHROPIC_API_TYPE}) in this workspace, "
-                "so Claude Desktop cannot route through this gateway."
-            )
-
-        # Claude Desktop rejects any model whose name does not contain "claude". So we
-        # keep only the Claude endpoints (the app's own anthropic surface) and drop any
-        # other anthropic-API-capable model. Filter on the leaf name (the full_name
-        # carries it too).
-        claude_eps = [e for e in eps if "claude" in e.name.lower()]
-        dropped = [e.name for e in eps if e not in claude_eps]
-        if dropped:
-            print(f"[claude-desktop] dropping {len(dropped)} non-Claude model(s) "
-                  f"(Claude Desktop only accepts names containing 'claude'): {', '.join(sorted(dropped))}.",
-                  file=sys.stderr)
-        if not claude_eps:
-            raise SystemExit(
-                "No Claude models are available on this gateway. Claude Desktop only accepts "
-                "models whose name contains 'claude', so it cannot be configured here."
-            )
-        return claude_eps
-
-    def _model_entries(self, eps: list[Endpoint], args: argparse.Namespace) -> list[dict]:
-        """Build models.list, default-tier endpoint first (Claude Desktop's default).
-
-        Each entry uses the three-level UC full_name. supports1m/prefer1m follow the
-        opus/sonnet families (unless --small-context). The versionless alias of a
-        family is marked isFamilyDefault. anthropicFamilyTier is set only for the
-        tiers Claude Desktop recognizes.
-        """
-        large = not args.small_context
-
-        def entry(ep: Endpoint) -> dict:
-            tier = _family_tier(ep.name)
-            one_m = large and tier in LARGE_CONTEXT_FAMILIES
-            item: dict = {
-                "name": ep.full_name,
-                "supports1m": one_m,
-                "prefer1m": one_m,
-                "isFamilyDefault": ep.is_alias,
-            }
-            if tier in KNOWN_FAMILY_TIERS:
-                item["anthropicFamilyTier"] = tier
-            return item
-
-        # Order: the default-tier's alias (or first default-tier endpoint) first, so
-        # Claude Desktop's "first entry is default" picks the intended model.
-        def sort_key(ep: Endpoint) -> tuple:
-            tier = _family_tier(ep.name)
-            return (
-                tier != args.default_tier,   # default tier first
-                not ep.is_alias,             # alias before version pins
-                ep.schema,
-                ep.name,
-            )
-
-        return [entry(e) for e in sorted(eps, key=sort_key)]
-
     # ---- OTEL (traces only) ------------------------------------------------
     def _otel_traces_table(self, ctx: GatewayContext, args: argparse.Namespace) -> str | None:
         """The traces UC table to wire OTEL to, or None when telemetry is off/absent.
@@ -706,26 +904,14 @@ class ClaudeDesktopGenerator(AgentGenerator):
             "linux": args.install_dir_linux,
         }
 
-        eps = self._select_anthropic_capable(ctx, args)
-        model_list = self._model_entries(eps, args)
-
-        # The base config is identical across platforms except the absolute helper
-        # paths (credential.command, otlp.headersHelper), which are stamped per OS.
+        # The MDM-owned config: policy + telemetry only. No inference block and no
+        # model list — ug owns the workspace, the identity, and the models, and the
+        # generated bootstrap script splices those in from ~/.ucode/state.json.
+        #
+        # The base is identical across platforms except otlp.headersHelper, which is
+        # an absolute path stamped per OS below.
         base: dict = {
             "$schemaVersion": SCHEMA_VERSION,
-            "inference": {
-                "provider": "gateway",
-                "baseUrl": f"{ctx.host}/ai-gateway/anthropic",
-                "credential": {
-                    "kind": "helper-script",
-                    # command stamped per-platform below.
-                    "ttlSec": args.credential_ttl_sec,
-                    "timeoutSec": args.credential_timeout_sec,
-                },
-            },
-            "chatSurface": {"enabled": True},
-            "extensions": {"enabled": True},
-            "models": {"discoveryEnabled": False, "list": model_list},
             "workspace": {},
             "authentication": {},
         }
@@ -766,10 +952,18 @@ class ClaudeDesktopGenerator(AgentGenerator):
             install_dir = install_dirs[platform]
             cfg = copy.deepcopy(base)
 
+            # The credential helper's absolute path is not written into the MDM config
+            # (there is no inference block there). It is baked into the bootstrap, which
+            # writes the inference block that references it.
             cred_cmd = _platform_path(install_dir, _cred_command_filename(platform), platform)
-            cfg["inference"]["credential"]["command"] = cred_cmd
 
             helper_files = _cred_helper_files(platform, install_dir, profile)
+            helper_files.update(
+                _bootstrap_files(
+                    platform, install_dir, cred_cmd,
+                    args.credential_ttl_sec, args.credential_timeout_sec,
+                )
+            )
 
             if traces_table:
                 cfg["otlp"]["headersHelper"] = _platform_path(
@@ -796,11 +990,15 @@ class ClaudeDesktopGenerator(AgentGenerator):
             "linux": args.install_dir_linux,
         }
         lines = [
-            "Per-platform bundles were written to claude-desktop/<platform>/. Claude Desktop",
-            "reads an operator-imported config, so the deploy flow is import-then-export:",
+            "Per-platform bundles were written to claude-desktop/<platform>/.",
             "",
-            "1. Install the helper scripts from each bundle to that OS's helper directory",
-            "   (the absolute paths inside claude-setup.json already point there):",
+            "claude-setup.json carries POLICY + TELEMETRY only. It has no inference block and",
+            "no model list: ug owns the workspace, the identity, and the models. The generated",
+            "ug-bootstrap-claude-desktop.sh runs `ug configure`, reads what ug decided out of",
+            "~/.ucode/state.json, and writes the complete config as claude-setup.merged.json.",
+            "",
+            "1. Install the helper scripts to that OS's helper directory (the absolute paths",
+            "   baked into the bootstrap already point there):",
         ]
         for p in platforms:
             lines.append(f"     {p:8}: {install_dirs[p]}")
@@ -809,19 +1007,31 @@ class ClaudeDesktopGenerator(AgentGenerator):
             "     Windows: place databricks-token.cmd + .ps1 (and the OTEL pair) via Intune or",
             "     a machine-wide script (install.sh is POSIX and does not run on Windows).",
             "",
-            "2. Import the JSON into Claude Desktop:",
+            "2. Run the bootstrap to produce the importable config (macOS/Linux):",
+            "     sh ug-bootstrap-claude-desktop.sh --profile <profile>",
+            "   Add --use-pat for a fully non-interactive run (CI, or a device-management",
+            "   payload); it needs the PAT already present in ~/.databrickscfg. Without it, ug",
+            "   runs a one-time browser OAuth login. Add --dry-run to inspect the merged JSON.",
+            "   Windows has no bootstrap yet — run `ug configure --agents claude` and build the",
+            "   inference + models block by hand (see the runbook).",
+            "",
+            "3. Import claude-setup.merged.json into Claude Desktop:",
             "     Help -> Troubleshooting -> Enable Developer Mode, then",
-            "     Developer -> Configure third-party inference -> import claude-setup.json.",
+            "     Developer -> Configure third-party inference -> import.",
             "",
-            "3. Test the connection, then export the MDM profile from the app",
+            "4. Test the connection, then export the MDM profile from the app",
             "   (.mobileconfig on macOS, .reg on Windows). The app produces the MDM artifacts;",
-            "   this generator does not.",
+            "   this generator does not. Push ONLY the policy + telemetry keys to the fleet —",
+            "   leave inference and models to ug on each device.",
             "",
-            "Each developer authenticates once (browser OAuth, cannot be pushed by MDM):",
-            "  databricks auth login --host <workspace-url> --profile <profile>",
-            "",
-            "The credential helper needs the Databricks CLI installed (it resolves the CLI by",
-            "absolute path, not $PATH, because Claude Desktop starts under launchd).",
+            "The credential helper is a thin wrapper around `ucode auth-token` — ug's own",
+            "token helper, and the same one Claude Code's apiKeyHelper and Codex already use.",
+            "So Claude Desktop authenticates as the same identity, through the same code path,",
+            "as every ug-launched agent. ug supplies the workspace, the profile, static-PAT",
+            "support, token-cache lock retries, and non-interactive re-auth; the wrapper only",
+            "strips ug's trailing newline and resolves the binary by absolute path (Claude",
+            "Desktop starts under launchd with a minimal PATH). Set UCODE_BIN to override that",
+            "path. It needs no jq and no python3.",
         ]
         if args.telemetry != "off":
             lines += [

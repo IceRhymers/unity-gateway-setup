@@ -367,9 +367,11 @@ _default_files_for() {
       [ -e "${_dff_dir}/emit_hook_events.sh" ] && printf ' emit_hook_events.sh'
       ;;
     claude-desktop)
-      # Helper scripts only (the JSON is imported into the app, never placed here).
+      # Helper scripts and the ug bootstrap only. Neither claude-setup.json nor the
+      # merged config it produces is placed here: the operator imports those.
       printf 'databricks-token.sh'
-      [ -e "${_dff_dir}/otel-headers-helper.sh" ] && printf ' otel-headers-helper.sh'
+      [ -e "${_dff_dir}/otel-headers-helper.sh" ]            && printf ' otel-headers-helper.sh'
+      [ -e "${_dff_dir}/ug-bootstrap-claude-desktop.sh" ]    && printf ' ug-bootstrap-claude-desktop.sh'
       ;;
   esac
   printf '\n'
@@ -539,11 +541,12 @@ _check_prereqs() {
 
   # python3 is used by the claude-code/codex auth helpers and by every OTEL/hook
   # helper (they shell out to 'python3 -c' on each token mint). It is NOT used by
-  # the claude-desktop credential helper (bash + sed only). So it is critical only
-  # when a selected agent actually needs it: claude-code or codex, or
-  # claude-desktop WITH its OTEL helper present. A claude-desktop-only, telemetry-off
-  # install therefore does not require python3. A DATABRICKS_BEARER-only deployment
-  # also short-circuits the auth helpers, so python3 is informational there too.
+  # the claude-desktop credential helper, which only runs 'ucode auth-token' and
+  # strips a newline. So it is critical only when a selected agent actually needs
+  # it: claude-code or codex, or claude-desktop WITH its OTEL helper present. A
+  # claude-desktop-only, telemetry-off install therefore does not require python3.
+  # A DATABRICKS_BEARER-only deployment also short-circuits the auth helpers, so
+  # python3 is informational there too.
   _prereq_py=0
   if _contains "${AGENTS}" "claude-code" || _contains "${AGENTS}" "codex"; then
     _prereq_py=1
@@ -562,12 +565,27 @@ _check_prereqs() {
       critical
   else
     _one_check python3 \
-      "selected agents need no python3 (claude-desktop credential helper uses bash + sed only)." \
+      "selected agents need no python3 (claude-desktop credential helper only runs 'ucode auth-token')." \
       info
   fi
   _one_check databricks \
     "Databricks CLI: required for token minting via 'databricks auth token'." \
     critical
+
+  # The claude-desktop credential helper mints every token with 'ucode auth-token'
+  # (ug's own cross-platform token helper), and the bootstrap runs 'ug configure'.
+  # So ug must be installed on the device. The helper resolves the binary from an
+  # absolute-path candidate list, so ug does not have to be on the installer's PATH
+  # — report it, but do not fail the run when only the other name is present.
+  if _contains "${AGENTS}" "claude-desktop"; then
+    if command -v ucode >/dev/null 2>&1; then
+      _one_check ucode "claude-desktop: mints tokens via 'ucode auth-token'." info
+    else
+      _one_check ug \
+        "claude-desktop: mints tokens via 'ucode auth-token'; bootstrap runs 'ug configure'. Set UCODE_BIN if not on PATH." \
+        info
+    fi
+  fi
 
   if [ "${_prereq_emit}" = "1" ]; then
     _one_check jq   "emit_hook_events.sh: builds JSON payloads [bundle contains emitter — critical]" critical
@@ -684,11 +702,17 @@ _install_codex() {
 # Claude Desktop installation
 # ---------------------------------------------------------------------------
 # Claude Desktop reads an OPERATOR-IMPORTED config, so install.sh does NOT place
-# claude-setup.json. It places only the helper scripts the JSON references by
-# absolute path (databricks-token.sh + the optional otel-headers-helper.sh). The
-# operator imports the JSON in the app, then exports the OS-native MDM profile.
+# claude-setup.json. It places the helper scripts the config references by absolute
+# path (databricks-token.sh + the optional otel-headers-helper.sh) and the ug
+# bootstrap (ug-bootstrap-claude-desktop.sh).
+#
+# claude-setup.json carries POLICY + TELEMETRY only. ug owns the workspace, the
+# identity, and the models, so the bootstrap runs `ug configure` and splices the
+# inference + models block in from ~/.ucode/state.json. The operator imports the
+# merged result, then exports the OS-native MDM profile from the app.
+#
 # Windows helpers (.cmd + .ps1) are placed by Intune or a machine-wide script;
-# this POSIX installer runs on macOS/Linux only.
+# this POSIX installer runs on macOS/Linux only, and there is no Windows bootstrap yet.
 _install_claude_desktop() {
   _cd_raw="$(_raw_dir_for "${OS}" "claude-desktop")"
   _cd_dir="${TARGET_ROOT:-}${_cd_raw}"
@@ -721,12 +745,24 @@ _install_claude_desktop() {
     _cd_files="${_cd_files} otel-headers-helper.sh"
   fi
 
+  # The ug bootstrap. It is what turns the MDM-owned policy+telemetry config into a
+  # complete one, by reading the workspace, profile, base URL, and model pins that
+  # `ug configure` recorded. Placing it beside the helpers keeps one directory to
+  # distribute, though it may be run from anywhere.
+  if [ -f "${_cd_src}/ug-bootstrap-claude-desktop.sh" ]; then
+    _action_copy  "${_cd_src}/ug-bootstrap-claude-desktop.sh" "${_cd_dir}/ug-bootstrap-claude-desktop.sh"
+    _action_chmod 755 "${_cd_dir}/ug-bootstrap-claude-desktop.sh"
+    _cd_files="${_cd_files} ug-bootstrap-claude-desktop.sh"
+  fi
+
   _action_chown "${_owner}" "${_cd_dir}"
 
   _write_version_marker "claude-desktop" "${_cd_dir}" "${_cd_src}" "${_cd_files}"
 
-  _info "  note   : import claude-setup.json in the app (Developer -> Configure"
-  _info "           third-party inference), then export the MDM profile from the app."
+  _info "  note   : claude-setup.json carries policy + telemetry only. Run"
+  _info "           ug-bootstrap-claude-desktop.sh to add inference + models from ug,"
+  _info "           then import the merged config in the app (Developer -> Configure"
+  _info "           third-party inference) and export the MDM profile from there."
 }
 
 # ---------------------------------------------------------------------------

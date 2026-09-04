@@ -185,10 +185,15 @@ dsh-install-local: ## Generate the DeepSeek Harness patch + plugin + install the
 
 # ---- claude-desktop local test install ----
 # Claude Desktop reads an operator-imported config, so there is no config file to
-# place. Only the helper scripts the JSON references need to exist on disk. This
-# target generates a bundle for THIS OS with the helper path set to a user-writable
-# dir, then places the helper scripts there — so you can import claude-setup.json in
-# the app and test it without root. Override CD_LOCAL_DIR / CD_OS as needed.
+# place. Only the helper scripts need to exist on disk. This target generates a
+# bundle for THIS OS with the helper path set to a user-writable dir, then places
+# the helper scripts there — so you can test without root. Override CD_LOCAL_DIR /
+# CD_OS as needed.
+#
+# The generated claude-setup.json carries POLICY + TELEMETRY only. Run the bundle's
+# ug-bootstrap-claude-desktop.sh next: it runs `ug configure`, reads the workspace,
+# profile, base URL, and model pins from ~/.ucode/state.json, and writes the
+# claude-setup.merged.json you actually import.
 CD_UNAME_S := $(shell uname -s)
 CD_OS ?= $(if $(filter Darwin,$(CD_UNAME_S)),macos,linux)
 CD_LOCAL_DIR ?= $(if $(filter macos,$(CD_OS)),$(HOME)/Library/Application Support/ClaudeDesktop,$(HOME)/.config/claude-desktop)
