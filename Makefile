@@ -24,8 +24,12 @@ endif
 # wired to the remote backend.
 TF_WRAP   ?= terraform/bootstrap/with-state.sh
 # Every generator invocation READS Terraform outputs, so it goes through the
-# wrapper that injects the Lakebase state credentials.
-AGENT_GEN ?= $(TF_WRAP) $(PYTHON) agent_setups/scripts/generate.py
+# wrapper that injects the Lakebase state credentials. TF_STATE_DIR is required
+# here: the generator runs `terraform -chdir=$(TF_DIR) output -json` from inside
+# Python, so the wrapper sees no -chdir= in its own argv and cannot infer the
+# directory. Without it the wrapper passes through with no credentials and the
+# pg backend dials libpq's default 127.0.0.1:5432.
+AGENT_GEN ?= TF_STATE_DIR=$(TF_DIR) $(TF_WRAP) $(PYTHON) agent_setups/scripts/generate.py
 # Share one provider download between .terraform and .terraform.validate.
 export TF_PLUGIN_CACHE_DIR ?= $(HOME)/.terraform.d/plugin-cache
 # Where generated configs land. The docker-config* targets override this to the
