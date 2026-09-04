@@ -11,9 +11,10 @@ Run this procedure once, in one terminal, before any operator runs `make tf-init
 
 **Preconditions:**
 
-- A workspace admin created the workspace-level Databricks group `terraform_writers`.
-- A workspace admin added you to that group.
 - You have a Databricks CLI profile that authenticates to the correct workspace.
+- You have workspace-admin rights, OR a workspace admin already created the group
+  `terraform_writers` and added you to it. The bootstrap creates the group and adds you
+  when it is absent. This action needs workspace-admin rights.
 
 Steps:
 
@@ -31,18 +32,18 @@ object owner, and token expiry time. It never prints the token.
 
 ## Onboarding a Second Operator
 
-An existing group member performs steps 1 and 2. The new operator performs steps 3,
-4, and 5.
+A workspace admin performs step 1. The new operator performs steps 2, 3, and 4.
 
-1. A workspace admin adds the new operator to the workspace-level group `terraform_writers`.
-2. An existing member runs `bootstrap-state.sh --grant-to <email> --profile <p>`.
-3. The new operator runs `databricks auth login --profile <p>`.
-4. The new operator runs `make tf-bootstrap-state ARGS=--env-only PROFILE=<p>`.
-5. The new operator runs `make tf-init PROFILE=<p>`.
+1. A workspace admin runs `bootstrap-state.sh --grant-to <email> --profile <p>`. This
+   adds the new operator to the workspace group `terraform_writers`.
+2. The new operator runs `databricks auth login --profile <p>`.
+3. The new operator runs `make tf-bootstrap-state ARGS=--env-only PROFILE=<p>`.
+4. The new operator runs `make tf-init PROFILE=<p>`.
 
-No credential is shared at any step. The Makefile default profile is `fevm-west`. If
-your profile name is different, pass `PROFILE=<your-profile>` to every `make tf-*`
-command.
+The new operator does not need their own Postgres role. They assume the group role
+`terraform_writers`, the same as every other member. No credential is shared at any
+step. The Makefile default profile is `fevm-west`. If your profile name is different,
+pass `PROFILE=<your-profile>` to every `make tf-*` command.
 
 ---
 
@@ -178,20 +179,22 @@ can change how subsequent steps work.
 
 ---
 
-**L1a.**
+**L1a. Resolved.**
 
-Determine whether Lakebase creates a Postgres role automatically on the first OAuth
-login. Record the result. The result determines whether `--grant-to` must run
-`create-role` or only issue `GRANT`.
+Lakebase creates a Postgres USER role automatically. The workspace admin who first
+connects gets a role whose `postgres_role` is their email and who owns the database.
+The `--grant-to` path does not create a Postgres role. It adds the principal to the
+workspace group, and the principal assumes the shared group role.
 
 ---
 
-**L1b.**
+**L1b. Resolved.**
 
-Run `psql "sslmode=verify-full sslrootcert=system"` against the state endpoint.
-`sslrootcert=system` requires libpq 16. The local `psql` client is v14. Record what
-actually happens. Do not write expected output before you observe it. If the command
-succeeds, update the default `PGSSLMODE` in `.lakebase.env` to `verify-full`.
+The default `PGSSLMODE` is `verify-full`. Lakebase requires TLS SNI. The Terraform pg
+backend uses Go `lib/pq`, which sends SNI only for `verify-full`. Go verifies against the
+system root store, and Lakebase uses a public CA, so no `sslrootcert` is needed. The
+bootstrap DDL keeps `sslmode=require` because `psql` sends SNI even with `require`, and
+the local `psql` v14 does not support `sslrootcert=system`.
 
 ---
 

@@ -1,0 +1,24 @@
+[
+  {
+    "role_id": "tanner-wendland",
+    "name": "projects/unity-gateway-tfstate/branches/production/roles/tanner-wendland",
+    "parent": "projects/unity-gateway-tfstate/branches/production",
+    "status": {
+      "auth_method": "LAKEBASE_OAUTH_V1",
+      "identity_type": "USER",
+      "postgres_role": "tanner.wendland@databricks.com",
+      "role_id": "tanner-wendland"
+    }
+  },
+  {
+    "role_id": "terraform-writers",
+    "name": "projects/unity-gateway-tfstate/branches/production/roles/terraform-writers",
+    "parent": "projects/unity-gateway-tfstate/branches/production",
+    "status": {
+      "auth_method": "LAKEBASE_OAUTH_V1",
+      "identity_type": "GROUP",
+      "postgres_role": "terraform_writers",
+      "role_id": "terraform-writers"
+    }
+  }
+]

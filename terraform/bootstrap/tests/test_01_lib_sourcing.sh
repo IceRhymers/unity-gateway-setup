@@ -23,16 +23,18 @@ if [ "${_out}" != "END" ]; then
   exit 1
 fi
 
-# The six documented functions must be defined after sourcing.
+# Every documented function must be defined after sourcing.
 # shellcheck disable=SC1090
 . "${LIB}"
 for _fn in lb_require_cmd lb_pick_host lb_assert_direct_host \
-           lb_parse_env lb_render_env lb_mint_token; do
+           lb_parse_env lb_render_env lb_mint_token \
+           lb_project_count lb_role_count lb_db_name \
+           lb_group_id lb_group_has_member; do
   if ! command -v "${_fn}" >/dev/null 2>&1; then
     printf 'FAIL: %s — function not defined after sourcing: %s\n' "${T}" "${_fn}"
     exit 1
   fi
 done
 
-printf '  ok: library sources cleanly and defines all six lb_ functions\n'
+printf '  ok: library sources cleanly and defines all lb_ functions\n'
 printf 'PASS: %s\n' "${T}"

@@ -8,18 +8,30 @@ backend for `terraform/infra`.
 `bootstrap-state.sh` runs once per workspace. It performs these steps:
 
 1. Creates (or reuses) the Lakebase project `unity-gateway-tfstate`.
-2. Creates the group role `terraform_writers`, backed by the workspace-level Databricks
-   group of the same name.
-3. Resolves the direct endpoint host and runs the pooler guard.
-4. Creates the state schema, sequence, table, and index in `tfstate_infra` using
-   `sql/create-state-objects.sql`.
-5. Transfers ownership of all state objects to `terraform_writers`.
-6. Writes `terraform/infra/.lakebase.env` with the host, port, database, and connection
-   parameters.
+2. Creates the workspace-level Databricks group `terraform_writers` if it is absent, and
+   adds you to it. This step needs workspace-admin rights.
+3. Creates the Lakebase group role `terraform_writers`, backed by that workspace group.
+4. Resolves the direct endpoint host and runs the pooler guard.
+5. Grants the group role `CREATE` on the database, connected as the database owner.
+6. Creates the state schema, sequence, table, and index in `tfstate_infra`, connected
+   as the group role, so the group role owns them.
+7. Writes `terraform/infra/.lakebase.env` with the host, port, database, role, and
+   connection parameters.
+
+You do not inherit a Lakebase group role. You authenticate as it. A member of the
+workspace group `terraform_writers` connects to Postgres as the role `terraform_writers`.
+Every operator uses the same login role, so they share the state objects the role owns.
+The Databricks token-mint audit log records which person minted each credential.
+
+The Databricks resource id and the Postgres name of an object differ. The resource id
+allows only lowercase letters, digits, and hyphens. The Postgres name allows underscores.
+The bootstrap uses the group role id `terraform-writers` and the Postgres role name
+`terraform_writers`. It uses the database resource id `databricks-postgres` and the
+Postgres database name `databricks_postgres`.
 
 `with-state.sh` wraps every state-touching Makefile target. Before each Terraform call
-it sanitizes the Postgres environment, mints a short-lived OAuth token, and exports it
-as `PGPASSWORD`.
+it sanitizes the Postgres environment, sets `PGUSER` to the group role, mints a
+short-lived OAuth token, and exports it as `PGPASSWORD`.
 
 `lakebase-env.sh --print` emits the full credential environment. Use it only for the
 alternative rollback path described in `RUNBOOK.md`.
@@ -45,7 +57,7 @@ The scripts require three tools. The bootstrap hard-fails if any is missing:
 | `--project <id>` | Lakebase project ID. Default: `unity-gateway-tfstate`. |
 | `--tf-dir <path>` | Directory where `.lakebase.env` is written. Default: `terraform/infra`. |
 | `--env-only` | Resolve the project and endpoint, run the pooler guard, and write `.lakebase.env`. Runs no DDL. Requires no group membership. Use this to wire an existing installation to a new checkout. |
-| `--grant-to <principal>` | Create a `USER`-type Postgres role for the given identity and grant it membership in the group role. Run by an existing group member to onboard a new operator. |
+| `--grant-to <principal>` | Add the given principal to the workspace group `terraform_writers`. The principal then operates the backend by assuming the group role. Needs workspace-admin rights. |
 | `--dry-run` | Make no API calls. Render `.lakebase.env` with documented placeholder values to `--out`. |
 | `--out <dir>` | Override the output directory for `--dry-run`. |
 | `--force` | Overwrite an existing `.lakebase.env` without prompting. |

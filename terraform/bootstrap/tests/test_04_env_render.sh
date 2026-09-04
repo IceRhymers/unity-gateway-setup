@@ -35,8 +35,9 @@ if [ ! -f "${_env}" ]; then
   exit 1
 fi
 
-# Required content.
-for _needle in 'LAKEBASE_SCHEMA' 'LAKEBASE_PROJECT' 'PGSSLMODE=require'; do
+# Required content. LAKEBASE_ROLE is the group role the wrapper connects AS.
+# PGSSLMODE is verify-full so the Go pg backend sends TLS SNI (Lakebase needs it).
+for _needle in 'LAKEBASE_SCHEMA' 'LAKEBASE_PROJECT' 'LAKEBASE_ROLE=' 'PGSSLMODE=verify-full'; do
   if ! grep -q "${_needle}" "${_env}"; then
     printf 'FAIL: %s — .lakebase.env is missing %s\n' "${T}" "${_needle}"
     exit 1

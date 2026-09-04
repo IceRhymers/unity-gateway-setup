@@ -120,9 +120,17 @@ fi
 
 _profile="${PROFILE:-${DATABRICKS_PROFILE:-fevm-west}}"
 
-# Resolve PGUSER at run time from the caller's own Databricks identity.
-# This keeps .lakebase.env byte-identical across operators (plan §3.d).
-PGUSER=$(databricks current-user me -o json --profile "${_profile}" | jq -r .userName)
+# Connect AS the group role. In Lakebase you do not inherit a group role; a
+# member of the backing workspace group authenticates as it. Every operator uses
+# the same login role, so the state objects the role owns are shared. The token
+# below authorizes the human; PGUSER selects the role. .lakebase.env stays
+# byte-identical across operators because LAKEBASE_ROLE is the same for all.
+PGUSER="${LAKEBASE_ROLE:-}"
+if [ -z "${PGUSER}" ]; then
+    printf 'FATAL: LAKEBASE_ROLE is missing from %s.\n' "${_env_file}" >&2
+    printf 'Re-run the bootstrap to regenerate it: make tf-bootstrap-state\n' >&2
+    exit 1
+fi
 export PGUSER
 
 # Mint a per-invocation OAuth token into PGPASSWORD.
@@ -132,7 +140,7 @@ export PGUSER
 # -o json is required - the CLI defaults to text output, and piping text into
 # jq yields an empty result plus a misleading error further downstream.
 _cred=$(databricks postgres generate-database-credential "${LAKEBASE_ENDPOINT:-}" \
-    --ttl 3600 -o json --profile "${_profile}")
+    --ttl 3600s -o json --profile "${_profile}")
 PGPASSWORD=$(printf '%s' "${_cred}" | jq -r '.token // empty')
 _expires=$(printf '%s' "${_cred}" | jq -r '.expire_time // empty')
 unset _cred

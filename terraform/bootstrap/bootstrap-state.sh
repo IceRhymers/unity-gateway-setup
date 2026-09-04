@@ -162,13 +162,20 @@ fi
 _ENV_FILE="${_OUT}/.lakebase.env"
 
 # Derived path constants.
+# Lakebase separates the resource id (hyphens only, pattern
+# ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$) from the underlying Postgres name
+# (underscores allowed). The default database has resource id
+# `databricks-postgres` but Postgres name `databricks_postgres`; the group role
+# likewise needs a hyphenated resource id. Keep the two forms separate.
 _BRANCH="production"
 _ENDPOINT_NAME="primary"
-_DATABASE="databricks_postgres"
+_DATABASE="databricks_postgres"          # Postgres database name -> PGDATABASE
+_DATABASE_ID="databricks-postgres"       # Lakebase resource id -> API path
+_GROUP_ID="$(printf '%s' "${_GROUP}" | tr '_' '-')"  # hyphenated role_id for the group
 _PROJECT_PATH="projects/${_PROJECT}"
 _BRANCH_PATH="${_PROJECT_PATH}/branches/${_BRANCH}"
 _ENDPOINT_PATH="${_BRANCH_PATH}/endpoints/${_ENDPOINT_NAME}"
-_DATABASE_PATH="${_BRANCH_PATH}/databases/${_DATABASE}"
+_DATABASE_PATH="${_BRANCH_PATH}/databases/${_DATABASE_ID}"
 
 # ---------------------------------------------------------------------------
 # --dry-run: zero API calls, render placeholders, done.
@@ -192,10 +199,11 @@ if [ "${_DRY_RUN}" = "1" ]; then
   LB_BRANCH="${_BRANCH}"
   LB_ENDPOINT="${_ENDPOINT_PATH}"
   LB_SCHEMA="${_SCHEMA}"
+  LB_ROLE="${_GROUP}"
   LB_PROFILE="${_PROFILE}"
   LB_GEN_SHA="${_sha}"
   export LB_HOST LB_PORT LB_DATABASE LB_PROJECT LB_BRANCH \
-         LB_ENDPOINT LB_SCHEMA LB_PROFILE LB_GEN_SHA
+         LB_ENDPOINT LB_SCHEMA LB_ROLE LB_PROFILE LB_GEN_SHA
   # Idempotency guard (plan §7, test_05): render to a temp file first, then
   # compare. An existing byte-identical file is left in place. An existing file
   # that differs is a refusal (exit 3) unless --force overwrites it.
@@ -227,30 +235,58 @@ lb_require_cmd jq
 lb_require_cmd psql
 
 # ---------------------------------------------------------------------------
-# Resolve operator identity and assert group membership (full mode only).
-# --env-only and --grant-to skip the membership check.
+# Resolve operator identity.
 # ---------------------------------------------------------------------------
 _ME="$(databricks current-user me -o json --profile "${_PROFILE}" | jq -r '.userName')"
+_MY_ID="$(databricks current-user me -o json --profile "${_PROFILE}" | jq -r '.id // empty')"
 if [ -z "${_ME}" ]; then
   _fatal "Could not resolve current user from profile ${_PROFILE}."
 fi
 _info "Operator: ${_ME}"
 
+# ---------------------------------------------------------------------------
+# Resolve or create the workspace group, and ensure the operator is a member.
+# The Lakebase GROUP role maps to this workspace group by name, so the group
+# must exist before the role is created. Group members inherit the group role
+# through OAuth, so the operator must be a member to operate the backend.
+# Creating a group and adding a member both require workspace-admin rights.
+# --env-only and --grant-to skip this block.
+# ---------------------------------------------------------------------------
 if [ "${_ENV_ONLY}" = "0" ] && [ -z "${_GRANT_TO}" ]; then
-  # Verify the operator is a member of the group.
-  # Hard-fail with the instruction if not — ALTER ... OWNER TO requires membership.
-  _info "Checking group membership in ${_GROUP}..."
-  _member_check="$(databricks groups get-member "${_GROUP}" \
-    --profile "${_PROFILE}" -o json 2>/dev/null \
-    | jq -r --arg u "${_ME}" '
-        .members // [] | map(select(.display == $u or .value == $u)) | length
-      ' 2>/dev/null || printf '0')"
-  if [ "${_member_check}" = "0" ]; then
-    _fatal "Operator '${_ME}' is not a member of group '${_GROUP}'.
-  Both ALTER ... OWNER TO and SET ROLE require membership.
-  Ask a workspace admin to add ${_ME} to the '${_GROUP}' workspace group, then re-run."
+  _info "Resolving workspace group: ${_GROUP}..."
+  _group_id="$(databricks groups list -o json --profile "${_PROFILE}" 2>/dev/null \
+    | lb_group_id "${_GROUP}" 2>/dev/null || printf '')"
+
+  if [ -z "${_group_id}" ]; then
+    _info "Group not found. Creating workspace group: ${_GROUP}..."
+    _group_id="$(databricks groups create --display-name "${_GROUP}" \
+      -o json --profile "${_PROFILE}" 2>/dev/null | jq -r '.id // empty')"
+    if [ -z "${_group_id}" ]; then
+      _fatal "Could not create workspace group '${_GROUP}'.
+  Creating a group requires workspace-admin rights.
+  Ask a workspace admin to create the '${_GROUP}' group, then re-run."
+    fi
+    _info "Group created (id: ${_group_id})."
+  else
+    _info "Group already exists (id: ${_group_id})."
   fi
-  _info "Group membership confirmed."
+
+  # Ensure the operator is a member.
+  _is_member="$(databricks groups get "${_group_id}" -o json --profile "${_PROFILE}" 2>/dev/null \
+    | lb_group_has_member "${_MY_ID}" 2>/dev/null || printf '0')"
+  if [ "${_is_member}" != "0" ] && [ -n "${_is_member}" ]; then
+    _info "Operator is already a member of ${_GROUP}."
+  else
+    _info "Adding operator to ${_GROUP}..."
+    if ! databricks groups patch "${_group_id}" -o json --profile "${_PROFILE}" \
+      --json "{\"schemas\":[\"urn:ietf:params:scim:api:messages:2.0:PatchOp\"],\"Operations\":[{\"op\":\"add\",\"path\":\"members\",\"value\":[{\"value\":\"${_MY_ID}\"}]}]}" \
+      > /dev/null 2>&1; then
+      _fatal "Could not add operator '${_ME}' to group '${_GROUP}'.
+  Adding a member requires workspace-admin rights.
+  Ask a workspace admin to add ${_ME} to the '${_GROUP}' group, then re-run."
+    fi
+    _info "Operator added to ${_GROUP}."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -259,38 +295,37 @@ fi
 if [ -n "${_GRANT_TO}" ]; then
   _info "Onboarding operator: ${_GRANT_TO}"
 
-  # Check if a role already exists for this identity.
-  _existing_role="$(databricks postgres list-roles "${_BRANCH_PATH}" \
-    -o json --profile "${_PROFILE}" \
-    | jq -r --arg id "${_GRANT_TO}" \
-        '.roles // [] | map(select(.spec.postgresRole == $id)) | length' \
-    2>/dev/null || printf '0')"
-
-  if [ "${_existing_role}" = "0" ]; then
-    _info "Creating USER role for ${_GRANT_TO}..."
-    databricks postgres create-role "${_BRANCH_PATH}" \
-      --role-id "${_GRANT_TO}" -o json --profile "${_PROFILE}" \
-      --json "{\"spec\":{\"identity_type\":\"USER\",\"postgres_role\":\"${_GRANT_TO}\",\"auth_method\":\"LAKEBASE_OAUTH_V1\"}}" \
-      > /dev/null
-    _info "Role created."
-  else
-    _info "Role already exists for ${_GRANT_TO}; skipping create-role."
+  # Onboarding is a workspace-group add. A member of the group assumes the group
+  # role and operates the backend. No Postgres role and no SQL GRANT are needed.
+  _grant_group_id="$(databricks groups list -o json --profile "${_PROFILE}" 2>/dev/null \
+    | lb_group_id "${_GROUP}" 2>/dev/null || printf '')"
+  if [ -z "${_grant_group_id}" ]; then
+    _fatal "Workspace group '${_GROUP}' does not exist yet.
+  Run the full bootstrap once first: make tf-bootstrap-state PROFILE=${_PROFILE}"
   fi
 
-  # Mint a token to issue the GRANT.
-  _info "Minting token to issue GRANT..."
-  _grant_token="$(lb_mint_token "${_ENDPOINT_PATH}" "${_PROFILE}")"
-  if [ -z "${_grant_token}" ]; then
-    _fatal "Token mint returned empty string."
+  # Resolve the principal's SCIM id.
+  _grant_user_id="$(databricks users list \
+    --filter "userName eq \"${_GRANT_TO}\"" -o json --profile "${_PROFILE}" 2>/dev/null \
+    | jq -r '[ .[]? | .id ][0] // empty')"
+  if [ -z "${_grant_user_id}" ]; then
+    _fatal "Could not find a workspace user with userName '${_GRANT_TO}'.
+  Confirm the principal exists in this workspace, then re-run."
   fi
 
-  PGPASSWORD="${_grant_token}" \
-  PGHOST="$(databricks postgres get-endpoint "${_ENDPOINT_PATH}" -o json --profile "${_PROFILE}" | jq -r '.status.hosts.host')" \
-  PGPORT="$(databricks postgres get-endpoint "${_ENDPOINT_PATH}" -o json --profile "${_PROFILE}" | jq -r '.status.hosts.port // "5432"')" \
-  PGDATABASE="${_DATABASE}" PGUSER="${_ME}" PGSSLMODE="require" \
-    psql -v ON_ERROR_STOP=1 -c "GRANT \"${_GROUP}\" TO \"${_GRANT_TO}\";"
+  if [ "$(databricks groups get "${_grant_group_id}" -o json --profile "${_PROFILE}" 2>/dev/null \
+          | lb_group_has_member "${_grant_user_id}" 2>/dev/null || printf '0')" != "0" ]; then
+    _info "${_GRANT_TO} is already a member of ${_GROUP}."
+    exit 0
+  fi
 
-  _info "GRANT issued. ${_GRANT_TO} is now a member of ${_GROUP}."
+  _info "Adding ${_GRANT_TO} to ${_GROUP}..."
+  if ! databricks groups patch "${_grant_group_id}" -o json --profile "${_PROFILE}" \
+    --json "{\"schemas\":[\"urn:ietf:params:scim:api:messages:2.0:PatchOp\"],\"Operations\":[{\"op\":\"add\",\"path\":\"members\",\"value\":[{\"value\":\"${_grant_user_id}\"}]}]}" \
+    > /dev/null 2>&1; then
+    _fatal "Could not add ${_GRANT_TO} to '${_GROUP}' (needs workspace-admin rights)."
+  fi
+  _info "${_GRANT_TO} is now a member of ${_GROUP}. They can operate the backend after 'make tf-bootstrap-state ARGS=--env-only'."
   exit 0
 fi
 
@@ -298,10 +333,8 @@ fi
 # Resolve or create the project.
 # ---------------------------------------------------------------------------
 _info "Checking for Lakebase project: ${_PROJECT}..."
-_project_exists="$(databricks postgres list-projects -o json --profile "${_PROFILE}" \
-  | jq -r --arg p "${_PROJECT}" \
-      '.projects // [] | map(select(.spec.projectId == $p or .name == $p)) | length' \
-  2>/dev/null || printf '0')"
+_project_exists="$(databricks postgres list-projects -o json --profile "${_PROFILE}" 2>/dev/null \
+  | lb_project_count "${_PROJECT}" 2>/dev/null || printf '0')"
 
 if [ "${_project_exists}" = "0" ]; then
   _info "Project not found. Creating: ${_PROJECT}..."
@@ -326,8 +359,9 @@ _info "Host: ${_host}  Port: ${_port}"
 # Resolve database name.
 # ---------------------------------------------------------------------------
 _info "Resolving database: ${_DATABASE_PATH}..."
-_db="$(databricks postgres get-database "${_DATABASE_PATH}" -o json --profile "${_PROFILE}" \
-  | jq -r '.spec.databaseName // "databricks_postgres"')"
+_db="$(databricks postgres get-database "${_DATABASE_PATH}" -o json --profile "${_PROFILE}" 2>/dev/null \
+  | lb_db_name)"
+[ -n "${_db}" ] || _db="${_DATABASE}"
 _info "Database: ${_db}"
 
 # ---------------------------------------------------------------------------
@@ -362,10 +396,11 @@ _write_env() {
   LB_BRANCH="${_BRANCH}"
   LB_ENDPOINT="${_ENDPOINT_PATH}"
   LB_SCHEMA="${_SCHEMA}"
+  LB_ROLE="${_GROUP}"
   LB_PROFILE="${_PROFILE}"
   LB_GEN_SHA="${_sha}"
   export LB_HOST LB_PORT LB_DATABASE LB_PROJECT LB_BRANCH \
-         LB_ENDPOINT LB_SCHEMA LB_PROFILE LB_GEN_SHA
+         LB_ENDPOINT LB_SCHEMA LB_ROLE LB_PROFILE LB_GEN_SHA
   lb_render_env > "${_ENV_FILE}"
   _info "Wrote: ${_ENV_FILE}"
 }
@@ -386,15 +421,15 @@ fi
 # Check for existing group role.
 _info "Checking for group role: ${_GROUP}..."
 _role_exists="$(databricks postgres list-roles "${_BRANCH_PATH}" \
-  -o json --profile "${_PROFILE}" \
-  | jq -r --arg r "${_GROUP}" \
-      '.roles // [] | map(select(.spec.postgresRole == $r)) | length' \
-  2>/dev/null || printf '0')"
+  -o json --profile "${_PROFILE}" 2>/dev/null \
+  | lb_role_count "${_GROUP}" "${_GROUP_ID}" 2>/dev/null || printf '0')"
 
 if [ "${_role_exists}" = "0" ]; then
-  _info "Creating group role: ${_GROUP}..."
+  _info "Creating group role: ${_GROUP} (resource id: ${_GROUP_ID})..."
+  # --role-id must be hyphenated (pattern ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$);
+  # the postgres_role in the spec is the underscore name the DDL owns objects by.
   databricks postgres create-role "${_BRANCH_PATH}" \
-    --role-id "${_GROUP}" -o json --profile "${_PROFILE}" \
+    --role-id "${_GROUP_ID}" -o json --profile "${_PROFILE}" \
     --json "{\"spec\":{\"identity_type\":\"GROUP\",\"postgres_role\":\"${_GROUP}\",\"auth_method\":\"LAKEBASE_OAUTH_V1\"}}" \
     > /dev/null
   _info "Group role created."
@@ -402,19 +437,37 @@ else
   _info "Group role already exists: ${_GROUP}"
 fi
 
-# Mint token for DDL.
+# Mint token for the DDL and the grant. One token authenticates the operator;
+# the PGUSER chosen at connect time selects which role the session runs as.
 _info "Minting token for DDL (TTL: 3600s)..."
 _token="$(lb_mint_token "${_ENDPOINT_PATH}" "${_PROFILE}")"
 if [ -z "${_token}" ]; then
   _fatal "Token mint returned empty string."
 fi
 
-_info "Running DDL..."
+# Grant the group role CREATE on the database, connected as the operator.
+# The database owner (the first admin who connected) must run this. The group
+# role then creates the state objects itself and owns them. Without CREATE the
+# group role cannot make the schema.
+_info "Granting CREATE on ${_db} to ${_GROUP} (as ${_ME})..."
+if ! PGPASSWORD="${_token}" \
+     PGHOST="${_host}" PGPORT="${_port}" PGDATABASE="${_db}" \
+     PGUSER="${_ME}" PGSSLMODE="require" \
+     psql -v ON_ERROR_STOP=1 \
+          -c "GRANT CREATE ON DATABASE \"${_db}\" TO \"${_GROUP}\";"; then
+  _fatal "Could not grant CREATE on ${_db} to ${_GROUP}.
+  Run the bootstrap as the database owner (the first workspace admin who
+  connected owns ${_db}), or ask that owner to run it."
+fi
+
+# Run the state DDL connected AS the group role. Objects are created and owned
+# by ${_GROUP}, so every group member operates the backend by assuming it.
+_info "Running DDL as ${_GROUP}..."
 PGPASSWORD="${_token}" \
 PGHOST="${_host}" \
 PGPORT="${_port}" \
 PGDATABASE="${_db}" \
-PGUSER="${_ME}" \
+PGUSER="${_GROUP}" \
 PGSSLMODE="require" \
   psql -v ON_ERROR_STOP=1 \
        -f "${_SCRIPT_DIR}/sql/create-state-objects.sql"

@@ -29,7 +29,8 @@ for _name in \
 	test_10_conn_str_refusal.sh \
 	test_11_env_not_sourced.sh \
 	test_12_wrapper_executable.sh \
-	test_13_ere_pattern_hygiene.sh; do
+	test_13_ere_pattern_hygiene.sh \
+	test_14_api_response_parsing.sh; do
 	_script="${_dir}/${_name}"
 	if [ ! -f "${_script}" ]; then
 		printf 'SKIP: %s (not found)\n' "${_name}"

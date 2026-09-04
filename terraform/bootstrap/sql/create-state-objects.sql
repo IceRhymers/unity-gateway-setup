@@ -1,8 +1,14 @@
 -- create-state-objects.sql
--- Run as the bootstrap identity (the project creator, who MUST be a member of
--- terraform_writers — see bootstrap README §3.d). Ownership is transferred to
--- the group role at the end so every group member can operate the backend by
--- inheritance, with no additional grants required.
+-- Run this file connected AS the group role `terraform_writers`, not as an
+-- individual. In Lakebase you do not inherit a group role transitively; you
+-- authenticate as it (PGUSER=terraform_writers) when you belong to the backing
+-- workspace group. bootstrap-state.sh opens the connection that way, so every
+-- object below is created and owned by `terraform_writers` directly. Every
+-- group member operates the backend by assuming the same role, so no ownership
+-- transfer and no per-member GRANT are needed.
+--
+-- The group role needs CREATE on the database before this runs. The bootstrap
+-- grants that first, as the database owner.
 
 CREATE SCHEMA IF NOT EXISTS tfstate_infra;
 
@@ -18,10 +24,3 @@ CREATE TABLE IF NOT EXISTS tfstate_infra.states (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS states_by_name ON tfstate_infra.states (name);
-
--- Converge ownership onto the group role, every run (idempotent, self-repairing).
--- ALTER ... OWNER TO requires the issuer to be a member of terraform_writers;
--- the bootstrap preflight asserts this before any DDL runs.
-ALTER SCHEMA   tfstate_infra                      OWNER TO terraform_writers;
-ALTER SEQUENCE tfstate_infra.global_states_id_seq OWNER TO terraform_writers;
-ALTER TABLE    tfstate_infra.states               OWNER TO terraform_writers;
