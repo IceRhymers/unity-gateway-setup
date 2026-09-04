@@ -16,7 +16,7 @@ deployed endpoints:
 
 Endpoints bucket into families by their `schema`: `anthropic` -> anthropic,
 `gemini`/`google` -> google, every other schema (e.g. `openai`) -> oss. This
-matches the native surface ucode produces, and it needs no live api-type
+matches the native surface ug produces, and it needs no live api-type
 discovery because the schema is the family.
 
 Auth — a pushed plugin, not an env var
