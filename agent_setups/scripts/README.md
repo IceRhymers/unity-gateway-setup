@@ -6,8 +6,8 @@ services you provisioned. It then emits opinionated, deployable config for a
 coding agent.
 
 **Supported agents: Claude Code** (`managed-settings.json` for MDM/fleet
-deployment), **Claude Desktop** (a policy + telemetry config, a headless `ug`
-bootstrap, and per-OS helper scripts), **Codex** (`config.toml` routed through the gateway's MLflow serving
+deployment), **Claude Desktop** (an importable config plus per-OS helper
+scripts), **Codex** (`config.toml` routed through the gateway's MLflow serving
 route, `mlflow/v1/responses`), and the **DeepSeek Harness** (a home patch plus a
 token-refresh plugin). The design is a registry. You can add other agents as new
 generators.
@@ -445,21 +445,21 @@ installs anything: inference routing, model pins, the allow-list, OTEL export, a
 hook events. `ug` owns the developer's own machine: launch, per-request OAuth, MCP
 registration, and skills.
 
-Two rules follow from that split:
+Three rules follow from that split:
 
 1. Do not add MCP registration to a generator. `ug mcp add` does this for seven
    agents, and it also removes stale servers. A second implementation would
    compete with it.
-2. Do not add an agent that `ug` already configures, unless the agent needs a
+2. Do not mint a Databricks token yourself. Call `ug auth-token` (see the
+   claude-desktop credential helper). `ug configure` is the developer's single
+   login, and a generated script that shells out to `databricks auth token`
+   creates a second auth path that can drift from it.
+3. Do not add an agent that `ug` already configures, unless the agent needs a
    fleet-managed file that `ug` cannot deliver. `ug` configures Claude Code,
    Codex, Gemini CLI, OpenCode, Copilot CLI, Pi, and Cursor. Claude Code and
    Codex stay here because both read a root-owned managed file that an MDM tool
    must push. Claude Desktop and the DeepSeek Harness stay here because `ug`
    does not support either one.
-3. Do not emit a model list for an agent `ug` can configure. Claude Desktop shows
-   the pattern: the generator emits policy and telemetry only, and the generated
-   `ug-bootstrap-claude-desktop.sh` reads the models `ug` resolved out of
-   `~/.ucode/state.json`. A second model list would fight the one `ug` publishes.
 
 ## Adding an agent
 
@@ -467,4 +467,5 @@ Two rules follow from that split:
    (`name`, `add_arguments`, `generate`).
 2. Register it in `agents/__init__.py`.
 
-Requires Python 3.10+ (stdlib only) and the `databricks` CLI on PATH.
+Requires Python 3.10+ (stdlib only) and the `databricks` CLI on PATH. Generated
+configs that need a Databricks token should call `ug auth-token`, not the CLI.
