@@ -45,6 +45,8 @@ Both go to the fleet. Push the `.pkg` first, because the profile's
 The bootstrap script logs and exits when `ug` is absent, then retries at the next
 login, so the two packages may arrive in either order.
 
+For the Jamf steps, read `jamf.md`.
+
 > **You do not need an MDM to test the install.** `installer -pkg` over SSH is
 > completely headless and exercises the same payload an MDM would push. An MDM adds
 > distribution and scoping, not install mechanics. The VM runbook uses `installer`
@@ -243,59 +245,21 @@ next login.
 
 ---
 
-## 7a. Jamf Pro specifics
+## 7a. Jamf Pro
 
-Jamf Pro is a server with a web console. You administer it from a browser on your
-own machine. The managed Mac is a client, and it runs no console.
+`jamf.md` is the single Jamf reference for every agent in this repository. It records
+which Jamf object carries which artifact, the signing and certificate facts, the
+scoping, and the uninstall policies.
 
-So the split is: the console in your browser, and the Claude Desktop payload on the
-managed device.
+Read it for the Jamf steps. In short:
 
-### What each Jamf object carries
+| Artifact | Jamf object |
+|---|---|
+| The `.pkg` | A Package, run by a Policy |
+| The `.mobileconfig` | A Configuration Profile |
 
-| Jamf object | Carries | Why |
-|---|---|---|
-| **Package** | The `.pkg` | The only Jamf object that places files |
-| **Policy** | The package, scoped and triggered | Runs the install on the device |
-| **Configuration Profile** | The `.mobileconfig` | Settings only |
-
-Use a Policy for the package, and a Configuration Profile for the profile. A
-Configuration Profile cannot install the package, and a Policy is not the right
-object for settings.
-
-### Order of operations
-
-1. Upload `dist/claude-desktop-<version>.pkg` to Jamf as a Package.
-2. Create a Policy with a Packages payload for it. Trigger it at Recurring
-   Check-in, and set Execution Frequency to Once per computer.
-3. Scope the Policy to a Smart Group, or to one test computer.
-4. Upload the app-exported `.mobileconfig` as a Configuration Profile.
-5. Scope the Configuration Profile to the same group.
-
-Let the Policy run before the Configuration Profile reaches the device. See the
-ordering note in section 7.
-
-### `ug` on a Jamf-managed fleet
-
-Jamf deploys `ug` the same way: as its own Package, or through a Policy with a
-Scripts payload that runs your install command. Scope it to the same group. The
-order against the Claude Desktop package does not matter.
-
-### Do not test against a corporate Jamf instance
-
-A corporate Jamf instance manages real devices. A mis-scoped test profile reaches
-them. Use an instance you own, or ask the team that owns the corporate one to scope
-a test profile to one device.
-
-A Mac holds **one** MDM enrollment. So a corporate-enrolled machine cannot also
-enroll in your test instance. Test in a VM. See `claude-desktop-vm-test.md`.
-
-### A VM cannot use Automated Device Enrollment
-
-Automated Device Enrollment needs an Apple Business Manager record, and a VM has
-none. So enrollment in a VM is the manual path: install the enrollment profile, and
-approve it once. Every profile push after that is silent, which is the part worth
-demonstrating.
+Let the Package Policy run before the Configuration Profile reaches the device. See
+the ordering note in section 7.
 
 ---
 

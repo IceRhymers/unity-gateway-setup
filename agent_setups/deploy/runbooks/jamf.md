@@ -1,78 +1,179 @@
 # Jamf runbook — Unity AI Gateway agent configs (macOS fleet)
 
-## Two-phase deployment model
+This runbook is the single Jamf reference for every agent this repository deploys.
+It covers Claude Code, Codex, and Claude Desktop.
 
-Every machine deployment has two phases with a hard boundary between them:
+The other runbooks describe what the generator produces. This one describes how Jamf
+delivers it. `claude-desktop-mdm.md` covers the Claude Desktop rollout in full and
+points here for the Jamf steps.
 
-| Phase | Who | What | Can it be MDM-pushed? |
+---
+
+## Certificates and signing: what you need, and what you do not
+
+Read this first. It is the question operators ask most often, and the answer is
+shorter than expected.
+
+| Artifact | Signature needed for Jamf? | Why |
+|---|---|---|
+| `.pkg` installer | **No** | Jamf installs it as root. Gatekeeper does not apply. |
+| Script policy body | **No** | Jamf runs it as root with no code-signing check. |
+| `.mobileconfig` profile | **No** | Jamf signs the profiles it serves. The MDM channel is authenticated. |
+
+**A self-signed certificate does not help.** Gatekeeper trusts only a
+Developer ID Installer certificate, which Apple issues to Apple Developer Program
+members. A self-signed certificate stays untrusted, so it adds nothing over an
+unsigned package.
+
+Sign a package only when a person installs it by hand. Gatekeeper blocks an
+unsigned double-click install. Then you need a real Developer ID Installer
+certificate, and Apple notarization as well.
+
+```sh
+# Only with a real Developer ID Installer certificate:
+make claude-desktop-pkg PROFILE=<profile> \
+  PKG_SIGN_ID="Developer ID Installer: <org> (<team-id>)"
+```
+
+Check whether you hold one:
+
+```sh
+security find-identity -v | grep "Developer ID Installer"
+```
+
+### The certificates Jamf itself needs
+
+These belong to the Jamf instance, not to this repository. An admin configures them
+once.
+
+1. **An APNs certificate.** Every MDM server needs one to push to devices. You
+   generate a certificate request, Jamf signs it as an MDM vendor, and you upload it
+   to the Apple Push Certificates Portal. It expires every year. Renew it.
+2. **A TLS certificate.** Jamf Cloud provides its own. A self-hosted Jamf Pro server
+   needs a certificate that every managed device trusts. This is the one place where
+   a self-signed certificate is a real option, and every device must then trust it.
+3. **An Automated Device Enrollment token.** This is optional, and it needs Apple
+   Business Manager.
+
+---
+
+## Deployment phases
+
+Each phase has a hard boundary. No phase is optional.
+
+| Phase | Who | What | Can Jamf push it? |
 |---|---|---|---|
-| **A — Config placement** | IT / Jamf admin | Unpack tarball, run `install.sh` as root | **Yes** — this runbook |
-| **B — User auth** | Each developer | `databricks auth login --host <host> --profile <profile>` | **No** — browser OAuth (U2M). Must be interactive. |
+| **A — Config placement** | Jamf admin | Place the managed files | **Yes** |
+| **B — Settings** | Jamf admin | Apply the Claude Desktop profile | **Yes**, Claude Desktop only |
+| **C — User auth** | Each developer | Sign in through the browser | **The trigger, yes.** The sign-in is the person's |
 
-Phase A places the managed-settings files. Phase B binds each developer's Databricks identity. Neither phase is optional.
+Phase A places files. Phase B applies settings. Phase C binds each developer's
+Databricks identity.
+
+---
+
+## Which Jamf object carries which artifact
+
+Jamf has one object per job. Match them correctly, or the deployment fails in ways
+that are hard to read.
+
+| Artifact | Jamf object | Agents |
+|---|---|---|
+| `.pkg` installer | **Package**, run by a Policy | Claude Desktop |
+| `.tar.gz` bundle | **Script** policy that unpacks it | Claude Code, Codex |
+| `.mobileconfig` | **Configuration Profile** | Claude Desktop |
+
+A Configuration Profile carries settings only. It cannot place a file, and it cannot
+run a command. So it never installs a helper script.
+
+A Package places files and runs an install script. Prefer it when a package exists.
 
 ---
 
 ## Prerequisites
 
-`install.sh` checks prereqs and reports them. It does **not** install anything. IT is
-responsible for these as part of the macOS MDM baseline:
+`install.sh` checks prerequisites and reports them. It installs nothing. IT owns
+these as part of the macOS baseline.
 
 | Tool | Criticality |
 |---|---|
-| `databricks` | Always critical — auth helpers and hook emitter require it |
-| `python3` | Always critical — both auth helpers shell out to `python3` on every token mint |
-| `jq` | Critical only when hook-event telemetry is enabled (emitter uses it) |
-| `curl` | Critical only when hook-event telemetry is enabled (emitter uses it) |
+| `databricks` | Always critical. The Claude Code and Codex auth helpers call it. |
+| `python3` | Critical for the Claude Code and Codex auth helpers, and for the OTEL helper. |
+| `ug` | Critical for Claude Desktop. Its credential helper calls `ug auth-token`. |
+| `jq` | Critical only when hook-event telemetry is on. |
+| `curl` | Critical only when hook-event telemetry is on. |
 
-If a critical prereq is absent, `install.sh` exits 3. Jamf then marks the policy failed.
-Check that these tools are on PATH for all session types (login shell, non-interactive)
-before you scope the policy to machines.
+If a critical prerequisite is absent, `install.sh` exits 3. Jamf then marks the
+policy failed. Confirm each tool is present for every session type before you scope
+the policy.
+
+Deploy `ug` as its own Jamf Package, or through a Policy with a Scripts payload. The
+order against the Claude Desktop package does not matter. The Claude Desktop
+bootstrap script logs and exits when `ug` is absent, then retries at the next login.
 
 > **Exception:** a `DATABRICKS_BEARER`-only deployment can omit `databricks` and
-> `python3`. In this deployment, every developer sets `DATABRICKS_BEARER` in their
-> environment. The CLI then never needs a token refresh. This deployment is unusual and
-> not the default.
+> `python3`. Every developer then sets `DATABRICKS_BEARER` in their environment, and
+> the CLI never refreshes a token. This deployment is unusual, and it is not the
+> default.
 
 ---
 
-## Step 1 — Build the package
+## Step 1 — Build the artifacts
 
-On an admin workstation with the repo checked out:
+On an admin workstation with the repository checked out.
 
-```bash
+### For Claude Code and Codex, a tarball
+
+```sh
 make deploy-package
 ```
 
-This produces `dist/unity-gateway-agents-<version>-macos.tar.gz`. The tarball is
-self-contained: bundle files, `install.sh`, runbooks, and a `VERSION` file. The target
-machine needs no network access.
+This writes `dist/unity-gateway-agents-<version>-macos.tar.gz`. The tarball holds the
+bundle files, `install.sh`, the runbooks, and a `VERSION` file. The target machine
+needs no network access.
 
-Upload `dist/unity-gateway-agents-<version>-macos.tar.gz` to your Jamf distribution
-point (or a Jamf Pro package).
+### For Claude Desktop, an installer package
 
----
+```sh
+make agent-claude-desktop PROFILE=<profile>
+make claude-desktop-pkg   PROFILE=<profile>
+```
 
-## Exit code reference
+This writes `dist/claude-desktop-<version>.pkg`. It places four files.
 
-`install.sh` returns a structured exit code. Jamf marks the policy failed when the exit code is non-zero.
-
-| Code | Meaning |
+| Payload path | Mode |
 |---|---|
-| 0 | Success (or `--dry-run` / `--uninstall` with all files removed) |
-| 1 | Usage error |
-| 2 | Not root and no `--target-root` set |
-| 3 | Critical prereq missing |
-| 4 | Required source file missing (`managed-settings.json`) |
-| 5 | Copy or permission failure |
-| 6 | Uninstall failure. A file or the marker could not be removed. The marker is left intact for retry. |
+| `/Library/Application Support/ClaudeDesktop/databricks-token.sh` | 755 |
+| `/Library/Application Support/ClaudeDesktop/otel-headers-helper.sh` | 755 |
+| `/Library/Application Support/ClaudeDesktop/ug-sso-bootstrap.sh` | 755 |
+| `/Library/LaunchAgents/ug-sso-bootstrap.plist` | 644 |
+
+Its postinstall loads the LaunchAgent for the user who is logged in. So the browser
+sign-in starts as soon as the package lands. At imaging time there is no console
+user, and the agent loads at the first real login instead.
+
+Upload each artifact to Jamf. Upload the tarball to a distribution point. Upload the
+`.pkg` as a Package.
 
 ---
 
-## Step 2 — Create a Script policy
+## Step 2a — A Policy for the Claude Desktop package
 
-In Jamf Pro, create a **Script** (Computers → Management → Scripts → New). Paste the
-following as the script body:
+1. Open Computers. Open Management. Open Packages. Upload the `.pkg`.
+2. Create a Policy. Add a Packages payload. Select the package.
+3. Set the Trigger to Recurring Check-in.
+4. Set the Execution Frequency to Once per computer.
+5. Scope it. See Step 4.
+
+No script is needed. Jamf installs the package as root.
+
+---
+
+## Step 2b — A Script policy for the tarball
+
+Claude Code and Codex ship as a tarball, so they need a script that unpacks it.
+
+Open Computers. Open Management. Open Scripts. Create a new script with this body.
 
 ```sh
 #!/bin/sh
@@ -104,52 +205,102 @@ if [ "$EXIT_CODE" -ne 0 ]; then
 fi
 
 echo "Unity AI Gateway agent configs installed (Phase A complete)."
-echo "Each developer must complete Phase B — see the Self Service item."
+echo "Each developer must complete Phase C — see the Self Service item."
 ```
 
-> **Note on `--target-root`:** the script above uses real system paths (no
-> `--target-root`). This is correct for a fleet push. `--target-root` is for
-> unprivileged staging and unit tests only.
+> **Note on `--target-root`:** the script above uses real system paths. That is
+> correct for a fleet push. `--target-root` is for unprivileged staging and unit
+> tests only.
 
-Attach the script to a **Policy** scoped to your target machines (see Step 3).
-Set the **Execution Frequency** to "Once per computer" for initial rollout. Change it to
-"Once per computer per user" or "Ongoing" for re-rollout when the config version
-changes.
+Attach the script to a Policy, and scope it. Set the Execution Frequency to Once per
+computer for the first rollout. Change it when the config version changes.
 
----
-
-## Unsigned-script caveat
-
-Jamf executes this script as **root without notarization or code-signing checks**.
-Treat it accordingly:
-
-- Store the tarball at rest on your Jamf distribution point under access controls.
-- Check the SHA-256 of the tarball before you upload it (CI produces a checksum alongside
-  the tarball in `dist/`).
-- `install.sh` itself is POSIX `sh`. Review it before you deploy it to a new macOS
-  major version.
-- IT owns prereqs (`databricks`, `python3`, `jq`, `curl`) as a managed baseline.
-  `install.sh` only checks and reports them (exit 3 on critical missing dep).
+`install.sh` also handles Claude Desktop with `--agents claude-desktop`. Use the
+package instead. A package gives Jamf a receipt and an install state to report.
 
 ---
 
-## Step 3 — Scoping
+## Step 3 — A Configuration Profile for Claude Desktop settings
 
-Suggested scope for the Phase-A policy:
+The Claude Desktop app exports this profile. The generator does not produce it. See
+`claude-desktop-mdm.md` section 6 for the export.
 
-- **Targets:** Smart Group based on macOS version + `databricks` CLI managed
-  (check the MDM baseline is present before you target machines).
-- **Exclusions:** Machines already running the target version (check
-  `/Library/Application Support/ClaudeCode/.unity-gateway-version` if you want to
-  be explicit, or rely on `install.sh`'s idempotent re-copy behaviour).
-- **Trigger:** Check-in + Enrollment Complete, or a manual trigger for initial rollout.
+1. Open Computers. Open Configuration Profiles. Upload the exported
+   `.mobileconfig`.
+2. Scope it to the same group as the package Policy.
+
+**Let the package Policy run first.** The profile names the credential helper by
+absolute path. A profile that arrives first points at a file that does not exist yet.
+Claude Desktop then reports an authentication failure with no obvious cause.
+
+The profile writes to the `com.anthropic.claudefordesktop` preference domain. Confirm
+it applied on a device:
+
+```sh
+ls /Library/Managed\ Preferences/ | grep -i anthropic
+```
+
+An empty result means no profile is applied.
 
 ---
 
-## Step 4 — Phase B: Self Service item (per-user, one time)
+## Exit code reference
 
-Create a **Self Service** item (or send internal comms) that tells each developer to
-run the following command once, interactively, in their terminal:
+`install.sh` returns a structured exit code. Jamf marks the policy failed on any
+non-zero code.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (or `--dry-run` / `--uninstall` with all files removed) |
+| 1 | Usage error |
+| 2 | Not root and no `--target-root` set |
+| 3 | Critical prereq missing |
+| 4 | Required source file missing (`managed-settings.json`) |
+| 5 | Copy or permission failure |
+| 6 | Uninstall failure. A file or the marker could not be removed. The marker is left intact for retry. |
+
+---
+
+## Unsigned-payload caveat
+
+Jamf runs a script policy as **root with no notarization or code-signing check**. The
+same is true of a package it installs. Treat both accordingly.
+
+- Store the tarball and the package under access controls on the distribution point.
+- Check the SHA-256 of the tarball before you upload it. CI writes a checksum beside
+  the tarball in `dist/`.
+- `install.sh` is POSIX `sh`. Review it before a new macOS major version.
+- IT owns the prerequisites as a managed baseline. `install.sh` only reports them.
+
+---
+
+## Step 4 — Scoping
+
+A suggested scope for the Phase-A policy.
+
+- **Targets:** a Smart Group on macOS version, plus the managed `databricks` CLI.
+  Confirm the baseline is present before you target machines.
+- **Exclusions:** machines already at the target version. Check
+  `/Library/Application Support/ClaudeCode/.unity-gateway-version`, or rely on the
+  idempotent re-copy in `install.sh`.
+- **Trigger:** Check-in and Enrollment Complete, or a manual trigger for the first
+  rollout.
+
+Scope the Claude Desktop package and its Configuration Profile to the same group.
+
+---
+
+## Step 5 — Phase C: user authentication
+
+Each developer authenticates once. A browser opens for single sign-on. Jamf cannot
+push the sign-in itself, because the identity belongs to the person.
+
+The command differs by agent, because the two auth paths differ.
+
+### Claude Code and Codex
+
+Their auth helpers call the Databricks CLI. So the developer runs the CLI login.
+Create a Self Service item with this text.
 
 ```
 Config placement is complete. To finish connecting your tools to the
@@ -164,17 +315,62 @@ Your browser will open for Single Sign-On. After login, verify with:
 You only need to do this once per machine.
 ```
 
-Replace `<host>` with your Databricks workspace URL (e.g.
-`https://myworkspace.cloud.databricks.com`).
+Replace `<host>` with your workspace URL.
 
-You **cannot automate** this step. It requires interactive browser OAuth (U2M).
+### Claude Desktop
+
+Its credential helper calls `ug auth-token`, so the login goes through `ug`. **Jamf
+does not need a Self Service item for this.** The package installs a LaunchAgent that
+runs the login at each user login, and the agent guards itself so a browser opens
+only when the developer is not already authenticated.
+
+The developer signs in to the browser. They type nothing.
+
+A developer who dismisses the browser gets another one at the next login. So the flow
+recovers on its own. See `claude-desktop-mdm.md` section 8.
+
+To confirm on a device, read the log the bootstrap writes:
+
+```sh
+cat ~/Library/Logs/ug-sso-bootstrap.log
+```
+
+---
+
+## Testing: two constraints worth knowing early
+
+**A Mac holds one MDM enrollment.** A machine already enrolled in a corporate Jamf
+instance cannot also enroll in a test instance. So test in a VM, not on your own
+machine. See `claude-desktop-vm-test.md`.
+
+**Do not test against a corporate Jamf instance.** It manages real devices, and a
+mis-scoped profile reaches them. Use an instance you own, or ask the owning team to
+scope a test profile to one device.
+
+**A VM cannot use Automated Device Enrollment.** Enrollment needs an Apple Business
+Manager record, and a VM has none. So enroll a VM by hand: install the enrollment
+profile, and approve it once. Every profile push after that is silent.
 
 ---
 
 ## Uninstall
 
-To remove the managed config files from a machine, create a separate Script policy.
-The uninstall script needs only `--os` and the real system paths. It does not need `--source`.
+### The Claude Desktop package
+
+`install.sh --uninstall` removes the helper scripts and the LaunchAgent. It unloads
+the agent first.
+
+```sh
+sh install.sh --agents claude-desktop --os macos --uninstall
+```
+
+Remove the Configuration Profile through Jamf. Removing the package does not remove
+the profile.
+
+### The tarball agents
+
+Create a separate Script policy. The uninstall needs only `--os` and the real system
+paths. It does not need `--source`.
 
 ```sh
 #!/bin/sh
@@ -210,12 +406,15 @@ fi
 echo "Unity AI Gateway agent configs removed (Phase A reversed)."
 ```
 
-Notes on uninstall behavior:
+Notes on uninstall behaviour.
 
-- `install.sh --uninstall` reads the `files=` list from the version marker.
-  It removes only files that the installer placed.
-- Files not in the marker (user files, `.bak-*` backups) are not removed.
-- When the install directory is empty after removal, the script removes the directory.
-- When the install directory is not empty, the script leaves it in place and warns.
-- Exit 6 means a file could not be removed. The marker is left intact. Re-run the policy to retry.
-- `.bak-*` backup files are never removed by `--uninstall`. Remove them manually if needed.
+- `install.sh --uninstall` reads the `files=` list from the version marker. It
+  removes only files the installer placed.
+- Files outside the marker are not removed. That includes user files and `.bak-*`
+  backups.
+- The script removes the install directory when it is empty. It leaves a non-empty
+  directory in place, and warns.
+- Exit 6 means a file could not be removed. The marker stays intact. Run the policy
+  again to retry.
+- `--uninstall` never removes a `.bak-*` file. Remove those by hand.
+- To undo what `ug` wrote on a device, run `ug revert`.
