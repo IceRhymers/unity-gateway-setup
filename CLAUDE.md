@@ -36,3 +36,23 @@ All documentation in this repository follows ASD-STE100 Simplified Technical Eng
 - Do not drop a safety condition, an exception, or a scope qualifier to shorten a sentence. Keep the longer phrasing instead.
 
 When you write or edit any doc in this repository, apply this standard. To rewrite existing text, invoke the skill (for example: "apply ASD-STE100 to this file").
+
+## Keep the guides in step with the code
+
+This repository ships operator-facing guides: the runbooks under `agent_setups/deploy/runbooks/`, the MDM deployment guides, the VM test runbooks, and the `README.md` files. Each one states commands, file names, key names, and division-of-labour claims that the generators and installers produce. When the code changes, those statements go stale, and a stale runbook is worse than no runbook. An operator follows it and the step fails.
+
+**The rule.** When you change any of the following, re-read every guide that describes it, and update the guide in the same change:
+
+1. A generated file's name, location, or top-level keys.
+2. A command an operator runs, or a flag on one.
+3. Which component owns a concern (the generator, `ug`, Terraform, or MDM).
+4. A prerequisite tool, or how a script authenticates.
+5. An exit code, an error message, or a verification step.
+
+**How to find the affected guides.** Search for the thing you changed, not for the topic. Grep the old file name, the old flag, or the old command across `*.md`. Do not trust your memory of which document mentions it.
+
+**Say what changed.** When a guide changes because the code changed, state that in the commit message. A reviewer must be able to see that the doc and the code moved together.
+
+**Do not paper over a contradiction.** If a guide claims something the code no longer does, and you cannot tell which one is correct, stop and ask. Do not edit the guide to match the code, or the code to match the guide, until you know which behaviour is intended.
+
+**Worked example.** The `claude-desktop` generator once moved model selection out of `claude-setup.json` and into a bootstrap script that read `ug`'s state. The change contradicted the division of labour recorded in `README.md`, which assigns the fleet inference baseline to the generator. The generated config lost its Anthropic endpoint, its credential helper, and its models. The guides were rewritten to match the new code, which hid the contradiction instead of surfacing it. Rule 3 exists because of this. Check the ownership table in the root `README.md` before you move a concern between components.
