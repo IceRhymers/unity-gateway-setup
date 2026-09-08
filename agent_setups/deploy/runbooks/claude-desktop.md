@@ -21,7 +21,7 @@ This generator does not produce the `.mobileconfig` or `.reg` MDM artifacts. The
 |---|---|---|---|
 | **A — Helper placement** | IT admin | Place the helper scripts at the absolute path the JSON references | **Yes** |
 | **B — Import and export** | IT admin (once) | Import the JSON in the app, test, then export the MDM profile | **No** — the app UI does this once |
-| **C — User auth** | Each developer | `ug configure --profiles <profile>` | **No** — browser OAuth (U2M) |
+| **C — User auth** | The MDM triggers it. The developer signs in | `ug configure --profiles <profile>`, then browser SSO | **The trigger, yes.** The sign-in belongs to the person |
 
 Phase A places the scripts. Phase B produces the MDM profile you distribute to the fleet. Phase C binds each developer's Databricks identity. No phase is optional.
 
@@ -41,7 +41,8 @@ The wrapper carries no authentication logic. `ug` supplies all of it:
 
 - It short-circuits on `$DATABRICKS_BEARER` for CI.
 - It resolves the CLI profile from the workspace host.
-- It honours static-PAT profiles and the `use_pat` flag saved in its state.
+- It honours static-PAT profiles and the `use_pat` flag saved in its state. The
+  MDM deployment does not use that path. It uses OAuth single sign-on.
 - It retries token-cache lock contention with a jittered backoff. This matters. Claude Desktop runs the helper whenever `ttlSec` expires, and `ug`-launched agents compete for the same token cache.
 - It re-authenticates non-interactively when a session expires.
 
@@ -142,19 +143,27 @@ The target generates a bundle for this OS with the helper path set to a user-wri
 
 ## Step 4 — User auth (Phase C)
 
-Each developer runs this command once. The command opens a browser for SSO. MDM cannot push this step.
+This command runs once per developer. It opens a browser for SSO.
 
 ```sh
 ug configure --profiles <profile>
 ```
+
+A developer runs it directly only for a local test. In a fleet the MDM triggers it
+through a LaunchAgent, and the developer only signs in to the browser. See
+`claude-desktop-mdm.md` section 8, which also explains why the trigger needs a
+guard.
 
 This is the only authentication step, and it serves every surface. It sets up the terminal agents `ug` launches, and it is what the Claude Desktop credential helper reads from. A developer does not authenticate twice.
 
 To verify the helper independently of the app:
 
 ```sh
-"/Library/Application Support/ClaudeDesktop/databricks-token.sh" | head -c 12
+"/Library/Application Support/ClaudeDesktop/databricks-token.sh" | wc -c
 ```
+
+It must print a byte count near 800 and exit 0. Count the bytes. Never print the
+token, because it is a live credential.
 
 It must print the first characters of a token and exit 0. Diagnostics go to standard error, so they do not corrupt the token contract.
 

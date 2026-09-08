@@ -13,17 +13,23 @@ for the fleet deployment itself.
 
 Read this section first. It decides how much of the demo you script.
 
-| Step | Headless? | How |
+**What headless means here.** No GUI pane to click through, and no
+developer-typed configuration. A browser that opens and asks the developer to
+sign in through SSO is **not** a violation. It is the intended flow. This
+deployment uses no personal access tokens.
+
+| Step | Needs the GUI? | How |
 |---|---|---|
-| Start, suspend, and stop the guest | Yes | `prlctl` |
-| Snapshot and revert between takes | Yes | `prlctl snapshot` |
-| Copy the helper scripts to the guest | Yes | `scp` over SSH |
-| Install `ug` | Yes | `ssh` |
-| Authenticate `ug` | Yes | `ug configure --use-pat` |
-| Verify the token and the routing | Yes | `ssh` |
-| Capture a screenshot | Yes | `prlctl capture` |
-| **Install the `.mobileconfig`** | **No** | GUI pane, or a real MDM channel |
-| **Import `claude-setup.json` into the app** | **No** | GUI flow in the app |
+| Start, suspend, and stop the guest | No | `prlctl` |
+| Snapshot and revert between takes | No | `prlctl snapshot` |
+| Copy the helper scripts to the guest | No | `scp` over SSH |
+| Install `ug` | No | `ssh` |
+| Trigger `ug configure` | No | `ssh`, or the LaunchAgent the MDM pushes |
+| **Complete the SSO login** | **A browser** | The developer signs in once. This is intended |
+| Verify the token and the routing | No | `ssh` |
+| Capture a screenshot | No | `prlctl capture` |
+| **Install the `.mobileconfig`** | **A Settings pane** | Or a real MDM channel |
+| **Import `claude-setup.json` into the app** | **The app window** | GUI flow in the app |
 
 ### Why the profile install is not headless
 
@@ -65,8 +71,8 @@ after that runs from the host.
    the guest diverges from it.
 3. Stop if you have less than 30 GB free. A full host disk suspends the guest and
    can corrupt a take. This is the most likely cause of a failed recording.
-4. Create a Databricks personal access token for the headless login. Store it
-   somewhere you can read from the host.
+4. Confirm the guest can reach your identity provider. The login uses browser
+   SSO, so the guest needs network access to the provider.
 
 > **Do not skip step 3.** A macOS guest writes a memory state file when it
 > suspends. That file is as large as the guest's RAM.
@@ -212,39 +218,64 @@ If it sits somewhere else, set `UG_BIN` for the app, or move the binary.
 
 ---
 
-## Step 6 — Authenticate `ug` headlessly
+## Step 6 — Configure `ug` and complete the SSO login
 
-`ug configure` opens a browser by default, which a headless run cannot use. Use a
-personal access token instead.
+`ug configure` performs an OAuth login against your identity provider. It opens a
+browser. That is the intended flow. Do not use a personal access token.
 
-1. Write the token into the guest's Databricks configuration file.
-
-```sh
-ssh "$GUEST" "cat > ~/.databrickscfg <<'CFG'
-[<profile>]
-host  = https://<workspace-host>
-token = <personal-access-token>
-CFG
-chmod 600 ~/.databrickscfg"
-```
-
-2. Configure `ug` against that profile, with no browser.
+### Trigger it from the host
 
 ```sh
-ssh "$GUEST" 'ug configure --profiles <profile> --use-pat \
-  --agents claude --skip-validate --skip-upgrade --verbose low'
+ssh "$GUEST" 'ug configure --profiles <profile> --agents claude \
+  --skip-validate --skip-upgrade --verbose low'
 ```
 
-3. Confirm the state `ug` recorded.
+The command opens a browser in the guest. Sign in there. `ug` waits up to **300
+seconds** for the login to finish, so complete it inside five minutes.
+
+> **Confirm where the browser opens.** An SSH session is not part of the guest's
+> GUI session. So the browser may not appear. If it does not, run the command
+> through the console user's session instead:
+>
+> ```sh
+> ssh "$GUEST" 'launchctl asuser $(id -u) sudo -u $(whoami) \
+>   ug configure --profiles <profile> --agents claude --skip-validate --skip-upgrade'
+> ```
+>
+> Record which form works. The answer decides how the MDM payload invokes it.
+
+### Confirm the state `ug` recorded
 
 ```sh
 ssh "$GUEST" 'ug status'
 ```
 
-> Treat the token as a secret. Delete `~/.databrickscfg` from the guest after the
-> demo, or revert to the baseline snapshot.
+### Why a repeat run needs a guard
 
----
+`ug configure` sets `force_login` whenever you do not pass `--use-pat`. So it runs
+`databricks auth login` **unconditionally**, and a browser opens on **every** run,
+even when the session is already valid.
+
+That matters for a fleet. A LaunchAgent that runs `ug configure` at each login
+would open a browser at each login. So guard it. Probe first, and configure only
+when the probe fails.
+
+```sh
+ssh "$GUEST" 'if ug auth-token --host <workspace-url> >/dev/null 2>&1; then
+  echo "already authenticated; no browser needed"
+else
+  ug configure --profiles <profile> --agents claude --skip-validate --skip-upgrade
+fi'
+```
+
+`ug auth-token` is a safe probe. It never opens a browser, it never waits for
+input, and its internal re-auth attempt is bounded at 30 seconds.
+
+Test both paths in the guest:
+
+1. Run the guarded script on a guest with no authentication. A browser must open.
+2. Run it again. No browser must open, and it must print the "already
+   authenticated" line.
 
 ## Step 7 — Verify the token path, headlessly
 

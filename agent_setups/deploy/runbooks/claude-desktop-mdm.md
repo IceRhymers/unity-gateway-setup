@@ -90,9 +90,13 @@ A Windows bundle holds `claude-setup.json`, `databricks-token.ps1`, a
 | **A — Helpers** | IT admin | Place the helper scripts at the absolute path the config names | **Yes** |
 | **B — Author** | IT admin, once | Import the config, test it, export the MDM profile | **No.** A GUI flow |
 | **C — Push** | IT admin | Push the exported profile to the fleet | **Yes** |
-| **D — Auth** | Each developer | `ug configure --profiles <profile>` | **No.** Browser OAuth |
+| **D — Auth** | The MDM triggers it. The developer signs in | A LaunchAgent runs `ug configure`. A browser opens for SSO | **The trigger, yes.** The sign-in belongs to the person |
 
-Phase B happens one time, on one machine. Phase D happens one time per developer.
+Phase B happens one time, on one machine. Phase D happens one time per developer,
+and the MDM starts it. A developer types no configuration and clicks through no
+Settings pane. They sign in to a browser once.
+
+Only Phase B needs a GUI, and only on the machine that authors the profile.
 
 ---
 
@@ -166,6 +170,8 @@ Order the wave this way:
 1. Push the helper scripts.
 2. Push `ug`, if your fleet does not have it.
 3. Push the configuration profile.
+4. Push the LaunchAgent that triggers `ug configure`. Push it last, so it never
+   runs before `ug` and the helper scripts exist.
 
 ---
 
@@ -181,13 +187,45 @@ ug configure --profiles <profile>
 This is the only authentication step. It also configures the terminal agents that
 `ug` launches. A developer does not authenticate twice.
 
-For a headless device, use a personal access token instead.
+**Do not use a personal access token.** The login is OAuth single sign-on. A PAT
+is a long-lived static secret, it does not carry the developer's identity, and
+this deployment never needs one.
+
+### The MDM triggers this, not the developer
+
+A developer does not run the command. The MDM pushes a **LaunchAgent** that runs
+it. Use a LaunchAgent, not a LaunchDaemon:
+
+- A LaunchAgent runs inside the user's GUI session, so it can open a browser.
+- A LaunchDaemon runs as root outside that session, so it cannot.
+
+The developer sees a browser open and signs in. Nothing else.
+
+### Guard the trigger, or it nags on every login
+
+`ug configure` sets `force_login` whenever you do not pass `--use-pat`. So it runs
+`databricks auth login` unconditionally, and a browser opens on **every** run,
+even when the session is still valid.
+
+An unguarded LaunchAgent therefore opens a browser at every login. Probe first,
+and configure only when the probe fails:
 
 ```sh
-ug configure --profiles <profile> --use-pat
+#!/bin/sh
+# Runs from a LaunchAgent, in the user's session.
+WS="https://<workspace-host>"
+if ug auth-token --host "$WS" >/dev/null 2>&1; then
+  exit 0   # already authenticated; no browser
+fi
+ug configure --profiles <profile> --agents claude --skip-validate --skip-upgrade
 ```
 
-That form reads the token from `~/.databrickscfg` and runs no browser.
+`ug auth-token` is a safe probe. It never opens a browser, it never waits for
+input, and its internal re-auth attempt is bounded at 30 seconds.
+
+`ug configure` waits up to 300 seconds for the browser login. A developer who
+misses that window gets another browser at the next login, because the probe
+fails again. So the flow is self-healing.
 
 ---
 
@@ -200,7 +238,8 @@ Claude Desktop asks the credential helper for a token whenever
 
 1. It short-circuits on `$DATABRICKS_BEARER`, for continuous integration.
 2. It resolves the Databricks profile from the workspace host.
-3. It reads static personal access tokens when the profile holds one.
+3. It reads static personal access tokens when a profile holds one. This
+   deployment does not use that path.
 4. It retries token-cache contention with a jittered backoff.
 5. It re-authenticates without a browser when a session expires.
 
@@ -291,7 +330,9 @@ configuration inside the app. To undo what `ug` wrote, run `ug revert`.
 
 | Symptom | Likely cause |
 |---|---|
-| The app reports an authentication failure | `ug` is absent, or the developer did not run `ug configure`. Run the helper by hand and read standard error |
+| The app reports an authentication failure | `ug` is absent, or the SSO login never completed. Run the helper by hand and read standard error |
+| A browser opens at every login | The LaunchAgent is unguarded. Add the `ug auth-token` probe from section 8 |
+| No browser ever opens | The trigger is a LaunchDaemon, not a LaunchAgent. A daemon runs as root, outside the GUI session |
 | The helper prints "ug not found" | `ug` is not on a path the helper checks. Set `UG_BIN` |
 | The token is for the wrong workspace | The bundle was generated against a different host. Compare the baked host against `inference.baseUrl` |
 | The model list is empty | The gateway exposes no Claude model. The generator fails in this case, so check the generation log |
