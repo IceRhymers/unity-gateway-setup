@@ -7,6 +7,10 @@ The other runbooks describe what the generator produces. This one describes how 
 delivers it. `claude-desktop-mdm.md` covers the Claude Desktop rollout in full and
 points here for the Jamf steps.
 
+This runbook assumes a working Jamf instance. If you have never set one up, read
+`jamf-setup-checklist.md` first. It covers the instance setup, the APNs certificate,
+the VM enrolment, and what you can skip.
+
 ---
 
 ## Certificates and signing: what you need, and what you do not
