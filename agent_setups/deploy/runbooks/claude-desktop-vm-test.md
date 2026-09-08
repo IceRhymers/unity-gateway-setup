@@ -140,7 +140,8 @@ Copy the helpers to the guest, then place them as root.
 BUNDLE=agent_setups/generated/claude-desktop/macos
 DEST="/Library/Application Support/ClaudeDesktop"
 
-scp "$BUNDLE"/databricks-token.sh "$BUNDLE"/otel-headers-helper.sh "$GUEST":/tmp/
+scp "$BUNDLE"/databricks-token.sh "$BUNDLE"/otel-headers-helper.sh \
+    "$BUNDLE"/ug-sso-bootstrap.sh "$BUNDLE"/ug-sso-bootstrap.plist "$GUEST":/tmp/
 ssh "$GUEST" "sudo mkdir -p '$DEST' \
   && sudo cp /tmp/databricks-token.sh /tmp/otel-headers-helper.sh '$DEST'/ \
   && sudo chmod 755 '$DEST'/databricks-token.sh '$DEST'/otel-headers-helper.sh \
@@ -218,31 +219,56 @@ If it sits somewhere else, set `UG_BIN` for the app, or move the binary.
 
 ---
 
-## Step 6 — Configure `ug` and complete the SSO login
+## Step 6 — Trigger the SSO login the way the MDM does
 
-`ug configure` performs an OAuth login against your identity provider. It opens a
-browser. That is the intended flow. Do not use a personal access token.
+The bundle carries the same two files the MDM pushes. Test those, not a hand-typed
+command. Do not use a personal access token.
 
-### Trigger it from the host
+| File | Placed at |
+|---|---|
+| `ug-sso-bootstrap.sh` | The helper directory, mode 755 |
+| `ug-sso-bootstrap.plist` | `/Library/LaunchAgents`, mode 644 |
+
+Step 3 already placed both, because `install.sh` does that.
+
+### Take 1 — a device with no authentication
+
+Load the agent as the logged-in guest user. It also loads on its own at the next
+login, which is what a real device does.
 
 ```sh
-ssh "$GUEST" 'ug configure --profiles <profile> --agents claude \
-  --skip-validate --skip-upgrade --verbose low'
+ssh "$GUEST" 'launchctl load "/Library/LaunchAgents/ug-sso-bootstrap.plist"'
 ```
 
-The command opens a browser in the guest. Sign in there. `ug` waits up to **300
-seconds** for the login to finish, so complete it inside five minutes.
+A browser must open in the guest. Sign in there. `ug` waits up to 300 seconds.
 
-> **Confirm where the browser opens.** An SSH session is not part of the guest's
-> GUI session. So the browser may not appear. If it does not, run the command
-> through the console user's session instead:
->
-> ```sh
-> ssh "$GUEST" 'launchctl asuser $(id -u) sudo -u $(whoami) \
->   ug configure --profiles <profile> --agents claude --skip-validate --skip-upgrade'
-> ```
->
-> Record which form works. The answer decides how the MDM payload invokes it.
+Read the log to confirm which path the script took:
+
+```sh
+ssh "$GUEST" 'cat ~/Library/Logs/ug-sso-bootstrap.log'
+```
+
+It must say `not authenticated ... starting ug configure`.
+
+> **Confirm the browser opens in the guest's session.** The plist sets
+> `LimitLoadToSessionType` to `Aqua`, so the agent runs only in a GUI session. That
+> is what makes the browser possible. Record whether `launchctl load` over SSH
+> reaches that session. If it does not, log in to the guest GUI and let the agent
+> fire at login instead. The answer decides nothing about the MDM payload, which
+> always fires at login.
+
+### Take 2 — the same device, second login
+
+Run the script directly, so no browser can appear from a stale agent:
+
+```sh
+ssh "$GUEST" '"/Library/Application Support/ClaudeDesktop/ug-sso-bootstrap.sh"'
+ssh "$GUEST" 'tail -1 ~/Library/Logs/ug-sso-bootstrap.log'
+```
+
+The log must say `already authenticated ... no browser needed`, and **no browser
+must open**. This is the guard. Test it. An unguarded trigger opens a browser at
+every login, and that is the failure most likely to spoil a recording.
 
 ### Confirm the state `ug` recorded
 
@@ -250,32 +276,13 @@ seconds** for the login to finish, so complete it inside five minutes.
 ssh "$GUEST" 'ug status'
 ```
 
-### Why a repeat run needs a guard
-
-`ug configure` sets `force_login` whenever you do not pass `--use-pat`. So it runs
-`databricks auth login` **unconditionally**, and a browser opens on **every** run,
-even when the session is already valid.
-
-That matters for a fleet. A LaunchAgent that runs `ug configure` at each login
-would open a browser at each login. So guard it. Probe first, and configure only
-when the probe fails.
+### Reset authentication for another take
 
 ```sh
-ssh "$GUEST" 'if ug auth-token --host <workspace-url> >/dev/null 2>&1; then
-  echo "already authenticated; no browser needed"
-else
-  ug configure --profiles <profile> --agents claude --skip-validate --skip-upgrade
-fi'
+ssh "$GUEST" 'ug revert || true; rm -f ~/.databrickscfg ~/Library/Logs/ug-sso-bootstrap.log'
 ```
 
-`ug auth-token` is a safe probe. It never opens a browser, it never waits for
-input, and its internal re-auth attempt is bounded at 30 seconds.
-
-Test both paths in the guest:
-
-1. Run the guarded script on a guest with no authentication. A browser must open.
-2. Run it again. No browser must open, and it must print the "already
-   authenticated" line.
+Reverting to the baseline snapshot also clears it, and clears everything else too.
 
 ## Step 7 — Verify the token path, headlessly
 

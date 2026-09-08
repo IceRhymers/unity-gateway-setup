@@ -65,6 +65,8 @@ A macOS or Linux bundle holds three files:
 | `claude-setup.json` | The complete importable configuration |
 | `databricks-token.sh` | The credential helper. Calls `ug auth-token` |
 | `otel-headers-helper.sh` | Mints the telemetry token. Present only when telemetry is on |
+| `ug-sso-bootstrap.sh` | Guards, then runs `ug configure` for the one-time SSO login |
+| `ug-sso-bootstrap.plist` | The LaunchAgent that runs the script at login. macOS only |
 
 A Windows bundle holds `claude-setup.json`, `databricks-token.ps1`, a
 `databricks-token.cmd` shim, and the two OTEL files.
@@ -170,62 +172,95 @@ Order the wave this way:
 1. Push the helper scripts.
 2. Push `ug`, if your fleet does not have it.
 3. Push the configuration profile.
-4. Push the LaunchAgent that triggers `ug configure`. Push it last, so it never
-   runs before `ug` and the helper scripts exist.
+4. Push `ug-sso-bootstrap.plist` to `/Library/LaunchAgents`. Push it last, so the
+   agent never fires before `ug` and the bootstrap script exist.
 
 ---
 
 ## 8. Phase D — developer authentication
 
-Each developer runs one command. It opens a browser for single sign-on. No MDM
-tool can push this step, because the token belongs to the person.
+The developer does not configure anything. The MDM pushes a LaunchAgent, the agent
+runs a script at login, and a browser opens for single sign-on. The developer signs
+in. That is the whole step.
 
-```sh
-ug configure --profiles <profile>
-```
+**Never use a personal access token.** The login is OAuth single sign-on. A PAT is
+a long-lived static secret, it does not carry the developer's identity, and this
+deployment does not need one.
 
-This is the only authentication step. It also configures the terminal agents that
-`ug` launches. A developer does not authenticate twice.
+### The generator emits both pieces
 
-**Do not use a personal access token.** The login is OAuth single sign-on. A PAT
-is a long-lived static secret, it does not carry the developer's identity, and
-this deployment never needs one.
+The macOS bundle carries them. Do not hand-write either file.
 
-### The MDM triggers this, not the developer
+| File | Placed at | Purpose |
+|---|---|---|
+| `ug-sso-bootstrap.sh` | The helper directory, mode 755 | Probes, then runs `ug configure` when needed |
+| `ug-sso-bootstrap.plist` | `/Library/LaunchAgents`, mode 644 | Runs the script at each user login |
 
-A developer does not run the command. The MDM pushes a **LaunchAgent** that runs
-it. Use a LaunchAgent, not a LaunchDaemon:
+`install.sh` places both. Pass `--no-sso-bootstrap` at generation time to omit them
+when your MDM already runs `ug configure` some other way. Pass
+`--launchagent-label com.<your-org>.<name>` to use your own reverse-DNS label.
+
+### Why a LaunchAgent, and not a LaunchDaemon
 
 - A LaunchAgent runs inside the user's GUI session, so it can open a browser.
 - A LaunchDaemon runs as root outside that session, so it cannot.
 
-The developer sees a browser open and signs in. Nothing else.
+The plist also sets `LimitLoadToSessionType` to `Aqua`. So the agent never fires in
+an SSH or background session, where no browser can open.
 
-### Guard the trigger, or it nags on every login
+The plist sets `RunAtLoad` and no `KeepAlive`. So it runs once per login. A
+developer who dismisses the browser is not nagged again until the next login.
 
-`ug configure` sets `force_login` whenever you do not pass `--use-pat`. So it runs
-`databricks auth login` unconditionally, and a browser opens on **every** run,
-even when the session is still valid.
+### Why the script guards itself
 
-An unguarded LaunchAgent therefore opens a browser at every login. Probe first,
-and configure only when the probe fails:
+`ug configure` sets `force_login` whenever `--use-pat` is absent. So it runs
+`databricks auth login` unconditionally, and a browser opens on **every**
+invocation, even when the session is still valid.
 
-```sh
-#!/bin/sh
-# Runs from a LaunchAgent, in the user's session.
-WS="https://<workspace-host>"
-if ug auth-token --host "$WS" >/dev/null 2>&1; then
-  exit 0   # already authenticated; no browser
-fi
-ug configure --profiles <profile> --agents claude --skip-validate --skip-upgrade
-```
+An unguarded login trigger therefore opens a browser at every login. The generated
+script probes first:
+
+1. It resolves `ug` by absolute path. A LaunchAgent does not inherit the user's
+   `PATH`.
+2. When `ug` is absent it logs the fact and exits. It does not try to configure.
+3. It runs `ug auth-token --host <workspace>`. On success it exits silently. **No
+   browser opens.**
+4. Only on failure does it run `ug configure`.
 
 `ug auth-token` is a safe probe. It never opens a browser, it never waits for
 input, and its internal re-auth attempt is bounded at 30 seconds.
 
 `ug configure` waits up to 300 seconds for the browser login. A developer who
-misses that window gets another browser at the next login, because the probe
-fails again. So the flow is self-healing.
+misses that window gets another browser at the next login, because the probe fails
+again. So the flow is self-healing.
+
+### Why the script passes `--workspaces`, not `--profiles`
+
+`--profiles` requires the named profile to exist in `~/.databrickscfg` already, and
+it raises an error when the profile is absent. A freshly imaged device has no such
+file. So the script passes `--workspaces <url>`, which accepts a bare workspace URL
+and sets the workspace up from nothing.
+
+Use `--profiles` only for a local test on a machine that already has the profile.
+
+### Read the log
+
+The script logs to the user's own log directory:
+
+```sh
+cat ~/Library/Logs/ug-sso-bootstrap.log
+```
+
+Each run writes one line. Read it first when a device does not authenticate.
+
+### Load the agent without a reboot
+
+The agent loads at the next login. To load it immediately, run this as the
+logged-in user:
+
+```sh
+launchctl load "/Library/LaunchAgents/ug-sso-bootstrap.plist"
+```
 
 ---
 
@@ -331,7 +366,8 @@ configuration inside the app. To undo what `ug` wrote, run `ug revert`.
 | Symptom | Likely cause |
 |---|---|
 | The app reports an authentication failure | `ug` is absent, or the SSO login never completed. Run the helper by hand and read standard error |
-| A browser opens at every login | The LaunchAgent is unguarded. Add the `ug auth-token` probe from section 8 |
+| A browser opens at every login | The plist runs something other than the generated script, which carries the probe |
+| The log says "ug not found" | `ug` is not on a path the script checks. Push `ug`, or set `UG_BIN` |
 | No browser ever opens | The trigger is a LaunchDaemon, not a LaunchAgent. A daemon runs as root, outside the GUI session |
 | The helper prints "ug not found" | `ug` is not on a path the helper checks. Set `UG_BIN` |
 | The token is for the wrong workspace | The bundle was generated against a different host. Compare the baked host against `inference.baseUrl` |

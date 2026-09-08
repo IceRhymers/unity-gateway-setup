@@ -21,7 +21,7 @@ This generator does not produce the `.mobileconfig` or `.reg` MDM artifacts. The
 |---|---|---|---|
 | **A — Helper placement** | IT admin | Place the helper scripts at the absolute path the JSON references | **Yes** |
 | **B — Import and export** | IT admin (once) | Import the JSON in the app, test, then export the MDM profile | **No** — the app UI does this once |
-| **C — User auth** | The MDM triggers it. The developer signs in | `ug configure --profiles <profile>`, then browser SSO | **The trigger, yes.** The sign-in belongs to the person |
+| **C — User auth** | The MDM triggers it. The developer signs in | The `ug-sso-bootstrap` LaunchAgent runs `ug configure`. A browser opens for SSO | **The trigger, yes.** The sign-in belongs to the person |
 
 Phase A places the scripts. Phase B produces the MDM profile you distribute to the fleet. Phase C binds each developer's Databricks identity. No phase is optional.
 
@@ -79,6 +79,8 @@ Each macOS or Linux bundle contains:
 - `claude-setup.json`
 - `databricks-token.sh`
 - `otel-headers-helper.sh` (only when telemetry is wired)
+- `ug-sso-bootstrap.sh` and `ug-sso-bootstrap.plist` (the MDM-triggered SSO login;
+  the plist is macOS only, and `--no-sso-bootstrap` omits both)
 
 Each Windows bundle contains:
 
@@ -149,10 +151,13 @@ This command runs once per developer. It opens a browser for SSO.
 ug configure --profiles <profile>
 ```
 
-A developer runs it directly only for a local test. In a fleet the MDM triggers it
-through a LaunchAgent, and the developer only signs in to the browser. See
-`claude-desktop-mdm.md` section 8, which also explains why the trigger needs a
-guard.
+`--profiles` works here because your own machine already has the profile in
+`~/.databrickscfg`. It fails on a freshly imaged device, where no such file exists.
+
+So this form is for a local test only. In a fleet the MDM triggers the login through
+the generated `ug-sso-bootstrap` LaunchAgent, which passes `--workspaces <url>`
+instead and guards itself against opening a browser at every login. See
+`claude-desktop-mdm.md` section 8.
 
 This is the only authentication step, and it serves every surface. It sets up the terminal agents `ug` launches, and it is what the Claude Desktop credential helper reads from. A developer does not authenticate twice.
 

@@ -50,6 +50,10 @@ SOURCE="."
 CLAUDE_SOURCE=""
 CODEX_SOURCE=""
 CLAUDE_DESKTOP_SOURCE=""
+# The SSO-bootstrap LaunchAgent basename the generator emits. It is placed in
+# /Library/LaunchAgents, not the helper dir, so launchd loads it per login session.
+_CD_PLIST="ug-sso-bootstrap.plist"
+
 # Placement dir override for claude-desktop helpers. Must match the absolute path
 # baked into claude-setup.json when the generator used --install-dir-<os>. Empty =
 # the per-OS default in _raw_dir_for. Used by install, uninstall, and print-target-dir.
@@ -423,6 +427,25 @@ _uninstall_agent() {
     _fatal 6 "Uninstall incomplete: some files could not be removed. Marker left intact for retry."
   fi
 
+  # The claude-desktop LaunchAgent lives outside the marker's directory, so remove
+  # it explicitly. Unload it first, or launchd keeps the job until the next logout.
+  if [ "${_ua_agent}" = "claude-desktop" ] && [ "${OS}" = "macos" ]; then
+    _ua_plist="${TARGET_ROOT:-}/Library/LaunchAgents/${_CD_PLIST}"
+    if [ -e "${_ua_plist}" ]; then
+      if [ "${DRY_RUN}" = "1" ]; then
+        _info "  [plan] launchctl unload \"${_ua_plist}\""
+        _info "  [plan] rm  \"${_ua_plist}\""
+      else
+        launchctl unload "${_ua_plist}" 2>/dev/null || true
+        if rm -f -- "${_ua_plist}"; then
+          _info "  removed: \"${_ua_plist}\""
+        else
+          _warn "Failed to remove '${_ua_plist}'"
+        fi
+      fi
+    fi
+  fi
+
   # Remove the marker last.
   if [ "${DRY_RUN}" = "1" ]; then
     _info "  [plan] rm  \"${_ua_marker}\""
@@ -734,9 +757,32 @@ _install_claude_desktop() {
     _cd_files="${_cd_files} otel-headers-helper.sh"
   fi
 
+  # Optional: the MDM-triggered SSO bootstrap. The script lives beside the helpers.
+  if [ -f "${_cd_src}/ug-sso-bootstrap.sh" ]; then
+    _action_copy  "${_cd_src}/ug-sso-bootstrap.sh" "${_cd_dir}/ug-sso-bootstrap.sh"
+    _action_chmod 755 "${_cd_dir}/ug-sso-bootstrap.sh"
+    _cd_files="${_cd_files} ug-sso-bootstrap.sh"
+  fi
+
   _action_chown "${_owner}" "${_cd_dir}"
 
   _write_version_marker "claude-desktop" "${_cd_dir}" "${_cd_src}" "${_cd_files}"
+
+  # The LaunchAgent plist goes to /Library/LaunchAgents, NOT the helper dir, so a
+  # login session loads it for every user. macOS only: Linux needs a systemd user
+  # unit, and the generator emits no plist for it.
+  if [ "${OS}" = "macos" ] && [ -f "${_cd_src}/${_CD_PLIST}" ]; then
+    _cd_agents_dir="${TARGET_ROOT:-}/Library/LaunchAgents"
+    _action_mkdir "${_cd_agents_dir}"
+    _action_copy  "${_cd_src}/${_CD_PLIST}" "${_cd_agents_dir}/${_CD_PLIST}"
+    # 644 root:wheel: launchd refuses a group- or world-writable agent plist.
+    _action_chmod 644 "${_cd_agents_dir}/${_CD_PLIST}"
+    _info "  agent  : ${_cd_agents_dir}/${_CD_PLIST}"
+    _info "           It runs ug-sso-bootstrap.sh at each user login, in the user's"
+    _info "           GUI session, so ug configure can open a browser for SSO."
+    _info "           It loads at the next login. To load it now, run as the user:"
+    _info "             launchctl load \"/Library/LaunchAgents/${_CD_PLIST}\""
+  fi
 
   _info "  note   : import claude-setup.json in the app (Developer -> Configure"
   _info "           third-party inference), then export the MDM profile from the app."
