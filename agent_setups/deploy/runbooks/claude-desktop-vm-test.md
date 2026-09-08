@@ -22,7 +22,7 @@ deployment uses no personal access tokens.
 |---|---|---|
 | Start, suspend, and stop the guest | No | `prlctl` |
 | Snapshot and revert between takes | No | `prlctl snapshot` |
-| Copy the helper scripts to the guest | No | `scp` over SSH |
+| Install the helper payload | No | A `.pkg` through `installer` over SSH |
 | Install `ug` | No | `ssh` |
 | Trigger `ug configure` | No | `ssh`, or the LaunchAgent the MDM pushes |
 | **Complete the SSO login** | **A browser** | The developer signs in once. This is intended |
@@ -122,42 +122,62 @@ prlctl snapshot-switch "$VM" --id <snapshot-id>
 
 ---
 
-## Step 3 — Deploy the helper scripts
+## Step 3 — Deploy the payload as a package
 
-The generated config names the helper scripts by absolute path. So place them at
-the exact path the config expects. The default is
-`/Library/Application Support/ClaudeDesktop`.
+A configuration profile carries settings only. It cannot place a file. So the
+helper scripts, the SSO bootstrap, and the LaunchAgent arrive in a `.pkg`, which is
+also the artifact an MDM deploys. Installing it with `installer` over SSH is fully
+headless, and it exercises the same payload Jamf would push.
 
-Generate the bundle on the host first.
+Build the bundle and the package on the host.
 
 ```sh
 make agent-claude-desktop PROFILE=<profile>
+make claude-desktop-pkg   PROFILE=<profile>
 ```
 
-Copy the helpers to the guest, then place them as root.
+Copy the package to the guest and install it.
 
 ```sh
-BUNDLE=agent_setups/generated/claude-desktop/macos
-DEST="/Library/Application Support/ClaudeDesktop"
-
-scp "$BUNDLE"/databricks-token.sh "$BUNDLE"/otel-headers-helper.sh \
-    "$BUNDLE"/ug-sso-bootstrap.sh "$BUNDLE"/ug-sso-bootstrap.plist "$GUEST":/tmp/
-ssh "$GUEST" "sudo mkdir -p '$DEST' \
-  && sudo cp /tmp/databricks-token.sh /tmp/otel-headers-helper.sh '$DEST'/ \
-  && sudo chmod 755 '$DEST'/databricks-token.sh '$DEST'/otel-headers-helper.sh \
-  && ls -l '$DEST'"
+PKG="$(ls -t dist/claude-desktop-*.pkg | head -1)"
+scp "$PKG" "$GUEST":/tmp/claude-desktop.pkg
+ssh "$GUEST" 'sudo installer -pkg /tmp/claude-desktop.pkg -target / && echo INSTALL_OK'
 ```
 
-Confirm the path in the config matches the path on the guest.
+That is the whole install, with no GUI at any point.
+
+Confirm what landed, and with which modes:
 
 ```sh
-python3 -c "import json;print(json.load(open('$BUNDLE/claude-setup.json'))['inference']['credential']['command'])"
+ssh "$GUEST" 'ls -l "/Library/Application Support/ClaudeDesktop" /Library/LaunchAgents/ug-sso-bootstrap.plist'
 ```
 
-The two paths must be identical. If they differ, generate the bundle again with
-`--install-dir-macos "<path>"`.
+Expect the three scripts at mode 755, and the plist at 644. launchd refuses a
+group- or world-writable agent plist, so 644 is not cosmetic.
 
----
+Confirm the path the config expects matches the path on disk:
+
+```sh
+python3 -c "import json;print(json.load(open('agent_setups/generated/claude-desktop/macos/claude-setup.json'))['inference']['credential']['command'])"
+```
+
+The two must be identical. If they differ, regenerate with
+`--install-dir-macos "<path>"` and rebuild the package.
+
+> **The postinstall may already have started the SSO login.** The package loads the
+> LaunchAgent for the logged-in user, so a browser can appear as soon as the install
+> finishes. That is intended. Step 6 covers it. To install without that, add
+> `ARGS=--no-autoload` when building the package.
+
+### Without a package
+
+`install.sh` places the same files from a generated bundle. Use this to test a
+change without rebuilding a package.
+
+```sh
+sh agent_setups/deploy/install.sh --agents claude-desktop --os macos \
+  --source agent_setups/generated
+```
 
 ## Step 4 — Install the configuration profile
 

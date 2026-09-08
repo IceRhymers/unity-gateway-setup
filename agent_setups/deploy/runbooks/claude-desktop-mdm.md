@@ -26,6 +26,30 @@ configuration. So the deployment has an extra shape:
 The generator does not produce the `.mobileconfig` or the `.reg` file. Only the
 app produces them. Plan for that import step. You cannot skip it.
 
+### A rollout needs two artifacts, not one
+
+This is the point operators get wrong most often. A configuration profile carries
+**settings only**. It cannot place a file, and it cannot run a command. So a profile
+alone will never install the credential helper, the SSO bootstrap, or the
+LaunchAgent.
+
+| Artifact | Delivers | Produced by |
+|---|---|---|
+| **`.pkg`** | The helper scripts, the SSO bootstrap, the LaunchAgent | `make claude-desktop-pkg` |
+| **`.mobileconfig`** | The Claude Desktop settings | The Claude Desktop app, on export |
+
+Both go to the fleet. Push the `.pkg` first, because the profile's
+`credential.command` names a script the package places.
+
+`ug` is a third prerequisite, delivered separately. The package does not carry it.
+The bootstrap script logs and exits when `ug` is absent, then retries at the next
+login, so the two packages may arrive in either order.
+
+> **You do not need an MDM to test the install.** `installer -pkg` over SSH is
+> completely headless and exercises the same payload an MDM would push. An MDM adds
+> distribution and scoping, not install mechanics. The VM runbook uses `installer`
+> for exactly this reason.
+
 ---
 
 ## 2. Division of labour
@@ -67,6 +91,31 @@ A macOS or Linux bundle holds three files:
 | `otel-headers-helper.sh` | Mints the telemetry token. Present only when telemetry is on |
 | `ug-sso-bootstrap.sh` | Guards, then runs `ug configure` for the one-time SSO login |
 | `ug-sso-bootstrap.plist` | The LaunchAgent that runs the script at login. macOS only |
+
+Build the installer package from that bundle:
+
+```sh
+make claude-desktop-pkg PROFILE=<profile>
+# signed for distribution:
+make claude-desktop-pkg PROFILE=<profile> PKG_SIGN_ID="Developer ID Installer: <org> (<team>)"
+```
+
+It writes `dist/claude-desktop-<version>.pkg`, which places:
+
+| Payload path | Mode |
+|---|---|
+| `/Library/Application Support/ClaudeDesktop/databricks-token.sh` | 755 |
+| `/Library/Application Support/ClaudeDesktop/otel-headers-helper.sh` | 755 |
+| `/Library/Application Support/ClaudeDesktop/ug-sso-bootstrap.sh` | 755 |
+| `/Library/LaunchAgents/ug-sso-bootstrap.plist` | 644 |
+
+Its postinstall loads the LaunchAgent for the user who is logged in, so the SSO
+prompt appears right after the package lands instead of waiting for a logout. At
+imaging time there is no console user, and the agent then loads at the first real
+login. Pass `--no-autoload` through `ARGS` to suppress that.
+
+An unsigned package installs through `installer(8)` and through an MDM. Gatekeeper
+blocks a double-click install, so sign it for anything a person opens by hand.
 
 A Windows bundle holds `claude-setup.json`, `databricks-token.ps1`, a
 `databricks-token.cmd` shim, and the two OTEL files.
@@ -116,15 +165,26 @@ exist at that exact path on every device.
 To change a directory, pass `--install-dir-macos`, `--install-dir-windows`, or
 `--install-dir-linux` when you generate. The config then names the path you set.
 
-On macOS and Linux:
+### macOS, for a fleet
+
+Deploy the package. This is what an MDM does, and what `installer` does locally.
+
+```sh
+sudo installer -pkg dist/claude-desktop-<version>.pkg -target /
+```
+
+### macOS and Linux, for a local build or a Linux fleet
+
+`install.sh` places the same files from a generated bundle, with no package.
 
 ```sh
 sh agent_setups/deploy/install.sh --agents claude-desktop --os macos \
   --source agent_setups/generated
 ```
 
-The installer sets each script executable. It does not place `claude-setup.json`,
-because an operator imports that file.
+The installer sets each script executable, places the LaunchAgent in
+`/Library/LaunchAgents`, and records what it placed so `--uninstall` can remove it.
+It does not place `claude-setup.json`, because an operator imports that file.
 
 On Windows, `install.sh` does not run. Push the two `.cmd` and `.ps1` pairs with
 Intune, or with a machine-wide script. Keep each `.ps1` beside its `.cmd`. The
@@ -169,11 +229,73 @@ not exist produces an authentication failure with no clear cause.
 
 Order the wave this way:
 
-1. Push the helper scripts.
+1. Push the `.pkg`. It places the helper scripts, the bootstrap, and the LaunchAgent
+   in one step.
 2. Push `ug`, if your fleet does not have it.
-3. Push the configuration profile.
-4. Push `ug-sso-bootstrap.plist` to `/Library/LaunchAgents`. Push it last, so the
-   agent never fires before `ug` and the bootstrap script exist.
+3. Push the `.mobileconfig`.
+
+Order 1 before 3: the profile's `credential.command` names a script the package
+places. A profile that arrives first points at a file that does not exist yet, and
+Claude Desktop reports an authentication failure with no obvious cause.
+
+The order of 2 is free. The bootstrap tolerates a missing `ug` and retries at the
+next login.
+
+---
+
+## 7a. Jamf Pro specifics
+
+Jamf Pro is a server with a web console. You administer it from a browser on your
+own machine. The managed Mac is a client, and it runs no console.
+
+So the split is: the console in your browser, and the Claude Desktop payload on the
+managed device.
+
+### What each Jamf object carries
+
+| Jamf object | Carries | Why |
+|---|---|---|
+| **Package** | The `.pkg` | The only Jamf object that places files |
+| **Policy** | The package, scoped and triggered | Runs the install on the device |
+| **Configuration Profile** | The `.mobileconfig` | Settings only |
+
+Use a Policy for the package, and a Configuration Profile for the profile. A
+Configuration Profile cannot install the package, and a Policy is not the right
+object for settings.
+
+### Order of operations
+
+1. Upload `dist/claude-desktop-<version>.pkg` to Jamf as a Package.
+2. Create a Policy with a Packages payload for it. Trigger it at Recurring
+   Check-in, and set Execution Frequency to Once per computer.
+3. Scope the Policy to a Smart Group, or to one test computer.
+4. Upload the app-exported `.mobileconfig` as a Configuration Profile.
+5. Scope the Configuration Profile to the same group.
+
+Let the Policy run before the Configuration Profile reaches the device. See the
+ordering note in section 7.
+
+### `ug` on a Jamf-managed fleet
+
+Jamf deploys `ug` the same way: as its own Package, or through a Policy with a
+Scripts payload that runs your install command. Scope it to the same group. The
+order against the Claude Desktop package does not matter.
+
+### Do not test against a corporate Jamf instance
+
+A corporate Jamf instance manages real devices. A mis-scoped test profile reaches
+them. Use an instance you own, or ask the team that owns the corporate one to scope
+a test profile to one device.
+
+A Mac holds **one** MDM enrollment. So a corporate-enrolled machine cannot also
+enroll in your test instance. Test in a VM. See `claude-desktop-vm-test.md`.
+
+### A VM cannot use Automated Device Enrollment
+
+Automated Device Enrollment needs an Apple Business Manager record, and a VM has
+none. So enrollment in a VM is the manual path: install the enrollment profile, and
+approve it once. Every profile push after that is silent, which is the part worth
+demonstrating.
 
 ---
 

@@ -13,6 +13,8 @@ This generator produces two things per OS:
 
 This generator does not produce the `.mobileconfig` or `.reg` MDM artifacts. The Claude Desktop app exports those after you import the JSON.
 
+For a fleet you also need an installer package, because a configuration profile carries settings only and cannot place a file. Build it with `make claude-desktop-pkg`. See `claude-desktop-mdm.md` for the two-artifact model.
+
 ---
 
 ## Three-phase deployment model

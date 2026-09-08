@@ -219,6 +219,21 @@ check: tf-fmt-check tf-validate test test-generators test-tfstate ## Run all sta
 
 # ---- deployment packaging ----
 
+# ---- claude-desktop macOS installer package ----
+# A .mobileconfig carries SETTINGS ONLY: it cannot place a file or run a command.
+# So the helper scripts, the SSO bootstrap, and the LaunchAgent need a .pkg, which
+# is also the artifact every MDM deploys. PKG_SIGN_ID signs it for distribution.
+PKG_SIGN_ID ?=
+PKG_VERSION ?= $(VERSION)
+
+.PHONY: claude-desktop-pkg
+claude-desktop-pkg: ## Build the macOS .pkg that places the Claude Desktop helpers + SSO LaunchAgent (PROFILE=, PKG_SIGN_ID=, ARGS=)
+	sh agent_setups/deploy/build-claude-desktop-pkg.sh \
+		--source "$(OUT_DIR)/claude-desktop/macos" \
+		--out "$(DIST_DIR)/claude-desktop-$(PKG_VERSION).pkg" \
+		--version "$(PKG_VERSION)" \
+		$(if $(PKG_SIGN_ID),--sign "$(PKG_SIGN_ID)",) $(ARGS)
+
 .PHONY: deploy-package
 deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generate the bundles first)
 	@mkdir -p "$(DIST_DIR)"
