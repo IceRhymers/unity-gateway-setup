@@ -455,15 +455,28 @@ Run these four checks on a device that received the push.
 profiles list -type=configuration
 ```
 
-2. Confirm the helper returns a token. Count the bytes. Never print the token.
+2. Confirm the settings reached the app's preference domain. Claude Desktop reads
+   `com.anthropic.claudefordesktop`. A profile-delivered value appears under
+   `/Library/Managed Preferences`, which is read-only to the user and separate from
+   the app's own `~/Library/Preferences` copy.
+
+```sh
+ls /Library/Managed\ Preferences/ | grep -i anthropic
+defaults read com.anthropic.claudefordesktop
+```
+
+   An empty `grep` means no profile is applied. The `defaults read` output then
+   shows only the app's local state, such as window positions.
+
+3. Confirm the helper returns a token. Count the bytes. Never print the token.
 
 ```sh
 "/Library/Application Support/ClaudeDesktop/databricks-token.sh" | wc -c
 ```
 
-3. Open Claude Desktop, and confirm the model list matches the gateway.
+4. Open Claude Desktop, and confirm the model list matches the gateway.
 
-4. Send a test message. Then confirm a new row in the traces table.
+5. Send a test message. Then confirm a new row in the traces table.
 
 ---
 
