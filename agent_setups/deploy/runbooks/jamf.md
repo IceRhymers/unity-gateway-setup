@@ -442,17 +442,35 @@ profile, and approve it once. Every profile push after that is silent.
 
 ## Uninstall
 
-### The Claude Desktop package
+### The packages
 
-`install.sh --uninstall` removes the helper scripts and the LaunchAgent. It unloads
-the agent first.
+`install.sh --uninstall` does **not** remove a package install. It reads the version
+marker that `install.sh` writes, and the package path never writes one.
+
+Use `uninstall-pkgs.sh` instead. It reads the package receipts, so it removes exactly
+what the packages placed.
 
 ```sh
-sh install.sh --agents claude-desktop --os macos --uninstall
+sudo sh uninstall-pkgs.sh --dry-run          # preview
+sudo sh uninstall-pkgs.sh                    # remove
+sudo sh uninstall-pkgs.sh --purge-user-state # also clear ug's per-user state
 ```
 
-Remove the Configuration Profile through Jamf. Removing the package does not remove
-the profile.
+It unloads the SSO LaunchAgent before it removes the plist, because launchd keeps a
+loaded job until it is booted out. It only unlinks regular files, then tries `rmdir`
+on the directories, so a shared directory that still holds other content stays.
+Finally it forgets each receipt.
+
+`--purge-user-state` runs `ug revert`, removes `~/.ucode` and the bootstrap log, and
+uninstalls the `ug` tool that `uv` installed. It does **not** touch
+`~/.databrickscfg`, because that file holds every workspace profile a developer has.
+To drop one workspace's credentials, run `databricks auth logout --profile <name>`
+and name the profile yourself.
+
+Deploy it through Jamf as a Script policy for a fleet removal.
+
+Remove the Configuration Profile through Jamf. Removing a package does not remove the
+profile.
 
 ### The tarball agents
 

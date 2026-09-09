@@ -504,14 +504,22 @@ defaults read com.anthropic.claudefordesktop
 
 ## 13. Uninstall
 
-Remove the helper scripts on macOS and Linux.
+For a **package** install, use the receipt-based uninstaller. `install.sh --uninstall`
+does not cover it, because the package path writes no version marker.
+
+```sh
+sudo sh agent_setups/deploy/uninstall-pkgs.sh --dry-run
+sudo sh agent_setups/deploy/uninstall-pkgs.sh --purge-user-state
+```
+
+For a **bundle** install placed by `install.sh`:
 
 ```sh
 sh agent_setups/deploy/install.sh --agents claude-desktop --os macos --uninstall
 ```
 
-The command removes only the files the version marker records. It leaves
-`claude-setup.json`, because the installer never placed it.
+Either command removes only what it placed. Both leave `claude-setup.json`, because
+neither installer ever placed it.
 
 Remove the configuration profile with your MDM tool. Remove the imported
 configuration inside the app. To undo what `ug` wrote, run `ug revert`.

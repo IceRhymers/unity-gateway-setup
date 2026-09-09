@@ -327,13 +327,42 @@ every login, and that is the failure most likely to spoil a recording.
 ssh "$GUEST" 'ug status'
 ```
 
-### Reset authentication for another take
+### Reset for another take
+
+Reverting to the baseline snapshot is the cleanest reset, and it clears everything.
+
+To reset without a snapshot, remove the packages and ug's state:
 
 ```sh
-ssh "$GUEST" 'ug revert || true; rm -f ~/.databrickscfg ~/Library/Logs/ug-sso-bootstrap.log'
+scp agent_setups/deploy/uninstall-pkgs.sh "$GUEST":/tmp/
+ssh "$GUEST" 'sudo sh /tmp/uninstall-pkgs.sh --purge-user-state'
 ```
 
-Reverting to the baseline snapshot also clears it, and clears everything else too.
+That unloads the LaunchAgent, removes every file the packages placed, forgets the
+receipts, and clears `~/.ucode`, the bootstrap log, and the `ug` tool.
+
+### Redeploying against a different workspace
+
+The workspace host is baked into the generated scripts and into `claude-setup.json`.
+So a different workspace needs a full regeneration, not only a reinstall.
+
+1. Remove the old packages, as above.
+2. Choose the Databricks profile for the new workspace. Run
+   `databricks auth profiles` to list them.
+3. Regenerate and rebuild with that profile:
+
+```sh
+make agents   PROFILE=<profile>
+make packages PROFILE=<profile>
+```
+
+4. Install the new packages, then import the newly exported `.mobileconfig`.
+
+Confirm the new host actually landed before you install:
+
+```sh
+grep -m1 '^host=' agent_setups/generated/claude-desktop/macos/ug-sso-bootstrap.sh
+```
 
 ## Step 7 — Verify the token path, headlessly
 
