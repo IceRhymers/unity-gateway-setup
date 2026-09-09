@@ -104,6 +104,9 @@ A macOS or Linux bundle holds three files:
 | `ug-sso-bootstrap.sh` | Guards, then runs `ug configure` for the one-time SSO login |
 | `ug-sso-bootstrap.plist` | The LaunchAgent that runs the script at login. macOS only |
 
+`make packages` builds every package at once. To build only the Claude Desktop pair,
+use the two targets below.
+
 Build the installer package from that bundle:
 
 ```sh

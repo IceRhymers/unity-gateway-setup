@@ -146,6 +146,16 @@ A failed install is not fatal. The script logs it and the next login retries.
 
 On an admin workstation with the repository checked out.
 
+To build everything at once:
+
+```sh
+make agents   PROFILE=<profile>   # generate every bundle
+make packages PROFILE=<profile>   # build every installer package
+```
+
+The sections below cover each artifact on its own, and the individual targets for
+rebuilding one.
+
 ### For Claude Code and Codex, an installer package
 
 ```sh

@@ -262,6 +262,17 @@ claude-desktop-pkg: ## Build the macOS .pkg that places the Claude Desktop helpe
 		--version "$(PKG_VERSION)" \
 		$(if $(PKG_SIGN_ID),--sign "$(PKG_SIGN_ID)",) $(ARGS)
 
+.PHONY: packages
+packages: coding-agents-pkg claude-desktop-pkg ug-bootstrap-pkg ## Build every macOS installer package (generate the bundles first; PROFILE=, PKG_SIGN_ID=, ARGS=)
+	@echo ""
+	@echo "[packages] Built in $(DIST_DIR)/:"
+	@ls -1 "$(DIST_DIR)"/*-$(PKG_VERSION).pkg 2>/dev/null | sed 's/^/  /'
+	@echo ""
+	@echo "[packages] Install order on a device: any. They share no file."
+	@echo "[packages] Still needed, and NOT built here:"
+	@echo "  - the .mobileconfig, which the Claude Desktop app exports after an import"
+	@echo "  - uv on the device, a prerequisite the bootstrap installs ug with"
+
 .PHONY: deploy-package
 deploy-package: ## Build self-contained per-OS deploy tarballs in dist/ (generate the bundles first)
 	@mkdir -p "$(DIST_DIR)"

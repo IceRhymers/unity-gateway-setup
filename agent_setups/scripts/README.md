@@ -194,8 +194,10 @@ make agent-codex         # → codex/etc/ managed bundle
 
 # 1a. macOS fleet: build an installer package. This is what an MDM deploys, and it
 #     needs no install.sh on the target machine.
+make packages            # all three at once, or one at a time:
 make coding-agents-pkg   # → dist/coding-agents-<version>.pkg
 make claude-desktop-pkg  # → dist/claude-desktop-<version>.pkg
+make ug-bootstrap-pkg    # → dist/ug-bootstrap-<version>.pkg
 
 # 1b. Otherwise build per-OS tarballs (includes install.sh + runbooks + VERSION).
 #     deploy-package hard-errors if a claude-code bundle or managed codex bundle is absent.

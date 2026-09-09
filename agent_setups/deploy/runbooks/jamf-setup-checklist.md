@@ -55,13 +55,12 @@ This is the whole loop. It is fully headless apart from the profile approval.
 1. Build the artifacts on your laptop. Three packages, one profile.
 
 ```sh
-make agent-claude-code    PROFILE=<profile>
-make agent-codex          PROFILE=<profile>
-make agent-claude-desktop PROFILE=<profile>
-make coding-agents-pkg    PROFILE=<profile>
-make claude-desktop-pkg   PROFILE=<profile>
-make ug-bootstrap-pkg     PROFILE=<profile>
+make agents   PROFILE=<profile>   # generate every bundle
+make packages PROFILE=<profile>   # build every installer package
 ```
+
+`make packages` runs the three package targets. Build the bundles first, because a
+package target reads them and does not generate them.
 
 2. Copy all three packages to the VM, and install them over SSH. The order does not
    matter, because they write no file in common.

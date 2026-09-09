@@ -133,9 +133,11 @@ Build the bundle and the package on the host.
 
 ```sh
 make agent-claude-desktop PROFILE=<profile>
-make claude-desktop-pkg   PROFILE=<profile>
-make ug-bootstrap-pkg     PROFILE=<profile>
+make packages             PROFILE=<profile>
 ```
+
+`make packages` builds all three packages. Use the individual targets
+(`claude-desktop-pkg`, `ug-bootstrap-pkg`, `coding-agents-pkg`) to rebuild one.
 
 `claude-desktop.pkg` carries the helper scripts. `ug-bootstrap.pkg` carries the SSO
 bootstrap and its LaunchAgent. Install both. Neither carries `uv`, which the guest
