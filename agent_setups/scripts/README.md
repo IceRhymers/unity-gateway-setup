@@ -192,12 +192,18 @@ workflow is:
 make agent-claude-code   # → claude-code/{macos,linux,windows}/ per-OS bundles
 make agent-codex         # → codex/etc/ managed bundle
 
-# 1. Build per-OS tarballs (includes install.sh + runbooks + VERSION).
-#    deploy-package hard-errors if a claude-code bundle or managed codex bundle is absent.
+# 1a. macOS fleet: build an installer package. This is what an MDM deploys, and it
+#     needs no install.sh on the target machine.
+make coding-agents-pkg   # → dist/coding-agents-<version>.pkg
+make claude-desktop-pkg  # → dist/claude-desktop-<version>.pkg
+
+# 1b. Otherwise build per-OS tarballs (includes install.sh + runbooks + VERSION).
+#     deploy-package hard-errors if a claude-code bundle or managed codex bundle is absent.
 make deploy-package
 
-# 2. Distribute and run on each machine (see MDM runbooks below).
-#    install.sh places files with correct modes and writes a version marker.
+# 2. Distribute. A package installs with `installer -pkg`, or through an MDM.
+#    A tarball needs install.sh, which places files with correct modes and writes
+#    a version marker. See the MDM runbooks below.
 ```
 
 MDM runbooks for fleet deployment:

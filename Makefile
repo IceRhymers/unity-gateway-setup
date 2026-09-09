@@ -219,12 +219,29 @@ check: tf-fmt-check tf-validate test test-generators test-tfstate ## Run all sta
 
 # ---- deployment packaging ----
 
-# ---- claude-desktop macOS installer package ----
+# ---- macOS installer packages ----
 # A .mobileconfig carries SETTINGS ONLY: it cannot place a file or run a command.
-# So the helper scripts, the SSO bootstrap, and the LaunchAgent need a .pkg, which
-# is also the artifact every MDM deploys. PKG_SIGN_ID signs it for distribution.
+# So every managed file needs a .pkg, which is also the artifact every MDM deploys.
+#
+# Two packages, versioned independently, so one agent can be staged or rolled back
+# without touching the other:
+#   coding-agents-pkg   -> Claude Code + Codex managed configs
+#   claude-desktop-pkg  -> Claude Desktop helpers + SSO LaunchAgent
+#
+# Neither carries ug. ug has its own distribution (`uv tool install`, `ug upgrade`)
+# and per-user state, so deploy it as its own MDM package.
+#
+# PKG_SIGN_ID signs a package for distribution.
 PKG_SIGN_ID ?=
 PKG_VERSION ?= $(VERSION)
+
+.PHONY: coding-agents-pkg
+coding-agents-pkg: ## Build the macOS .pkg that places the Claude Code + Codex managed configs (PROFILE=, PKG_SIGN_ID=, ARGS=)
+	sh agent_setups/deploy/build-coding-agents-pkg.sh \
+		--source "$(OUT_DIR)" \
+		--out "$(DIST_DIR)/coding-agents-$(PKG_VERSION).pkg" \
+		--version "$(PKG_VERSION)" \
+		$(if $(PKG_SIGN_ID),--sign "$(PKG_SIGN_ID)",) $(ARGS)
 
 .PHONY: claude-desktop-pkg
 claude-desktop-pkg: ## Build the macOS .pkg that places the Claude Desktop helpers + SSO LaunchAgent (PROFILE=, PKG_SIGN_ID=, ARGS=)

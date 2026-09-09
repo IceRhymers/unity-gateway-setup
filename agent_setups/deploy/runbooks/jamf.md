@@ -83,9 +83,16 @@ that are hard to read.
 
 | Artifact | Jamf object | Agents |
 |---|---|---|
-| `.pkg` installer | **Package**, run by a Policy | Claude Desktop |
-| `.tar.gz` bundle | **Script** policy that unpacks it | Claude Code, Codex |
+| `coding-agents-<version>.pkg` | **Package**, run by a Policy | Claude Code, Codex |
+| `claude-desktop-<version>.pkg` | **Package**, run by a Policy | Claude Desktop |
 | `.mobileconfig` | **Configuration Profile** | Claude Desktop |
+| `.tar.gz` bundle | **Script** policy that unpacks it | Claude Code, Codex (fallback) |
+
+The two packages version independently. So you can stage or roll back one agent
+without touching the other.
+
+The tarball is the fallback. Prefer a package: Jamf then records a receipt, and it
+reports the install state.
 
 A Configuration Profile carries settings only. It cannot place a file, and it cannot
 run a command. So it never installs a helper script.
@@ -126,7 +133,36 @@ bootstrap script logs and exits when `ug` is absent, then retries at the next lo
 
 On an admin workstation with the repository checked out.
 
-### For Claude Code and Codex, a tarball
+### For Claude Code and Codex, an installer package
+
+```sh
+make agent-claude-code PROFILE=<profile>
+make agent-codex       PROFILE=<profile>
+make coding-agents-pkg PROFILE=<profile>
+```
+
+This writes `dist/coding-agents-<version>.pkg`. It places six files.
+
+| Payload path | Mode |
+|---|---|
+| `/Library/Application Support/ClaudeCode/managed-settings.json` | 644 |
+| `/Library/Application Support/ClaudeCode/otel-headers-helper.sh` | 755 |
+| `/Library/Application Support/ClaudeCode/emit_hook_events.sh` | 755 |
+| `/etc/codex/managed_config.toml` | 644 |
+| `/etc/codex/requirements.toml` | 644 |
+| `/etc/codex/emit_hook_events.sh` | 755 |
+
+The two helper scripts appear only when telemetry or hook events are on. The package
+has no postinstall, because neither agent runs a daemon. Claude Code reads its
+managed file at the next launch, and Codex reads its file at the next run.
+
+Pass `--skip-codex` or `--skip-claude-code` through `ARGS` to place one agent only.
+
+> **Codex must be in managed mode.** `install.sh` silently skips a user-mode Codex
+> bundle, so a package built from one would deploy nothing and still exit 0. The
+> builder refuses that bundle instead, and exits 4. Regenerate with `make agent-codex`.
+
+### For Claude Code and Codex, a tarball (fallback)
 
 ```sh
 make deploy-package
@@ -135,6 +171,9 @@ make deploy-package
 This writes `dist/unity-gateway-agents-<version>-macos.tar.gz`. The tarball holds the
 bundle files, `install.sh`, the runbooks, and a `VERSION` file. The target machine
 needs no network access.
+
+Use it when you want `install.sh` to do the placement, such as for a Linux fleet or a
+container. For a macOS fleet, prefer the package.
 
 ### For Claude Desktop, an installer package
 
@@ -156,12 +195,15 @@ Its postinstall loads the LaunchAgent for the user who is logged in. So the brow
 sign-in starts as soon as the package lands. At imaging time there is no console
 user, and the agent loads at the first real login instead.
 
-Upload each artifact to Jamf. Upload the tarball to a distribution point. Upload the
-`.pkg` as a Package.
+Upload each artifact to Jamf. Upload both `.pkg` files as Packages. Upload a tarball,
+if you use one, to a distribution point.
 
 ---
 
-## Step 2a — A Policy for the Claude Desktop package
+## Step 2a — A Policy for each package
+
+Create one Policy per package. Separate policies keep the two versions and their
+scopes independent.
 
 1. Open Computers. Open Management. Open Packages. Upload the `.pkg`.
 2. Create a Policy. Add a Packages payload. Select the package.
@@ -169,13 +211,25 @@ Upload each artifact to Jamf. Upload the tarball to a distribution point. Upload
 4. Set the Execution Frequency to Once per computer.
 5. Scope it. See Step 4.
 
-No script is needed. Jamf installs the package as root.
+Repeat for the second package.
+
+| Package | Places |
+|---|---|
+| `coding-agents-<version>.pkg` | The Claude Code and Codex managed configs |
+| `claude-desktop-<version>.pkg` | The Claude Desktop helpers and the SSO LaunchAgent |
+
+No script is needed. Jamf installs a package as root.
+
+The two packages write no file in common. Only the parent directory
+`/Library/Application Support` is shared, so neither clobbers the other. The install
+order between them does not matter.
 
 ---
 
-## Step 2b — A Script policy for the tarball
+## Step 2b — A Script policy for the tarball (fallback)
 
-Claude Code and Codex ship as a tarball, so they need a script that unpacks it.
+Use this only when you deploy the tarball instead of the package. A tarball needs a
+script, because Jamf cannot unpack one on its own.
 
 Open Computers. Open Management. Open Scripts. Create a new script with this body.
 
@@ -219,8 +273,8 @@ echo "Each developer must complete Phase C — see the Self Service item."
 Attach the script to a Policy, and scope it. Set the Execution Frequency to Once per
 computer for the first rollout. Change it when the config version changes.
 
-`install.sh` also handles Claude Desktop with `--agents claude-desktop`. Use the
-package instead. A package gives Jamf a receipt and an install state to report.
+`install.sh` handles every agent, Claude Desktop included. Prefer the packages. A
+package gives Jamf a receipt and an install state to report.
 
 ---
 

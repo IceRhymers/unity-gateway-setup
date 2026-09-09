@@ -38,6 +38,9 @@ LaunchAgent.
 | **`.pkg`** | The helper scripts, the SSO bootstrap, the LaunchAgent | `make claude-desktop-pkg` |
 | **`.mobileconfig`** | The Claude Desktop settings | The Claude Desktop app, on export |
 
+Claude Code and Codex have their own package, `make coding-agents-pkg`. It is
+independent of this one, and the two write no file in common. See `jamf.md`.
+
 Both go to the fleet. Push the `.pkg` first, because the profile's
 `credential.command` names a script the package places.
 

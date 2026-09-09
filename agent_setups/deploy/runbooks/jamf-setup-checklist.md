@@ -22,10 +22,20 @@ Two paths prove different things. Read this before you spend a day on Jamf.
 | Does a push reach a device with no user action? | No | **Yes** |
 | Does scoping target the right machines? | No | **Yes** |
 | Can IT remove it centrally? | No | **Yes** |
+| **Can the developer remove the profile?** | **Yes, in System Settings** | No |
 
 A manually installed profile still lands in `/Library/Managed Preferences`, and the
 app reads it the same way. So a manual install validates the payload completely. It
 does not validate distribution.
+
+It also does not validate **enforcement**. A user with admin rights can remove a
+manually installed profile in System Settings. A user cannot remove an MDM-delivered
+profile. That matters here, because `disableClaudeAiSignIn` and `allowedEgressHosts`
+exist to stop a developer bypassing the gateway. Under a manual install they are
+advisory. Under an MDM they are enforced.
+
+Test the removal yourself in the VM, and record the result. It is the claim a security
+reviewer presses on.
 
 **Do both, in this order.**
 
@@ -42,26 +52,38 @@ debug two systems at once.
 
 This is the whole loop. It is fully headless apart from the profile approval.
 
-1. Build the artifacts on your laptop.
+1. Build the artifacts on your laptop. Two packages, one profile.
 
 ```sh
+make agent-claude-code    PROFILE=<profile>
+make agent-codex          PROFILE=<profile>
 make agent-claude-desktop PROFILE=<profile>
+make coding-agents-pkg    PROFILE=<profile>
 make claude-desktop-pkg   PROFILE=<profile>
 ```
 
-2. Copy the package to the VM, and install it over SSH.
+2. Install `ug` in the VM. It is a separate prerequisite, and the coding agents need
+   it to mint a token.
 
 ```sh
-PKG="$(ls -t dist/claude-desktop-*.pkg | head -1)"
-scp "$PKG" "$GUEST":/tmp/claude-desktop.pkg
-ssh "$GUEST" 'sudo installer -pkg /tmp/claude-desktop.pkg -target / && echo INSTALL_OK'
+ssh "$GUEST" 'uv tool install git+https://github.com/databricks/ucode && ug --version'
 ```
 
-3. Let the SSO login happen. The package postinstall starts it.
-4. Import `claude-setup.json` in the app, then export the `.mobileconfig`.
-5. Copy the `.mobileconfig` to the VM. Double-click it. Approve it in System
+3. Copy both packages to the VM, and install them over SSH. The order does not
+   matter, because they write no file in common.
+
+```sh
+for p in $(ls -t dist/coding-agents-*.pkg | head -1) $(ls -t dist/claude-desktop-*.pkg | head -1); do
+  scp "$p" "$GUEST":/tmp/pkg.pkg
+  ssh "$GUEST" 'sudo installer -pkg /tmp/pkg.pkg -target / && echo INSTALL_OK'
+done
+```
+
+4. Let the SSO login happen. The Claude Desktop package postinstall starts it.
+5. Import `claude-setup.json` in the app, then export the `.mobileconfig`.
+6. Copy the `.mobileconfig` to the VM. Double-click it. Approve it in System
    Settings, under General, under Device Management.
-6. Verify.
+7. Verify.
 
 `claude-desktop-vm-test.md` has the full version, with the snapshot and reset steps.
 
