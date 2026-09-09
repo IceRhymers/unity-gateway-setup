@@ -263,13 +263,22 @@ Step 3 already placed both, because `ug-bootstrap.pkg` carries them.
 At the first login the agent installs `ug` with `uv`, then runs the SSO login. So take
 1 below exercises both steps.
 
-> **The guest needs `uv` first.** No package carries it. Confirm it before take 1:
+> **Confirm three prerequisites in the guest before take 1.** No package carries any
+> of them, and each one stops the chain at a different point.
 >
 > ```sh
 > ssh "$GUEST" 'ls -l ~/.local/bin/uv /opt/homebrew/bin/uv /usr/local/bin/uv 2>/dev/null'
+> ssh "$GUEST" 'cat ~/.config/uv/uv.toml 2>/dev/null'
+> ssh "$GUEST" 'command -v databricks'
 > ```
 >
-> If it is absent, install it in the guest the way your fleet does.
+> 1. **`uv`**, or the bootstrap cannot install `ug`.
+> 2. **A `uv` index configuration**, when the network blocks `pypi.org`. Copy the one
+>    your own machine uses. Without it `uv tool install` fails on a connection refused.
+> 3. **The `databricks` CLI**, because `ug` shells out to it. When it is absent, `ug`
+>    tries to install it with `sudo`, which cannot prompt from a LaunchAgent.
+>
+> Each failure is recorded in the bootstrap log, and each one retries at the next login.
 
 ### Take 1 — a device with no authentication
 

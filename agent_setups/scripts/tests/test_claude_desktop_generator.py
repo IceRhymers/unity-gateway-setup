@@ -214,6 +214,14 @@ class HelperScriptTest(unittest.TestCase):
         self.assertNotIn("databricks auth token", sh)
         self.assertNotIn("auth login", sh)
 
+    def test_cred_helper_gives_ug_a_usable_path(self):
+        """Claude Desktop runs the helper under launchd too, so ug needs the same PATH
+        to find `databricks`. Without it every token refresh fails."""
+        files = ClaudeDesktopGenerator().generate(_context(), _args())
+        sh = files[f"claude-desktop/macos/{CRED_HELPER_SH}"]
+        self.assertIn("export PATH", sh)
+        self.assertIn("/usr/local/bin", sh)
+
     def test_cred_helper_pins_the_workspace_host(self):
         """The token must come from the same workspace inference.baseUrl points at."""
         files = ClaudeDesktopGenerator().generate(_context(), _args())
@@ -516,6 +524,15 @@ class SsoBootstrapTest(unittest.TestCase):
         files = self._macos(launchagent_label="com.example.my-sso")
         d = plistlib.loads(files[f"claude-desktop/macos/{LAUNCHAGENT_PLIST}"].encode())
         self.assertEqual(d["Label"], "com.example.my-sso")
+
+    def test_script_gives_ug_a_usable_path(self):
+        """A launchd job gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, and ug shells out to
+        `databricks` BY BARE NAME. Without this export ug reports databricks missing
+        and tries to sudo-install it, which cannot prompt from launchd."""
+        sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        self.assertIn("export PATH", sh)
+        for d in ("$HOME/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"):
+            self.assertIn(d, sh)
 
     def test_script_installs_ug_when_absent(self):
         """The install is deferred to login because it is per-user. A package script

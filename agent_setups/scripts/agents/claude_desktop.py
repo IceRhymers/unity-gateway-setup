@@ -227,6 +227,19 @@ _CRED_HELPER_SH_TEMPLATE = r"""#!/usr/bin/env sh
 #   exit 1 - ug not found, or `ug auth-token` failed
 set -u
 
+# Give ug a PATH it can work with. This is load-bearing, not hygiene.
+#
+# A launchd job gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, which holds none of the
+# places developer tools install to. This script resolves ug and uv by absolute path,
+# but ug then shells out to `databricks` BY BARE NAME, so PATH decides whether it
+# finds it. Without this, ug reports "databricks was not found" and tries to install
+# it with sudo, which cannot prompt from a launchd job.
+#
+# The SIP-protected system directories cannot receive a binary, so extending PATH is
+# the only fix available.
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+
 # The workspace this config routes to, baked at generation time. Passing it pins
 # the token to the SAME workspace as inference.baseUrl — a developer with several
 # workspaces configured in ug would otherwise get a token for whichever one ug
@@ -324,6 +337,17 @@ $OutputEncoding = [Console]::OutputEncoding
 # The workspace this config routes to, baked at generation time, so the token is
 # pinned to the same workspace as inference.baseUrl.
 $workspaceHost = '__HOST__'
+
+# Give ug a PATH it can work with, for the same reason the POSIX helper does: ug
+# shells out to `databricks` by bare name, and a launchd-style minimal environment
+# does not include the directories developer tools install to.
+$env:PATH = @(
+    "$env:LOCALAPPDATA\Programs\Databricks",
+    "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
+    "$env:USERPROFILE\.local\bin",
+    "$env:ProgramFiles\Databricks",
+    $env:PATH
+) -join ';'
 
 # Resolve the ug executable without relying on PATH.
 function Resolve-Ug {
@@ -498,6 +522,19 @@ _SSO_BOOTSTRAP_SH_TEMPLATE = r"""#!/usr/bin/env sh
 # Exit codes are advisory only. The LaunchAgent does not retry, so a failure just
 # means the next login tries again. That makes the flow self-healing.
 set -u
+
+# Give ug a PATH it can work with. This is load-bearing, not hygiene.
+#
+# A launchd job gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, which holds none of the
+# places developer tools install to. This script resolves ug and uv by absolute path,
+# but ug then shells out to `databricks` BY BARE NAME, so PATH decides whether it
+# finds it. Without this, ug reports "databricks was not found" and tries to install
+# it with sudo, which cannot prompt from a launchd job.
+#
+# The SIP-protected system directories cannot receive a binary, so extending PATH is
+# the only fix available.
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
 
 host="__HOST__"
 log="$HOME/Library/Logs/ug-sso-bootstrap.log"
