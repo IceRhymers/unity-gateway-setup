@@ -227,26 +227,23 @@ check: tf-fmt-check tf-validate test test-generators test-tfstate ## Run all sta
 # without touching the others:
 #   coding-agents-pkg   -> Claude Code + Codex managed configs
 #   claude-desktop-pkg  -> Claude Desktop helper scripts
-#   ug-bootstrap-pkg    -> uv + the SSO bootstrap + its LaunchAgent
+#   ug-bootstrap-pkg    -> the SSO bootstrap + its LaunchAgent
 #
-# ug-bootstrap-pkg packages uv, not ug. Installing ug is per-user, and a package
-# script runs as root, so the install is deferred to first login where the
-# LaunchAgent runs it in the user's own session. UV_BIN packages a specific uv
-# (default: the one on PATH). Package a universal uv for a mixed-architecture fleet.
+# ug-bootstrap-pkg packages neither ug nor uv. Installing ug is per-user, and a
+# package script runs as root, so the install is deferred to first login where the
+# LaunchAgent runs it in the user's own session. uv is a prerequisite that IT owns,
+# because it also installs per-user and self-updates.
 #
 # PKG_SIGN_ID signs a package for distribution.
 PKG_SIGN_ID ?=
 PKG_VERSION ?= $(VERSION)
 
-UV_BIN ?=
-
 .PHONY: ug-bootstrap-pkg
-ug-bootstrap-pkg: ## Build the macOS .pkg that places uv + the SSO bootstrap LaunchAgent (PROFILE=, UV_BIN=, PKG_SIGN_ID=, ARGS=)
+ug-bootstrap-pkg: ## Build the macOS .pkg that places the ug SSO bootstrap + its LaunchAgent (PROFILE=, PKG_SIGN_ID=, ARGS=)
 	sh agent_setups/deploy/build-ug-bootstrap-pkg.sh \
 		--source "$(OUT_DIR)/claude-desktop/macos" \
 		--out "$(DIST_DIR)/ug-bootstrap-$(PKG_VERSION).pkg" \
 		--version "$(PKG_VERSION)" \
-		$(if $(UV_BIN),--uv "$(UV_BIN)",) \
 		$(if $(PKG_SIGN_ID),--sign "$(PKG_SIGN_ID)",) $(ARGS)
 
 .PHONY: coding-agents-pkg

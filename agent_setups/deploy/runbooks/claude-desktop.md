@@ -83,7 +83,8 @@ Each macOS or Linux bundle contains:
 - `otel-headers-helper.sh` (only when telemetry is wired)
 - `ug-sso-bootstrap.sh` and `ug-sso-bootstrap.plist` (the MDM-triggered SSO login;
   the plist is macOS only, and `--no-sso-bootstrap` omits both). For a fleet these
-  ship in `ug-bootstrap.pkg`, together with the `uv` the script needs.
+  ship in `ug-bootstrap.pkg`. The script installs `ug` with `uv`, which is a
+  prerequisite that no package carries.
 
 Each Windows bundle contains:
 

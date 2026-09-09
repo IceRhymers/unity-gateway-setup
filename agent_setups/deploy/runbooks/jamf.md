@@ -85,7 +85,7 @@ that are hard to read.
 |---|---|---|
 | `coding-agents-<version>.pkg` | **Package**, run by a Policy | Claude Code, Codex |
 | `claude-desktop-<version>.pkg` | **Package**, run by a Policy | Claude Desktop |
-| `ug-bootstrap-<version>.pkg` | **Package**, run by a Policy | `uv` and the `ug` login trigger |
+| `ug-bootstrap-<version>.pkg` | **Package**, run by a Policy | The `ug` login trigger |
 | `.mobileconfig` | **Configuration Profile** | Claude Desktop |
 | `.tar.gz` bundle | **Script** policy that unpacks it | Claude Code, Codex (fallback) |
 
@@ -93,9 +93,12 @@ The three packages version independently. So you can stage or roll back one piec
 without touching the others. `ug-bootstrap` carries the tool rather than any agent's
 config, which is why it is separate.
 
-**You do not deploy `ug` itself.** `ug-bootstrap.pkg` places `uv`, and its LaunchAgent
-installs `ug` for each user at their first login. A package script runs as root, so it
-cannot do a per-user install. See Step 5.
+**You do not deploy `ug` itself.** The `ug-bootstrap.pkg` LaunchAgent installs `ug`
+for each user at their first login. A package script runs as root, so it cannot do a
+per-user install. See Step 5.
+
+**You do deploy `uv`.** It is a prerequisite, because it also installs per-user and
+self-updates. Deploy it the way you deploy `databricks` and `python3`.
 
 The tarball is the fallback. Prefer a package: Jamf then records a receipt, and it
 reports the install state.
@@ -117,7 +120,7 @@ these as part of the macOS baseline.
 | `databricks` | Always critical. The Claude Code and Codex auth helpers call it. |
 | `python3` | Critical for the Claude Code and Codex auth helpers, and for the OTEL helper. |
 | `ug` | Critical for Claude Desktop. `ug-bootstrap.pkg` installs it at first login, so IT does not deploy it. |
-| `uv` | Critical, because the bootstrap installs `ug` with it. `ug-bootstrap.pkg` places it. |
+| `uv` | Critical, because the bootstrap installs `ug` with it. Deploy it as its own Package or Policy. |
 | `jq` | Critical only when hook-event telemetry is on. |
 | `curl` | Critical only when hook-event telemetry is on. |
 
@@ -227,7 +230,7 @@ Repeat for the second package.
 |---|---|
 | `coding-agents-<version>.pkg` | The Claude Code and Codex managed configs |
 | `claude-desktop-<version>.pkg` | The Claude Desktop helper scripts |
-| `ug-bootstrap-<version>.pkg` | `uv`, the SSO bootstrap, its LaunchAgent |
+| `ug-bootstrap-<version>.pkg` | The SSO bootstrap and its LaunchAgent |
 
 No script is needed. Jamf installs a package as root.
 
@@ -395,7 +398,7 @@ the developer is not already authenticated.
 
 At the first login the agent does two things, in order:
 
-1. It installs `ug` with the packaged `uv`, when `ug` is absent.
+1. It installs `ug` with `uv`, when `ug` is absent.
 2. It runs `ug configure`, which opens the browser for single sign-on.
 
 The developer signs in to the browser. They type nothing.

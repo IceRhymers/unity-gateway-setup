@@ -137,8 +137,9 @@ make claude-desktop-pkg   PROFILE=<profile>
 make ug-bootstrap-pkg     PROFILE=<profile>
 ```
 
-`claude-desktop.pkg` carries the helper scripts. `ug-bootstrap.pkg` carries `uv`, the
-SSO bootstrap, and its LaunchAgent. Install both.
+`claude-desktop.pkg` carries the helper scripts. `ug-bootstrap.pkg` carries the SSO
+bootstrap and its LaunchAgent. Install both. Neither carries `uv`, which the guest
+needs already.
 
 Copy the package to the guest and install it.
 
@@ -252,14 +253,21 @@ command. Do not use a personal access token.
 
 | File | Placed at |
 |---|---|
-| `/usr/local/bin/uv` | mode 755 |
 | `ug-sso-bootstrap.sh` | The helper directory, mode 755 |
 | `ug-sso-bootstrap.plist` | `/Library/LaunchAgents`, mode 644 |
 
-Step 3 already placed all three, because `ug-bootstrap.pkg` carries them.
+Step 3 already placed both, because `ug-bootstrap.pkg` carries them.
 
-At the first login the agent installs `ug` with the packaged `uv`, then runs the SSO
-login. So take 1 below exercises both steps.
+At the first login the agent installs `ug` with `uv`, then runs the SSO login. So take
+1 below exercises both steps.
+
+> **The guest needs `uv` first.** No package carries it. Confirm it before take 1:
+>
+> ```sh
+> ssh "$GUEST" 'ls -l ~/.local/bin/uv /opt/homebrew/bin/uv /usr/local/bin/uv 2>/dev/null'
+> ```
+>
+> If it is absent, install it in the guest the way your fleet does.
 
 ### Take 1 — a device with no authentication
 
@@ -278,7 +286,7 @@ Read the log to confirm which path the script took:
 ssh "$GUEST" 'cat ~/Library/Logs/ug-sso-bootstrap.log'
 ```
 
-It must say `ug absent; installing with /usr/local/bin/uv`, then
+It must say `ug absent; installing with`, then
 `not authenticated ... starting ug configure`. On a guest that already has `ug`, the
 install line is absent.
 

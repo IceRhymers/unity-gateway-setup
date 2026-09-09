@@ -75,8 +75,16 @@ for p in $(ls -t dist/coding-agents-*.pkg  | head -1) \
 done
 ```
 
-   You do not install `ug` yourself. `ug-bootstrap.pkg` places `uv`, and its
-   LaunchAgent installs `ug` for the logged-in user at first login.
+   You do not install `ug` yourself. The `ug-bootstrap.pkg` LaunchAgent installs it
+   for the logged-in user at first login.
+
+   It installs `ug` with `uv`, and no package carries `uv`. So confirm the VM has it:
+
+```sh
+ssh "$GUEST" 'ls -l ~/.local/bin/uv /opt/homebrew/bin/uv /usr/local/bin/uv 2>/dev/null'
+```
+
+   If it is absent, install it in the guest the way your fleet does.
 
 3. Let the first login run. The agent installs `ug`, then opens the browser for SSO.
 4. Import `claude-setup.json` in the app, then export the `.mobileconfig`.
@@ -216,6 +224,7 @@ New Jamf users often set these up and do not need them here.
 | Apple Business Manager | **Yes** | A VM has no record in it. |
 | Automated Device Enrollment | **Yes** | Needs Apple Business Manager. |
 | A code-signing certificate | **Yes** | Jamf installs as root. Gatekeeper does not apply. |
+| Packaging `ug` or `uv` | **Yes** | The LaunchAgent installs `ug` at login. `uv` is a prerequisite. |
 | Notarization | **Yes** | Same reason. |
 | A TLS certificate | **Yes**, on Jamf Cloud | Jamf provides it. |
 | Self Service | **Yes**, for Claude Desktop | The LaunchAgent triggers the login. |

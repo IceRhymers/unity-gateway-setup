@@ -600,10 +600,10 @@ _check_prereqs() {
   if _contains "${AGENTS}" "claude-desktop"; then
     if command -v ug >/dev/null 2>&1; then
       _one_check ug    "claude-desktop: mints tokens via 'ug auth-token'." info
-      _one_check uv    "ug-sso-bootstrap.sh installs ug with it when ug is absent. ug-bootstrap.pkg packages it." info
+      _one_check uv    "ug-sso-bootstrap.sh installs ug with it when ug is absent. A prerequisite: no package carries it." info
     else
       _one_check ucode "claude-desktop: mints tokens via 'ug auth-token'; run 'ug configure' once. Set UG_BIN if not on PATH." info
-      _one_check uv    "ug-sso-bootstrap.sh installs ug with it when ug is absent. ug-bootstrap.pkg packages it." info
+      _one_check uv    "ug-sso-bootstrap.sh installs ug with it when ug is absent. A prerequisite: no package carries it." info
     fi
   fi
 
@@ -782,9 +782,9 @@ _install_claude_desktop() {
     _info "  agent  : ${_cd_agents_dir}/${_CD_PLIST}"
     _info "           It runs ug-sso-bootstrap.sh at each user login, in the user's"
     _info "           GUI session, so ug configure can open a browser for SSO."
-    _info "           NOTE: install.sh does not place uv. The bootstrap installs ug"
-    _info "           with uv when ug is absent, so it needs uv on this machine."
-    _info "           ug-bootstrap.pkg packages uv for a fleet."
+    _info "           NOTE: the bootstrap installs ug with uv when ug is absent, so"
+    _info "           this machine needs uv. uv is a prerequisite: no package carries"
+    _info "           it, because it installs per-user and self-updates."
     _info "           It loads at the next login. To load it now, run as the user:"
     _info "             launchctl load \"/Library/LaunchAgents/${_CD_PLIST}\""
   fi

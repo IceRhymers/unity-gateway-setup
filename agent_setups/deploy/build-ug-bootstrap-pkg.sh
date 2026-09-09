@@ -4,23 +4,25 @@
 # This is the third package. It carries the tool, not any agent's config, so it
 # versions on its own cadence:
 #
-#   ug-bootstrap-<version>.pkg    -> uv, the SSO bootstrap, the LaunchAgent
+#   ug-bootstrap-<version>.pkg    -> the SSO bootstrap and its LaunchAgent
 #   coding-agents-<version>.pkg   -> Claude Code + Codex managed configs
 #   claude-desktop-<version>.pkg  -> Claude Desktop helper scripts
 #
-# Why it packages uv and not ug. Installing ug is a PER-USER action: `uv tool
+# Why it packages neither ug nor uv. Installing ug is a PER-USER action: `uv tool
 # install` writes into the invoking user's home. A package script runs as root, so it
 # would install into /var/root and the developer would get nothing. At imaging time
 # there is no console user at all, which is exactly when an MDM install runs.
 #
-# So the install is deferred to first login, where a LaunchAgent runs it in the
-# user's own session. The agent inherits a minimal PATH, and uv itself normally lives
-# in a per-user directory, so the package places uv at a fixed absolute path for the
-# agent to call. uv is a single static binary with no non-system dynamic
-# dependencies, which is what makes that viable.
+# So the ug install is deferred to first login, where the LaunchAgent runs it in the
+# user's own session. ug then lands where `uv tool install` puts it, which is also
+# where `ug upgrade` writes and where the credential helper looks first, so nothing
+# competes.
 #
-# ug then lands where `uv tool install` puts it, which is also where `ug upgrade`
-# writes and where the credential helper looks first. So nothing competes.
+# uv is a PREREQUISITE, for the same reasons ug is not packaged: it installs per-user
+# and it self-updates (`uv self update`), so a packaged copy would go stale and fight
+# its own updater. IT owns uv as part of the macOS baseline, alongside databricks,
+# python3, jq, and curl. The bootstrap resolves uv by absolute path, and reports it
+# clearly when absent.
 #
 # Usage:
 #   build-ug-bootstrap-pkg.sh --source <claude-desktop/macos> [OPTIONS]
@@ -28,12 +30,9 @@
 # Options:
 #   --source <dir>      Generated macOS Claude Desktop bundle. It holds the
 #                       host-baked ug-sso-bootstrap.sh and its plist. Required.
-#   --uv <path>         uv binary to package (default: the uv on PATH).
 #   --out <path>        Output .pkg path (default: dist/ug-bootstrap-<version>.pkg)
 #   --version <v>       Package version (default: 0.0.0-dev)
 #   --identifier <id>   Package identifier (default: com.databricks.unity-gateway.ug-bootstrap)
-#   --uv-dest <path>    Absolute path to place uv at (default: /usr/local/bin/uv).
-#                       It MUST match the path baked into the bootstrap script.
 #   --sign <identity>   Developer ID Installer identity to sign with (optional)
 #   --no-autoload       Do not load the LaunchAgent in postinstall
 #   -h, --help          Show this message
@@ -43,11 +42,9 @@
 set -eu
 
 SOURCE=""
-UV_SRC=""
 OUT=""
 VERSION="0.0.0-dev"
 IDENTIFIER="com.databricks.unity-gateway.ug-bootstrap"
-UV_DEST="/usr/local/bin/uv"
 SIGN_ID=""
 AUTOLOAD=1
 
@@ -65,14 +62,12 @@ _fatal() { _code="$1"; shift; printf '[build-pkg] FATAL: %s\n' "$*" >&2; exit "$
 while [ $# -gt 0 ]; do
   case "$1" in
     --source)      shift; SOURCE="${1:?--source requires a value}" ;;
-    --uv)          shift; UV_SRC="${1:?--uv requires a value}" ;;
     --out)         shift; OUT="${1:?--out requires a value}" ;;
     --version)     shift; VERSION="${1:?--version requires a value}" ;;
     --identifier)  shift; IDENTIFIER="${1:?--identifier requires a value}" ;;
-    --uv-dest)     shift; UV_DEST="${1:?--uv-dest requires a value}" ;;
     --sign)        shift; SIGN_ID="${1:?--sign requires a value}" ;;
     --no-autoload) AUTOLOAD=0 ;;
-    -h|--help)     sed -n '2,45p' "$0"; exit 1 ;;
+    -h|--help)     sed -n '2,42p' "$0"; exit 1 ;;
     *)             _fatal 1 "Unknown option: $1" ;;
   esac
   shift
@@ -86,35 +81,6 @@ command -v pkgbuild >/dev/null 2>&1 || _fatal 3 "pkgbuild not found. It ships wi
   "No ${SSO_BOOTSTRAP} in '${SOURCE}'. Generate a macOS bundle WITHOUT --no-sso-bootstrap."
 [ -f "${SOURCE}/${LAUNCHAGENT}" ] || _fatal 4 \
   "No ${LAUNCHAGENT} in '${SOURCE}'. Generate a macOS bundle WITHOUT --no-sso-bootstrap."
-
-# Resolve uv. The build machine's own uv is the default, which is almost always
-# right, but --uv lets you package a specific download.
-if [ -z "${UV_SRC}" ]; then
-  UV_SRC="$(command -v uv 2>/dev/null || true)"
-  [ -n "${UV_SRC}" ] || _fatal 4 \
-    "uv not found on PATH, and --uv was not given. Install uv, or pass --uv <path>."
-fi
-[ -x "${UV_SRC}" ] || _fatal 4 "uv is not executable: ${UV_SRC}"
-
-# The bootstrap resolves uv from a baked absolute path. A mismatch would send it to
-# the fallback candidates, and on a fresh device those do not exist.
-if ! grep -q "\"${UV_DEST}\"" "${SOURCE}/${SSO_BOOTSTRAP}"; then
-  _warn "The bootstrap script does not reference '${UV_DEST}'."
-  _warn "  It resolves uv from a baked path, so a mismatch means it will not find"
-  _warn "  the packaged uv. Check PACKAGED_UV in the generator against --uv-dest."
-fi
-
-# An Intel Mac cannot run an arm64-only binary. A fleet with both needs a universal
-# uv. Report the architectures so a single-arch package is a decision, not a surprise.
-if command -v lipo >/dev/null 2>&1; then
-  _uv_archs="$(lipo -archs "${UV_SRC}" 2>/dev/null || printf 'unknown')"
-  _info "uv architectures: ${_uv_archs}"
-  case "${_uv_archs}" in
-    *arm64*x86_64*|*x86_64*arm64*) : ;;
-    *) _warn "uv is not universal (${_uv_archs}). It will not run on a Mac of another"
-       _warn "  architecture. Package a universal uv for a mixed fleet." ;;
-  esac
-fi
 
 [ -n "${OUT}" ] || OUT="dist/ug-bootstrap-${VERSION}.pkg"
 mkdir -p "$(dirname "${OUT}")"
@@ -138,7 +104,6 @@ stage_file() {
   _info "  payload: ${_sf_dest} (${_sf_mode})"
 }
 
-stage_file "${UV_SRC}"                      "${UV_DEST}"                          755
 stage_file "${SOURCE}/${SSO_BOOTSTRAP}"     "${HELPER_DIR}/${SSO_BOOTSTRAP}"      755
 # launchd refuses a group- or world-writable agent plist, so 644 is not cosmetic.
 stage_file "${SOURCE}/${LAUNCHAGENT}"       "${LAUNCHAGENT_DIR}/${LAUNCHAGENT}"   644
@@ -221,3 +186,4 @@ pkgutil --payload-files "${OUT}" | grep -v '/\._' | sed 's/^/  /'
 _info "Done: ${OUT}"
 _info "Install headlessly:  sudo installer -pkg '${OUT}' -target /"
 _info "At first login the agent installs ug for that user, then runs the SSO login."
+_info "That needs uv on the device. uv is a prerequisite, and IT owns it."

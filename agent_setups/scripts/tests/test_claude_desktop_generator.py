@@ -31,10 +31,10 @@ from agents.claude_desktop import (  # noqa: E402
     OTEL_HELPER_CMD,
     OTEL_HELPER_PS1,
     OTEL_HELPER_SH,
-    PACKAGED_UV,
     PLATFORM_INSTALL_DIRS,
     SSO_BOOTSTRAP_SH,
     UG_GIT_URL,
+    UV_CANDIDATE_PATHS,
     ClaudeDesktopGenerator,
 )
 from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
@@ -524,11 +524,21 @@ class SsoBootstrapTest(unittest.TestCase):
         self.assertIn("tool install", sh)
         self.assertIn(UG_GIT_URL, sh)
 
-    def test_script_resolves_the_packaged_uv_by_absolute_path(self):
-        """A LaunchAgent inherits a minimal PATH, and uv normally lives per-user."""
+    def test_script_resolves_uv_by_absolute_path(self):
+        """A LaunchAgent inherits a minimal PATH, so uv cannot come from $PATH."""
         sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
-        self.assertIn(PACKAGED_UV, sh)
         self.assertIn("UV_BIN", sh)
+        for candidate in UV_CANDIDATE_PATHS:
+            self.assertIn(candidate, sh)
+
+    def test_script_never_installs_uv_itself(self):
+        """uv is a prerequisite IT owns, because it installs per-user and
+        self-updates. The script looks for it and reports it, nothing more."""
+        sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        code = [ln for ln in sh.split("\n") if not ln.lstrip().startswith("#")]
+        for tok in ("astral.sh", "curl ", "self update"):
+            bad = [ln for ln in code if tok in ln]
+            self.assertEqual(bad, [], f"code references {tok!r}: {bad}")
 
     def test_ug_install_is_unpinned_by_default(self):
         """Unpinned matches `ug upgrade`, which reinstalls from the same URL."""
@@ -547,7 +557,8 @@ class SsoBootstrapTest(unittest.TestCase):
     def test_missing_uv_does_not_abort_the_script(self):
         """No uv means log and retry at the next login, never a hard failure."""
         sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
-        self.assertIn("no uv found", sh)
+        self.assertIn("no uv to install it with", sh)
+        self.assertIn("prerequisite", sh)
 
     def test_unsafe_label_rejected(self):
         for bad in ("com.example/../evil", "a b", "<script>", "-leading-dash"):

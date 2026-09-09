@@ -102,11 +102,19 @@ LAUNCHAGENT_PLIST = "ug-sso-bootstrap.plist"
 # copy would need placing per account, which MDM cannot do in one push.
 LAUNCHAGENT_DIR = "/Library/LaunchAgents"
 
-# Where ug-bootstrap.pkg places the uv binary. The bootstrap script runs under a
-# LaunchAgent, which inherits a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), so it
-# needs an absolute path. uv is a single static binary with no non-system dynamic
-# dependencies, which is what makes packaging it viable.
-PACKAGED_UV = "/usr/local/bin/uv"
+# uv is a PREREQUISITE, not a payload. It installs per-user (~/.local/bin/uv) and it
+# self-updates (`uv self update`), so packaging it would go stale and fight its own
+# updater — the same reason ug is not packaged either. IT owns it as part of the macOS
+# baseline, alongside databricks, python3, jq, and curl.
+#
+# The bootstrap still resolves it by absolute path, because a LaunchAgent inherits a
+# minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin). These are the places uv actually lands:
+# the official installer, Homebrew, and a machine-wide placement by IT.
+UV_CANDIDATE_PATHS = (
+    "$HOME/.local/bin/uv",
+    "/opt/homebrew/bin/uv",
+    "/usr/local/bin/uv",
+)
 
 # What the bootstrap installs when ug is absent. Unpinned by default, which matches
 # `ug upgrade` (it runs `uv tool install --reinstall` against the same URL) and this
@@ -527,15 +535,16 @@ resolve_ug() {
   return 1
 }
 
-# Resolve uv without trusting $PATH either. __PACKAGED_UV__ is placed by
-# ug-bootstrap.pkg. A developer's own uv is the fallback, so this script also works
-# on a machine that never received the package.
+# Resolve uv without trusting $PATH either: a LaunchAgent inherits a minimal one.
+# uv is a prerequisite that IT owns, so this only looks for it. It never installs it.
+# The order follows where uv actually lands: the official installer first, then
+# Homebrew, then a machine-wide placement.
 resolve_uv() {
   for candidate in \
     "${UV_BIN:-}" \
-    "__PACKAGED_UV__" \
     "$HOME/.local/bin/uv" \
-    /opt/homebrew/bin/uv
+    /opt/homebrew/bin/uv \
+    /usr/local/bin/uv
   do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
       printf '%s' "$candidate"
@@ -550,7 +559,8 @@ resolve_uv() {
 # the install is deferred to login instead of running in a package script.
 install_ug() {
   _iu_uv="$(resolve_uv)" || {
-    _log "ug absent and no uv found. Install ug on this device, or set UV_BIN."
+    _log "ug absent, and no uv to install it with. uv is a prerequisite: IT deploys it"
+    _log "  as part of the macOS baseline. Install uv, or set UV_BIN, or install ug."
     return 1
   }
   _log "ug absent; installing with ${_iu_uv} (this needs network access)"
@@ -653,7 +663,6 @@ def _sso_bootstrap_files(install_dir: str, host: str, label: str,
         SSO_BOOTSTRAP_SH: (
             _SSO_BOOTSTRAP_SH_TEMPLATE
             .replace("__HOST__", host)
-            .replace("__PACKAGED_UV__", PACKAGED_UV)
             .replace("__UG_REQUIREMENT__", _ug_requirement(ug_ref))
         ),
         LAUNCHAGENT_PLIST: (
