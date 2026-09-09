@@ -223,17 +223,31 @@ check: tf-fmt-check tf-validate test test-generators test-tfstate ## Run all sta
 # A .mobileconfig carries SETTINGS ONLY: it cannot place a file or run a command.
 # So every managed file needs a .pkg, which is also the artifact every MDM deploys.
 #
-# Two packages, versioned independently, so one agent can be staged or rolled back
-# without touching the other:
+# Three packages, versioned independently, so one piece can be staged or rolled back
+# without touching the others:
 #   coding-agents-pkg   -> Claude Code + Codex managed configs
-#   claude-desktop-pkg  -> Claude Desktop helpers + SSO LaunchAgent
+#   claude-desktop-pkg  -> Claude Desktop helper scripts
+#   ug-bootstrap-pkg    -> uv + the SSO bootstrap + its LaunchAgent
 #
-# Neither carries ug. ug has its own distribution (`uv tool install`, `ug upgrade`)
-# and per-user state, so deploy it as its own MDM package.
+# ug-bootstrap-pkg packages uv, not ug. Installing ug is per-user, and a package
+# script runs as root, so the install is deferred to first login where the
+# LaunchAgent runs it in the user's own session. UV_BIN packages a specific uv
+# (default: the one on PATH). Package a universal uv for a mixed-architecture fleet.
 #
 # PKG_SIGN_ID signs a package for distribution.
 PKG_SIGN_ID ?=
 PKG_VERSION ?= $(VERSION)
+
+UV_BIN ?=
+
+.PHONY: ug-bootstrap-pkg
+ug-bootstrap-pkg: ## Build the macOS .pkg that places uv + the SSO bootstrap LaunchAgent (PROFILE=, UV_BIN=, PKG_SIGN_ID=, ARGS=)
+	sh agent_setups/deploy/build-ug-bootstrap-pkg.sh \
+		--source "$(OUT_DIR)/claude-desktop/macos" \
+		--out "$(DIST_DIR)/ug-bootstrap-$(PKG_VERSION).pkg" \
+		--version "$(PKG_VERSION)" \
+		$(if $(UV_BIN),--uv "$(UV_BIN)",) \
+		$(if $(PKG_SIGN_ID),--sign "$(PKG_SIGN_ID)",) $(ARGS)
 
 .PHONY: coding-agents-pkg
 coding-agents-pkg: ## Build the macOS .pkg that places the Claude Code + Codex managed configs (PROFILE=, PKG_SIGN_ID=, ARGS=)
@@ -244,7 +258,7 @@ coding-agents-pkg: ## Build the macOS .pkg that places the Claude Code + Codex m
 		$(if $(PKG_SIGN_ID),--sign "$(PKG_SIGN_ID)",) $(ARGS)
 
 .PHONY: claude-desktop-pkg
-claude-desktop-pkg: ## Build the macOS .pkg that places the Claude Desktop helpers + SSO LaunchAgent (PROFILE=, PKG_SIGN_ID=, ARGS=)
+claude-desktop-pkg: ## Build the macOS .pkg that places the Claude Desktop helper scripts (PROFILE=, PKG_SIGN_ID=, ARGS=)
 	sh agent_setups/deploy/build-claude-desktop-pkg.sh \
 		--source "$(OUT_DIR)/claude-desktop/macos" \
 		--out "$(DIST_DIR)/claude-desktop-$(PKG_VERSION).pkg" \

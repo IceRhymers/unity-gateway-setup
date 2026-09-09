@@ -134,14 +134,20 @@ Build the bundle and the package on the host.
 ```sh
 make agent-claude-desktop PROFILE=<profile>
 make claude-desktop-pkg   PROFILE=<profile>
+make ug-bootstrap-pkg     PROFILE=<profile>
 ```
+
+`claude-desktop.pkg` carries the helper scripts. `ug-bootstrap.pkg` carries `uv`, the
+SSO bootstrap, and its LaunchAgent. Install both.
 
 Copy the package to the guest and install it.
 
 ```sh
-PKG="$(ls -t dist/claude-desktop-*.pkg | head -1)"
-scp "$PKG" "$GUEST":/tmp/claude-desktop.pkg
-ssh "$GUEST" 'sudo installer -pkg /tmp/claude-desktop.pkg -target / && echo INSTALL_OK'
+for p in $(ls -t dist/claude-desktop-*.pkg | head -1) \
+         $(ls -t dist/ug-bootstrap-*.pkg   | head -1); do
+  scp "$p" "$GUEST":/tmp/pkg.pkg
+  ssh "$GUEST" 'sudo installer -pkg /tmp/pkg.pkg -target / && echo INSTALL_OK'
+done
 ```
 
 That is the whole install, with no GUI at any point.
@@ -246,10 +252,14 @@ command. Do not use a personal access token.
 
 | File | Placed at |
 |---|---|
+| `/usr/local/bin/uv` | mode 755 |
 | `ug-sso-bootstrap.sh` | The helper directory, mode 755 |
 | `ug-sso-bootstrap.plist` | `/Library/LaunchAgents`, mode 644 |
 
-Step 3 already placed both, because `install.sh` does that.
+Step 3 already placed all three, because `ug-bootstrap.pkg` carries them.
+
+At the first login the agent installs `ug` with the packaged `uv`, then runs the SSO
+login. So take 1 below exercises both steps.
 
 ### Take 1 — a device with no authentication
 
@@ -268,7 +278,9 @@ Read the log to confirm which path the script took:
 ssh "$GUEST" 'cat ~/Library/Logs/ug-sso-bootstrap.log'
 ```
 
-It must say `not authenticated ... starting ug configure`.
+It must say `ug absent; installing with /usr/local/bin/uv`, then
+`not authenticated ... starting ug configure`. On a guest that already has `ug`, the
+install line is absent.
 
 > **Confirm the browser opens in the guest's session.** The plist sets
 > `LimitLoadToSessionType` to `Aqua`, so the agent runs only in a GUI session. That

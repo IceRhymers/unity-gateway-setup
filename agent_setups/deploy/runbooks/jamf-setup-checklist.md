@@ -52,7 +52,7 @@ debug two systems at once.
 
 This is the whole loop. It is fully headless apart from the profile approval.
 
-1. Build the artifacts on your laptop. Two packages, one profile.
+1. Build the artifacts on your laptop. Three packages, one profile.
 
 ```sh
 make agent-claude-code    PROFILE=<profile>
@@ -60,30 +60,29 @@ make agent-codex          PROFILE=<profile>
 make agent-claude-desktop PROFILE=<profile>
 make coding-agents-pkg    PROFILE=<profile>
 make claude-desktop-pkg   PROFILE=<profile>
+make ug-bootstrap-pkg     PROFILE=<profile>
 ```
 
-2. Install `ug` in the VM. It is a separate prerequisite, and the coding agents need
-   it to mint a token.
-
-```sh
-ssh "$GUEST" 'uv tool install git+https://github.com/databricks/ucode && ug --version'
-```
-
-3. Copy both packages to the VM, and install them over SSH. The order does not
+2. Copy all three packages to the VM, and install them over SSH. The order does not
    matter, because they write no file in common.
 
 ```sh
-for p in $(ls -t dist/coding-agents-*.pkg | head -1) $(ls -t dist/claude-desktop-*.pkg | head -1); do
+for p in $(ls -t dist/coding-agents-*.pkg  | head -1) \
+         $(ls -t dist/claude-desktop-*.pkg | head -1) \
+         $(ls -t dist/ug-bootstrap-*.pkg   | head -1); do
   scp "$p" "$GUEST":/tmp/pkg.pkg
   ssh "$GUEST" 'sudo installer -pkg /tmp/pkg.pkg -target / && echo INSTALL_OK'
 done
 ```
 
-4. Let the SSO login happen. The Claude Desktop package postinstall starts it.
-5. Import `claude-setup.json` in the app, then export the `.mobileconfig`.
-6. Copy the `.mobileconfig` to the VM. Double-click it. Approve it in System
+   You do not install `ug` yourself. `ug-bootstrap.pkg` places `uv`, and its
+   LaunchAgent installs `ug` for the logged-in user at first login.
+
+3. Let the first login run. The agent installs `ug`, then opens the browser for SSO.
+4. Import `claude-setup.json` in the app, then export the `.mobileconfig`.
+5. Copy the `.mobileconfig` to the VM. Double-click it. Approve it in System
    Settings, under General, under Device Management.
-7. Verify.
+6. Verify.
 
 `claude-desktop-vm-test.md` has the full version, with the snapshot and reset steps.
 

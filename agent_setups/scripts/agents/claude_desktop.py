@@ -102,6 +102,17 @@ LAUNCHAGENT_PLIST = "ug-sso-bootstrap.plist"
 # copy would need placing per account, which MDM cannot do in one push.
 LAUNCHAGENT_DIR = "/Library/LaunchAgents"
 
+# Where ug-bootstrap.pkg places the uv binary. The bootstrap script runs under a
+# LaunchAgent, which inherits a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), so it
+# needs an absolute path. uv is a single static binary with no non-system dynamic
+# dependencies, which is what makes packaging it viable.
+PACKAGED_UV = "/usr/local/bin/uv"
+
+# What the bootstrap installs when ug is absent. Unpinned by default, which matches
+# `ug upgrade` (it runs `uv tool install --reinstall` against the same URL) and this
+# repo's treatment of ug as a self-updating tool. Pass --ug-ref to pin a fleet.
+UG_GIT_URL = "git+https://github.com/databricks/ucode"
+
 # The default reverse-DNS label for the LaunchAgent. Override with
 # --launchagent-label. The plist filename follows the label in the runbook, but
 # the bundle always writes LAUNCHAGENT_PLIST so install.sh can find it.
@@ -121,6 +132,23 @@ def _platform_path(install_dir: str, filename: str, platform: str) -> str:
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _UC_TABLE_RE = re.compile(r"^[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
 _HOST_UNSAFE_CHARS = "'\"`$;\\ "
+
+
+# A git ref is baked into the bootstrap's `uv tool install "<url>@<ref>"` argument.
+# Keep it to characters git accepts in a ref, so a hand-passed value cannot inject
+# shell syntax.
+_UG_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _validate_ug_ref(ug_ref: str | None) -> None:
+    """Reject a git ref that is unsafe to bake into the bootstrap script."""
+    if ug_ref is None:
+        return
+    if not _UG_REF_RE.match(ug_ref) or ".." in ug_ref:
+        raise SystemExit(
+            f"Refusing to bake an unsafe ug git ref: {ug_ref!r}. Use letters, digits, "
+            "'.', '_', '/', and '-', with no '..' sequence."
+        )
 
 
 def _validate_launchagent_label(label: str) -> None:
@@ -499,12 +527,51 @@ resolve_ug() {
   return 1
 }
 
-ug="$(resolve_ug)" || {
-  # ug is absent. Do NOT try to configure: there is nothing to run. Log it and
-  # leave, so the next login retries once the MDM has installed ug.
-  _log "ug not found; nothing to do. Push ug to this device, or set UG_BIN."
-  exit 0
+# Resolve uv without trusting $PATH either. __PACKAGED_UV__ is placed by
+# ug-bootstrap.pkg. A developer's own uv is the fallback, so this script also works
+# on a machine that never received the package.
+resolve_uv() {
+  for candidate in \
+    "${UV_BIN:-}" \
+    "__PACKAGED_UV__" \
+    "$HOME/.local/bin/uv" \
+    /opt/homebrew/bin/uv
+  do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
+
+# Install ug for THIS user. The LaunchAgent runs in the user's session, so
+# `uv tool install` lands in their home rather than root's. That is the whole reason
+# the install is deferred to login instead of running in a package script.
+install_ug() {
+  _iu_uv="$(resolve_uv)" || {
+    _log "ug absent and no uv found. Install ug on this device, or set UV_BIN."
+    return 1
+  }
+  _log "ug absent; installing with ${_iu_uv} (this needs network access)"
+  if "${_iu_uv}" tool install "__UG_REQUIREMENT__" >>"$log" 2>&1; then
+    _log "ug install finished"
+    return 0
+  fi
+  _log "ug install failed. The next login will try again."
+  return 1
+}
+
+ug="$(resolve_ug || true)"
+if [ -z "$ug" ]; then
+  # ug is absent. Install it, then resolve again. A failure is not fatal: the next
+  # login retries, so a transient network outage costs one login.
+  install_ug || exit 0
+  ug="$(resolve_ug)" || {
+    _log "ug still not found after install. The next login will try again."
+    exit 0
+  }
+fi
 
 # --- The guard ---------------------------------------------------------------
 # Already authenticated? Then exit without opening a browser.
@@ -569,7 +636,13 @@ _LAUNCHAGENT_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 _LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def _sso_bootstrap_files(install_dir: str, host: str, label: str) -> dict[str, str]:
+def _ug_requirement(ug_ref: str | None) -> str:
+    """The `uv tool install` argument for ug, optionally pinned to a git ref."""
+    return f"{UG_GIT_URL}@{ug_ref}" if ug_ref else UG_GIT_URL
+
+
+def _sso_bootstrap_files(install_dir: str, host: str, label: str,
+                         ug_ref: str | None = None) -> dict[str, str]:
     """Return the SSO bootstrap script and its LaunchAgent plist.
 
     macOS and Linux only. The plist is a macOS artifact; a Linux fleet would use a
@@ -577,7 +650,12 @@ def _sso_bootstrap_files(install_dir: str, host: str, label: str) -> dict[str, s
     """
     script_path = f"{install_dir}/{SSO_BOOTSTRAP_SH}"
     return {
-        SSO_BOOTSTRAP_SH: _SSO_BOOTSTRAP_SH_TEMPLATE.replace("__HOST__", host),
+        SSO_BOOTSTRAP_SH: (
+            _SSO_BOOTSTRAP_SH_TEMPLATE
+            .replace("__HOST__", host)
+            .replace("__PACKAGED_UV__", PACKAGED_UV)
+            .replace("__UG_REQUIREMENT__", _ug_requirement(ug_ref))
+        ),
         LAUNCHAGENT_PLIST: (
             _LAUNCHAGENT_PLIST_TEMPLATE
             .replace("__LABEL__", label)
@@ -743,6 +821,15 @@ class ClaudeDesktopGenerator(AgentGenerator):
             help=(
                 "Reverse-DNS Label for the SSO-bootstrap LaunchAgent (default: "
                 f"{DEFAULT_LAUNCHAGENT_LABEL}). Change it to your own organisation's prefix."
+            ),
+        )
+        parser.add_argument(
+            "--ug-ref",
+            default=None,
+            help=(
+                "Pin the ug version the SSO bootstrap installs, as a git ref (tag, branch, "
+                "or commit). Unpinned by default, which matches `ug upgrade`. Pin it when a "
+                "fleet needs a determinate ug version."
             ),
         )
         parser.add_argument(
@@ -933,6 +1020,7 @@ class ClaudeDesktopGenerator(AgentGenerator):
         _validate_bakeables(profile, ctx.host, traces_table)
         if not args.no_sso_bootstrap:
             _validate_launchagent_label(args.launchagent_label)
+            _validate_ug_ref(getattr(args, "ug_ref", None))
         if traces_table:
             # Static headers route the export to the traces UC table; the sensitive
             # Authorization header comes from the headersHelper (dedicated telemetry SP,
@@ -981,7 +1069,10 @@ class ClaudeDesktopGenerator(AgentGenerator):
             # needs a systemd user unit, and Windows a scheduled task. Neither is
             # generated yet, so only macOS gets a trigger.
             if not args.no_sso_bootstrap and platform in ("macos", "linux"):
-                sso = _sso_bootstrap_files(install_dir, ctx.host, args.launchagent_label)
+                sso = _sso_bootstrap_files(
+                    install_dir, ctx.host, args.launchagent_label,
+                    getattr(args, "ug_ref", None),
+                )
                 if platform == "linux":
                     sso.pop(LAUNCHAGENT_PLIST, None)
                 helper_files.update(sso)

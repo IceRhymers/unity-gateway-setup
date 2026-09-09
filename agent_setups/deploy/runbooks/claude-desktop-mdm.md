@@ -26,7 +26,7 @@ configuration. So the deployment has an extra shape:
 The generator does not produce the `.mobileconfig` or the `.reg` file. Only the
 app produces them. Plan for that import step. You cannot skip it.
 
-### A rollout needs two artifacts, not one
+### A rollout needs three artifacts, not one
 
 This is the point operators get wrong most often. A configuration profile carries
 **settings only**. It cannot place a file, and it cannot run a command. So a profile
@@ -35,18 +35,22 @@ LaunchAgent.
 
 | Artifact | Delivers | Produced by |
 |---|---|---|
-| **`.pkg`** | The helper scripts, the SSO bootstrap, the LaunchAgent | `make claude-desktop-pkg` |
+| **`claude-desktop-<v>.pkg`** | The credential and OTEL helper scripts | `make claude-desktop-pkg` |
+| **`ug-bootstrap-<v>.pkg`** | `uv`, the SSO bootstrap, its LaunchAgent | `make ug-bootstrap-pkg` |
 | **`.mobileconfig`** | The Claude Desktop settings | The Claude Desktop app, on export |
 
-Claude Code and Codex have their own package, `make coding-agents-pkg`. It is
-independent of this one, and the two write no file in common. See `jamf.md`.
+Claude Code and Codex have a fourth artifact, `make coding-agents-pkg`. Each package
+is independent, and none writes a file another one writes. See `jamf.md`.
 
-Both go to the fleet. Push the `.pkg` first, because the profile's
-`credential.command` names a script the package places.
+All three go to the fleet. Push both packages before the profile, because the
+profile's `credential.command` names a script a package places.
 
-`ug` is a third prerequisite, delivered separately. The package does not carry it.
-The bootstrap script logs and exits when `ug` is absent, then retries at the next
-login, so the two packages may arrive in either order.
+`ug` itself needs no package. `ug-bootstrap.pkg` places `uv`, and its LaunchAgent
+installs `ug` for each user at their first login. That deferral is deliberate. A
+package script runs as root, so `uv tool install` would write into root's home and
+the developer would get nothing. See section 8.
+
+The two packages may arrive in either order.
 
 For the Jamf steps, read `jamf.md`.
 
@@ -105,19 +109,35 @@ make claude-desktop-pkg PROFILE=<profile>
 make claude-desktop-pkg PROFILE=<profile> PKG_SIGN_ID="Developer ID Installer: <org> (<team>)"
 ```
 
-It writes `dist/claude-desktop-<version>.pkg`, which places:
+It writes `dist/claude-desktop-<version>.pkg`, which places two files.
 
 | Payload path | Mode |
 |---|---|
 | `/Library/Application Support/ClaudeDesktop/databricks-token.sh` | 755 |
 | `/Library/Application Support/ClaudeDesktop/otel-headers-helper.sh` | 755 |
+
+Build the SSO bootstrap package as well.
+
+```sh
+make ug-bootstrap-pkg PROFILE=<profile>
+```
+
+It writes `dist/ug-bootstrap-<version>.pkg`, which places three files.
+
+| Payload path | Mode |
+|---|---|
+| `/usr/local/bin/uv` | 755 |
 | `/Library/Application Support/ClaudeDesktop/ug-sso-bootstrap.sh` | 755 |
 | `/Library/LaunchAgents/ug-sso-bootstrap.plist` | 644 |
 
-Its postinstall loads the LaunchAgent for the user who is logged in, so the SSO
-prompt appears right after the package lands instead of waiting for a logout. At
-imaging time there is no console user, and the agent then loads at the first real
-login. Pass `--no-autoload` through `ARGS` to suppress that.
+Its postinstall loads the LaunchAgent for the user who is logged in, so the ug
+install and the SSO prompt start right after the package lands instead of waiting for
+a logout. At imaging time there is no console user, and the agent then loads at the
+first real login. Pass `--no-autoload` through `ARGS` to suppress that.
+
+> **`uv` must match the fleet's architecture.** The builder packages the `uv` on the
+> build machine by default, and warns when that binary is not universal. An arm64-only
+> `uv` does not run on an Intel Mac. Pass `UV_BIN=<path>` to package a universal one.
 
 An unsigned package installs through `installer(8)` and through an MDM. Gatekeeper
 blocks a double-click install, so sign it for anything a person opens by hand.
@@ -276,18 +296,48 @@ in. That is the whole step.
 a long-lived static secret, it does not carry the developer's identity, and this
 deployment does not need one.
 
-### The generator emits both pieces
+### The generator emits both pieces, and ug-bootstrap.pkg ships them
 
 The macOS bundle carries them. Do not hand-write either file.
 
 | File | Placed at | Purpose |
 |---|---|---|
-| `ug-sso-bootstrap.sh` | The helper directory, mode 755 | Probes, then runs `ug configure` when needed |
+| `ug-sso-bootstrap.sh` | The helper directory, mode 755 | Installs `ug` when absent, then runs `ug configure` when needed |
 | `ug-sso-bootstrap.plist` | `/Library/LaunchAgents`, mode 644 | Runs the script at each user login |
 
-`install.sh` places both. Pass `--no-sso-bootstrap` at generation time to omit them
-when your MDM already runs `ug configure` some other way. Pass
-`--launchagent-label com.<your-org>.<name>` to use your own reverse-DNS label.
+`ug-bootstrap.pkg` ships both, plus the `uv` the script needs. `install.sh` also
+places both from a bundle, but it does not place `uv`.
+
+Pass `--no-sso-bootstrap` at generation time to omit them when your MDM already runs
+`ug configure` some other way. Pass `--launchagent-label com.<your-org>.<name>` to use
+your own reverse-DNS label. Pass `--ug-ref <tag>` to pin the `ug` version the script
+installs.
+
+### Why the ug install is deferred to login
+
+`uv tool install` writes into the invoking user's home. A package preinstall or
+postinstall script runs as **root**, so it would install `ug` into `/var/root` and the
+developer would get nothing. At imaging time there is no console user at all, which is
+exactly when an unattended MDM install runs.
+
+So the script installs `ug` at first login, in the user's own session:
+
+1. It resolves `uv` by absolute path, starting with the packaged `/usr/local/bin/uv`.
+   A LaunchAgent inherits a minimal `PATH`, and `uv` normally lives in a per-user
+   directory.
+2. It runs `uv tool install git+https://github.com/databricks/ucode`.
+3. It resolves `ug` again, then continues to the SSO login.
+
+A failure is never fatal. The script logs it and exits 0, and the next login retries.
+So a transient network outage costs one login.
+
+`ug` then lands where `uv tool install` puts it, which is also where `ug upgrade`
+writes and where the credential helper looks first. So no packaged copy competes with
+a developer's own.
+
+One consequence to know: `ug`'s own files are outside the package payload. So
+`pkgutil --files`, `install.sh --uninstall`, and Jamf inventory do not see them. Read
+the bootstrap log, or use a Jamf Extension Attribute, to confirm `ug` is present.
 
 ### Why a LaunchAgent, and not a LaunchDaemon
 
@@ -469,7 +519,8 @@ configuration inside the app. To undo what `ug` wrote, run `ug revert`.
 |---|---|
 | The app reports an authentication failure | `ug` is absent, or the SSO login never completed. Run the helper by hand and read standard error |
 | A browser opens at every login | The plist runs something other than the generated script, which carries the probe |
-| The log says "ug not found" | `ug` is not on a path the script checks. Push `ug`, or set `UG_BIN` |
+| The log says "ug absent and no uv found" | `ug-bootstrap.pkg` did not land, so `uv` is missing. Install it, or set `UV_BIN` |
+| The log says "ug install failed" | No network at that login, or the wrong `uv` architecture. The next login retries |
 | No browser ever opens | The trigger is a LaunchDaemon, not a LaunchAgent. A daemon runs as root, outside the GUI session |
 | The helper prints "ug not found" | `ug` is not on a path the helper checks. Set `UG_BIN` |
 | The token is for the wrong workspace | The bundle was generated against a different host. Compare the baked host against `inference.baseUrl` |

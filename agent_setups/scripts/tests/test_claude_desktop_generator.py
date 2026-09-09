@@ -31,8 +31,10 @@ from agents.claude_desktop import (  # noqa: E402
     OTEL_HELPER_CMD,
     OTEL_HELPER_PS1,
     OTEL_HELPER_SH,
+    PACKAGED_UV,
     PLATFORM_INSTALL_DIRS,
     SSO_BOOTSTRAP_SH,
+    UG_GIT_URL,
     ClaudeDesktopGenerator,
 )
 from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
@@ -102,6 +104,7 @@ def _args(**over) -> argparse.Namespace:
         otel_log_content=False,
         launchagent_label=DEFAULT_LAUNCHAGENT_LABEL,
         no_sso_bootstrap=False,
+        ug_ref=None,
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -513,6 +516,38 @@ class SsoBootstrapTest(unittest.TestCase):
         files = self._macos(launchagent_label="com.example.my-sso")
         d = plistlib.loads(files[f"claude-desktop/macos/{LAUNCHAGENT_PLIST}"].encode())
         self.assertEqual(d["Label"], "com.example.my-sso")
+
+    def test_script_installs_ug_when_absent(self):
+        """The install is deferred to login because it is per-user. A package script
+        runs as root, so it would install into root's home instead."""
+        sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        self.assertIn("tool install", sh)
+        self.assertIn(UG_GIT_URL, sh)
+
+    def test_script_resolves_the_packaged_uv_by_absolute_path(self):
+        """A LaunchAgent inherits a minimal PATH, and uv normally lives per-user."""
+        sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        self.assertIn(PACKAGED_UV, sh)
+        self.assertIn("UV_BIN", sh)
+
+    def test_ug_install_is_unpinned_by_default(self):
+        """Unpinned matches `ug upgrade`, which reinstalls from the same URL."""
+        sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        self.assertIn(f'tool install "{UG_GIT_URL}"', sh)
+
+    def test_ug_ref_pins_the_requirement(self):
+        sh = self._macos(ug_ref="v1.2.3")[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        self.assertIn(f'tool install "{UG_GIT_URL}@v1.2.3"', sh)
+
+    def test_unsafe_ug_ref_rejected(self):
+        for bad in ('v1"; rm -rf /', "a b", "$(id)", "../../etc", "a;b"):
+            with self.assertRaises(SystemExit, msg=f"accepted {bad!r}"):
+                self._macos(ug_ref=bad)
+
+    def test_missing_uv_does_not_abort_the_script(self):
+        """No uv means log and retry at the next login, never a hard failure."""
+        sh = self._macos()[f"claude-desktop/macos/{SSO_BOOTSTRAP_SH}"]
+        self.assertIn("no uv found", sh)
 
     def test_unsafe_label_rejected(self):
         for bad in ("com.example/../evil", "a b", "<script>", "-leading-dash"):

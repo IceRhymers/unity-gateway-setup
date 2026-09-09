@@ -13,7 +13,7 @@ This generator produces two things per OS:
 
 This generator does not produce the `.mobileconfig` or `.reg` MDM artifacts. The Claude Desktop app exports those after you import the JSON.
 
-For a fleet you also need an installer package, because a configuration profile carries settings only and cannot place a file. Build it with `make claude-desktop-pkg`. See `claude-desktop-mdm.md` for the two-artifact model.
+For a fleet you also need installer packages, because a configuration profile carries settings only and cannot place a file. Build them with `make claude-desktop-pkg` and `make ug-bootstrap-pkg`. See `claude-desktop-mdm.md`.
 
 ---
 
@@ -82,7 +82,8 @@ Each macOS or Linux bundle contains:
 - `databricks-token.sh`
 - `otel-headers-helper.sh` (only when telemetry is wired)
 - `ug-sso-bootstrap.sh` and `ug-sso-bootstrap.plist` (the MDM-triggered SSO login;
-  the plist is macOS only, and `--no-sso-bootstrap` omits both)
+  the plist is macOS only, and `--no-sso-bootstrap` omits both). For a fleet these
+  ship in `ug-bootstrap.pkg`, together with the `uv` the script needs.
 
 Each Windows bundle contains:
 

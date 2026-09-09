@@ -85,11 +85,17 @@ that are hard to read.
 |---|---|---|
 | `coding-agents-<version>.pkg` | **Package**, run by a Policy | Claude Code, Codex |
 | `claude-desktop-<version>.pkg` | **Package**, run by a Policy | Claude Desktop |
+| `ug-bootstrap-<version>.pkg` | **Package**, run by a Policy | `uv` and the `ug` login trigger |
 | `.mobileconfig` | **Configuration Profile** | Claude Desktop |
 | `.tar.gz` bundle | **Script** policy that unpacks it | Claude Code, Codex (fallback) |
 
-The two packages version independently. So you can stage or roll back one agent
-without touching the other.
+The three packages version independently. So you can stage or roll back one piece
+without touching the others. `ug-bootstrap` carries the tool rather than any agent's
+config, which is why it is separate.
+
+**You do not deploy `ug` itself.** `ug-bootstrap.pkg` places `uv`, and its LaunchAgent
+installs `ug` for each user at their first login. A package script runs as root, so it
+cannot do a per-user install. See Step 5.
 
 The tarball is the fallback. Prefer a package: Jamf then records a receipt, and it
 reports the install state.
@@ -110,7 +116,8 @@ these as part of the macOS baseline.
 |---|---|
 | `databricks` | Always critical. The Claude Code and Codex auth helpers call it. |
 | `python3` | Critical for the Claude Code and Codex auth helpers, and for the OTEL helper. |
-| `ug` | Critical for Claude Desktop. Its credential helper calls `ug auth-token`. |
+| `ug` | Critical for Claude Desktop. `ug-bootstrap.pkg` installs it at first login, so IT does not deploy it. |
+| `uv` | Critical, because the bootstrap installs `ug` with it. `ug-bootstrap.pkg` places it. |
 | `jq` | Critical only when hook-event telemetry is on. |
 | `curl` | Critical only when hook-event telemetry is on. |
 
@@ -118,9 +125,12 @@ If a critical prerequisite is absent, `install.sh` exits 3. Jamf then marks the
 policy failed. Confirm each tool is present for every session type before you scope
 the policy.
 
-Deploy `ug` as its own Jamf Package, or through a Policy with a Scripts payload. The
-order against the Claude Desktop package does not matter. The Claude Desktop
-bootstrap script logs and exits when `ug` is absent, then retries at the next login.
+You do not deploy `ug` through Jamf. `ug-bootstrap.pkg` places `uv`, and its
+LaunchAgent installs `ug` per user at first login. A Jamf policy script runs as root,
+so it cannot install a per-user tool without dropping privileges, and at imaging time
+there is no user to drop to.
+
+A failed install is not fatal. The script logs it and the next login retries.
 
 > **Exception:** a `DATABRICKS_BEARER`-only deployment can omit `databricks` and
 > `python3`. Every developer then sets `DATABRICKS_BEARER` in their environment, and
@@ -216,13 +226,14 @@ Repeat for the second package.
 | Package | Places |
 |---|---|
 | `coding-agents-<version>.pkg` | The Claude Code and Codex managed configs |
-| `claude-desktop-<version>.pkg` | The Claude Desktop helpers and the SSO LaunchAgent |
+| `claude-desktop-<version>.pkg` | The Claude Desktop helper scripts |
+| `ug-bootstrap-<version>.pkg` | `uv`, the SSO bootstrap, its LaunchAgent |
 
 No script is needed. Jamf installs a package as root.
 
-The two packages write no file in common. Only the parent directory
-`/Library/Application Support` is shared, so neither clobbers the other. The install
-order between them does not matter.
+The three packages write no file in common. They share only the parent directories
+`/Library/Application Support` and `/Library/Application Support/ClaudeDesktop`, so
+none clobbers another. The install order between them does not matter.
 
 ---
 
@@ -378,9 +389,14 @@ Replace `<host>` with your workspace URL.
 ### Claude Desktop
 
 Its credential helper calls `ug auth-token`, so the login goes through `ug`. **Jamf
-does not need a Self Service item for this.** The package installs a LaunchAgent that
-runs the login at each user login, and the agent guards itself so a browser opens
-only when the developer is not already authenticated.
+does not need a Self Service item for this.** `ug-bootstrap.pkg` installs a LaunchAgent
+that runs at each user login, and the agent guards itself so a browser opens only when
+the developer is not already authenticated.
+
+At the first login the agent does two things, in order:
+
+1. It installs `ug` with the packaged `uv`, when `ug` is absent.
+2. It runs `ug configure`, which opens the browser for single sign-on.
 
 The developer signs in to the browser. They type nothing.
 
