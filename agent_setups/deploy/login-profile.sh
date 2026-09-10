@@ -46,7 +46,7 @@ _fatal() { _c="$1"; shift; printf '[login-profile] FATAL: %s\n' "$*" >&2; exit "
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --host)     shift; HOST="${1:?--host requires a value}" ;;
+    --host)     shift; HOST="${1?--host requires a value}" ;;
     --profile)  shift; PROFILE_NAME="${1:?--profile requires a value}" ;;
     --force)    FORCE=1 ;;
     --dry-run)  DRY_RUN=1 ;;

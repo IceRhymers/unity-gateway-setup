@@ -82,7 +82,7 @@ ensure-profile-quiet:
 # what ensure-profile reports as exit 5.
 .PHONY: login-profile
 login-profile: ## Create or refresh the ai_dev_tools profile with browser SSO (HOST=<workspace-url> required; PROFILE=, ARGS=)
-	sh agent_setups/deploy/login-profile.sh --profile $(PROFILE) --host "$(HOST)" $(ARGS)
+	sh agent_setups/deploy/login-profile.sh --profile $(PROFILE) $(if $(HOST),--host "$(HOST)",) $(ARGS)
 
 # ---- includes ----
 # Split by domain so a change to one subsystem does not scroll past the others.

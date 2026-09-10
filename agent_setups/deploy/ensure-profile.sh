@@ -45,7 +45,7 @@ _fatal() { _c="$1"; shift; printf '[ensure-profile] FATAL: %s\n' "$*" >&2; exit 
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile)  shift; PROFILE_NAME="${1:?--profile requires a value}" ;;
-    --host)     shift; HOST="${1:?--host requires a value}" ;;
+    --host)     shift; HOST="${1?--host requires a value}" ;;
     --validate) VALIDATE=1 ;;
     --quiet)    QUIET=1 ;;
     -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
