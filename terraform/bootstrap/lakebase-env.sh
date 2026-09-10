@@ -65,7 +65,7 @@ Options:
   -h, --help          Show this message
 
 Example (rollback migration only):
-  eval "$(terraform/bootstrap/lakebase-env.sh --print --profile fevm-west)"
+  eval "$(terraform/bootstrap/lakebase-env.sh --print --profile ai_dev_tools)"
   terraform -chdir=terraform/infra init -migrate-state -force-copy
   unset PGPASSWORD PGHOST PGPORT PGUSER PGDATABASE PGSSLMODE
 EOF

@@ -33,13 +33,13 @@ model pin. The generator writes those names into the agent's config.
 
 ```bash
 # Generate Claude Code managed-settings.json from the applied Terraform state.
-./generate.py claude-code --profile fevm-west
+./generate.py claude-code --profile ai_dev_tools
 
 # Generate a Codex config.toml (gateway routing).
-./generate.py codex --profile fevm-west
+./generate.py codex --profile ai_dev_tools
 
 # Preview without writing.
-./generate.py claude-code --profile fevm-west --stdout
+./generate.py claude-code --profile ai_dev_tools --stdout
 
 # Without invoking terraform (use a saved output + explicit host).
 terraform -chdir=../../terraform/infra output -json > /tmp/tf.json
@@ -55,8 +55,8 @@ on-disk paths that `managed-settings.json` references, keyed to each OS's
 ClaudeCode dir. The scripts are byte-identical. Codex writes a single
 `codex/config.toml`.
 
-Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
-`make agent-codex PROFILE=fevm-west` (append `-preview` to print without writing).
+Or via the repo Makefile: `make agent-claude-code PROFILE=ai_dev_tools` /
+`make agent-codex PROFILE=ai_dev_tools` (append `-preview` to print without writing).
 
 ## What the Claude Code config encodes
 
@@ -151,7 +151,7 @@ Or via the repo Makefile: `make agent-claude-code PROFILE=fevm-west` /
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--profile` | `fevm-west` | Databricks profile (host + auth). |
+| `--profile` | `ai_dev_tools` | Databricks profile (host + auth). |
 | `--host` | (from profile) | Override the workspace URL. |
 | `--skip-api-discovery` | off | Skip live `supported_api_types` lookup. Use `--fallback-schema` instead (offline). |
 | `--fallback-schema` | `anthropic` | Schema assumed Anthropic-capable when discovery is skipped. |
@@ -312,7 +312,7 @@ useful for laptops without root, or to overlay the gateway provider on an existi
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--profile` | `fevm-west` | Databricks profile (host + auth). |
+| `--profile` | `ai_dev_tools` | Databricks profile (host + auth). |
 | `--host` | (from profile) | Override the workspace URL. |
 | `--api-type` | `mlflow/v1/responses` | Endpoint filter. Narrow to `openai/v1/responses` for OpenAI-native responses only. |
 | `--skip-api-discovery` | off | Skip live `supported_api_types` lookup. Use `--fallback-schema` (offline). |

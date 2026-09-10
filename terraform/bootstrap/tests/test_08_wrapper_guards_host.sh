@@ -31,7 +31,7 @@ PGPORT=5432
 PGDATABASE=databricks_postgres
 PGSSLMODE=require
 LAKEBASE_ENDPOINT=projects/x/branches/production/endpoints/primary
-DATABRICKS_PROFILE=fevm-west
+DATABRICKS_PROFILE=ai_dev_tools
 ENVEOF
 
 _e=0

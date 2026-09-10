@@ -23,7 +23,7 @@ chmod +x "${_bin}/databricks"
 _out="${_work}/out"
 _e=0
 PATH="${_bin}:${PATH}" sh "${BOOTSTRAP}" \
-  --profile fevm-west --dry-run --out "${_out}" >/dev/null 2>&1 || _e=$?
+  --profile ai_dev_tools --dry-run --out "${_out}" >/dev/null 2>&1 || _e=$?
 if [ "${_e}" != "0" ]; then
   printf 'FAIL: %s — --dry-run exited %s\n' "${T}" "${_e}"
   exit 1

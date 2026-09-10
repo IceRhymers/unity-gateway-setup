@@ -24,7 +24,7 @@ _render() {  # _render <out-dir> [extra args...]; echoes nothing, returns exit c
   _rd="$1"; shift
   _re=0
   PATH="${_bin}:${PATH}" sh "${BOOTSTRAP}" \
-    --profile fevm-west --dry-run --out "${_rd}" "$@" >/dev/null 2>&1 || _re=$?
+    --profile ai_dev_tools --dry-run --out "${_rd}" "$@" >/dev/null 2>&1 || _re=$?
   return "${_re}"
 }
 

@@ -17,7 +17,7 @@ terraform/
 - **`modules/`** — parameterized, environment-agnostic, no provider/backend
   config. Compose these into any deployment.
 - **`infra/`** — the applyable root: provider auth, backend, variable values,
-  module wiring. Defaults target the `fevm-west` sandbox.
+  module wiring. Defaults target the workspace the `ai_dev_tools` profile names.
 
 ## The two-mode design
 

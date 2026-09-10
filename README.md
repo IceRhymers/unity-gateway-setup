@@ -166,8 +166,8 @@ See [`terraform/README.md`](terraform/README.md).
 ### 2. Generate the agent config
 
 ```bash
-make agent-claude-code PROFILE=fevm-west   # Claude Code managed-settings.json
-make agent-codex PROFILE=fevm-west         # Codex config.toml
+make agent-claude-code PROFILE=ai_dev_tools   # Claude Code managed-settings.json
+make agent-codex PROFILE=ai_dev_tools         # Codex config.toml
 ```
 
 This reads the Terraform outputs and writes a **self-contained bundle per OS** —
@@ -234,21 +234,25 @@ See [`docker/README.md`](docker/README.md).
 
 ```
 terraform/          Provision the gateway
-  infra/              Applyable deployment (defaults: fevm-west sandbox)
+  infra/              Applyable deployment (targets the ai_dev_tools profile)
   modules/            unity-foundation · model-service · telemetry
 agent_setups/       Generate agent configs from the TF outputs
   scripts/            The generator (Claude Code · Claude Desktop · Codex · dsh)
   generated/          Output (gitignored — embeds a workspace host)
 docker/             Isolated test harness (Claude Code + Codex + databricks CLI + ug)
 Makefile            Task runner — `make help` lists targets
+make/               Per-domain target files the Makefile includes
 ```
 
 ## Requirements
 
 - Terraform ≥ 1.5.0 and the Databricks provider ≥ 1.129.0 (first with the AI
   Gateway model-service resources).
-- The `databricks` CLI on PATH, with a `~/.databrickscfg` profile that has Unity
-  Catalog + AI Gateway access.
+- The `databricks` CLI on PATH, with a profile named `ai_dev_tools` that has Unity
+  Catalog + AI Gateway access. This repo targets that one profile name on every
+  machine, so a local test and an MDM rollout share one auth path. Point it at the
+  workspace you deploy to. Run `make ensure-profile` to check it. The target prints
+  the `databricks auth login` command when the profile is absent.
 - Python 3.10+ (stdlib only) for the config generator.
 - `ug` (`uv tool install git+https://github.com/databricks/ucode`, Python
   3.12+) on each developer machine — the launch entrypoint.

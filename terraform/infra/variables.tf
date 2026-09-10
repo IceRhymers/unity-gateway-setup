@@ -1,7 +1,7 @@
 variable "databricks_profile" {
   description = "Profile in ~/.databrickscfg to authenticate with."
   type        = string
-  default     = "fevm-west"
+  default     = "ai_dev_tools"
 }
 
 # ---- foundation ----

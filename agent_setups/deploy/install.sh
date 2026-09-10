@@ -12,7 +12,7 @@
 #   --dry-run               Print planned actions, touch nothing (exit 0)
 #   --agents <list>         Comma-separated: claude-code,codex,claude-desktop
 #                           (default: claude-code,codex; claude-desktop is opt-in)
-#   --profile <name>        Databricks profile (default: fevm-west; Phase-B hint only)
+#   --profile <name>        Databricks profile (default: ai_dev_tools; Phase-B hint only)
 #   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/
 #                           + <root>/claude-desktop/<os>/  (default: .)
 #   --claude-source <dir>   Dir holding Claude files directly; overrides --source
@@ -45,7 +45,7 @@ set -eu
 TARGET_ROOT=""
 DRY_RUN=0
 AGENTS="claude-code,codex"
-PROFILE="fevm-west"
+PROFILE="ai_dev_tools"
 SOURCE="."
 CLAUDE_SOURCE=""
 CODEX_SOURCE=""
@@ -96,7 +96,7 @@ Options:
   --dry-run               Print planned actions, touch nothing (exit 0)
   --agents <list>         Comma-separated agents: claude-code,codex,claude-desktop
                           (default: claude-code,codex; claude-desktop is opt-in)
-  --profile <name>        Databricks profile name (default: fevm-west; Phase-B hint only)
+  --profile <name>        Databricks profile name (default: ai_dev_tools; Phase-B hint only)
   --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/,
                           <root>/claude-desktop/<os>/  (default: .)
   --claude-source <dir>   Dir holding Claude files directly (overrides --source)

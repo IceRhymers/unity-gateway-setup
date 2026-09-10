@@ -118,7 +118,7 @@ lb_assert_direct_host "${PGHOST:-}"
 
 # Profile mismatch check: only when PROFILE was set explicitly.
 # PROFILE_EXPLICIT=1 is set by the Makefile using $(origin PROFILE) so the
-# Makefile default (fevm-west) does not trip the check for other operators.
+# Makefile default (ai_dev_tools) does not trip the check for other operators.
 if [ "${PROFILE_EXPLICIT:-}" = "1" ] && \
    [ -n "${DATABRICKS_PROFILE:-}" ] && \
    [ -n "${PROFILE:-}" ] && \
@@ -130,7 +130,7 @@ if [ "${PROFILE_EXPLICIT:-}" = "1" ] && \
     exit 1
 fi
 
-_profile="${PROFILE:-${DATABRICKS_PROFILE:-fevm-west}}"
+_profile="${PROFILE:-${DATABRICKS_PROFILE:-ai_dev_tools}}"
 
 # Connect AS the group role. In Lakebase you do not inherit a group role; a
 # member of the backing workspace group authenticates as it. Every operator uses

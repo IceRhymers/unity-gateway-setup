@@ -1,8 +1,8 @@
 # infra
 
 This is a concrete, applyable deployment that wires the reusable modules into a
-working Unity AI Gateway footprint. Defaults target the `fevm-west` sandbox in
-reference-catalog mode.
+working Unity AI Gateway footprint. Defaults target the workspace the
+`ai_dev_tools` profile names, in reference-catalog mode.
 
 ## What it deploys
 

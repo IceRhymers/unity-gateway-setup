@@ -7,10 +7,10 @@ Claude Code (managed-settings.json for MDM deployment).
 
 Examples:
   # Generate Claude Code managed settings from the applied Terraform state.
-  ./generate.py claude-code --profile fevm-west
+  ./generate.py claude-code --profile ai_dev_tools
 
   # Print to stdout instead of writing files.
-  ./generate.py claude-code --profile fevm-west --stdout
+  ./generate.py claude-code --profile ai_dev_tools --stdout
 
   # Use a saved `terraform output -json` (no terraform invocation).
   ./generate.py claude-code --tf-output-json /tmp/tf.json --host https://myws.cloud.databricks.com
@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, generator_cls in REGISTRY.items():
         ap = sub.add_parser(name, help=generator_cls.help, description=generator_cls.help)
         # Shared source/auth flags.
-        ap.add_argument("--profile", default="fevm-west", help="Databricks CLI profile (default: fevm-west).")
+        ap.add_argument("--profile", default="ai_dev_tools", help="Databricks CLI profile (default: ai_dev_tools).")
         ap.add_argument("--host", default=None, help="Workspace URL override (else DATABRICKS_HOST or the profile's host).")
         ap.add_argument("--infra-dir", type=Path, default=DEFAULT_INFRA_DIR, help="Path to terraform/infra.")
         ap.add_argument("--tf-output-json", type=Path, default=None, help="Path to a saved `terraform output -json` (skips running terraform).")

@@ -388,7 +388,7 @@ Create a Self Service item with this text.
 Config placement is complete. To finish connecting your tools to the
 AI Gateway, run this command ONCE in your terminal:
 
-    databricks auth login --host <host> --profile fevm-west
+    databricks auth login --host <host> --profile ai_dev_tools
 
 Your browser will open for Single Sign-On. After login, verify with:
   - Claude Code:  type /status in a conversation

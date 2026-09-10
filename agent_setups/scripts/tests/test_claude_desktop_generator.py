@@ -40,7 +40,7 @@ from agents.claude_desktop import (  # noqa: E402
 from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
 
 HOST = "https://myws.cloud.databricks.com"
-PROFILE = "fevm-west"
+PROFILE = "ai_dev_tools"
 
 
 def _endpoints() -> list[Endpoint]:
@@ -457,7 +457,7 @@ class BakeableValidationTest(unittest.TestCase):
 
     def test_valid_inputs_accepted(self):
         # A normal profile + host must not raise.
-        files = ClaudeDesktopGenerator().generate(_context(), _args(profile="fevm-west"))
+        files = ClaudeDesktopGenerator().generate(_context(), _args(profile="ai_dev_tools"))
         self.assertIn(f"claude-desktop/macos/{CONFIG_FILENAME}", files)
 
 

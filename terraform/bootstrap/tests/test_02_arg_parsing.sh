@@ -39,7 +39,7 @@ _run 2 "--profile with no value" --profile
 _run 2 "missing --profile"       --project foo
 
 # --dry-run must make zero API calls.
-_run 0 "--dry-run"               --profile fevm-west --dry-run --out "${_work}/out"
+_run 0 "--dry-run"               --profile ai_dev_tools --dry-run --out "${_work}/out"
 if [ -f "${_work}/DATABRICKS_CALLED" ]; then
   printf 'FAIL: %s — --dry-run invoked the databricks CLI\n' "${T}"
   exit 1
