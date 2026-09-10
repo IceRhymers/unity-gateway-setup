@@ -9,7 +9,7 @@ databricks_profile = "ai_dev_tools"
 #
 # A workspace on default storage cannot use the create path. Reference an existing
 # catalog there, and name it below.
-catalog_name   = "tanner_wendland"
+catalog_name   = "main"
 create_catalog = false
 
 # --- provider catalog ---
