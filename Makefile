@@ -200,6 +200,37 @@ claude-desktop-install-local: ## Generate a Claude Desktop bundle pointed at a u
 	sh agent_setups/deploy/install-claude-desktop-local.sh \
 		--source "$(OUT_DIR)/claude-desktop/$(CD_OS)" --target-dir "$(CD_LOCAL_DIR)"
 
+# ---- claude-desktop system (fleet-path) test install ----
+# The MDM path bakes a MACHINE-WIDE helper dir into claude-setup.json, so the
+# user-dir target above cannot exercise the config an MDM would actually push.
+# This target generates a bundle for THIS OS at the DEFAULT (fleet) helper dir,
+# then places the helpers there through install.sh — the same placement authority
+# the package path uses, so the two cannot drift apart. Both sides already agree:
+# macOS "/Library/Application Support/ClaudeDesktop", Linux "/etc/claude-desktop".
+#
+# On macOS this also places the SSO-bootstrap LaunchAgent in /Library/LaunchAgents,
+# because install.sh treats it as part of the claude-desktop bundle. That is what
+# you want here: it is the same pair an MDM pushes.
+#
+# The target dir is root-owned, so this calls sudo. Two rehearsal modes:
+#   make claude-desktop-install-system CD_INSTALL_ARGS=--dry-run
+#   make claude-desktop-install-system CD_SUDO= CD_INSTALL_ARGS='--target-root /tmp/cd-stage'
+# install.sh checks for root BEFORE it reads --dry-run, so a plain dry run still
+# needs sudo. --target-root stages into a prefix unprivileged instead.
+CD_SUDO ?= sudo
+CD_INSTALL_ARGS ?=
+
+.PHONY: claude-desktop-install-system
+claude-desktop-install-system: ## Generate a Claude Desktop bundle at the FLEET helper path + place the helpers there via install.sh (needs root; PROFILE=, CD_OS=, CD_SUDO=, CD_INSTALL_ARGS=, ARGS=)
+	$(AGENT_GEN) claude-desktop --profile $(PROFILE) --out-dir $(OUT_DIR) \
+		--platforms $(CD_OS) $(ARGS)
+	$(CD_SUDO) sh agent_setups/deploy/install.sh \
+		--agents claude-desktop --os $(CD_OS) --source "$(OUT_DIR)" $(CD_INSTALL_ARGS)
+	@printf '[claude-desktop-install-system] helpers: %s\n' \
+		"$$(sh agent_setups/deploy/install.sh --os $(CD_OS) --agent claude-desktop --print-target-dir)"
+	@printf '[claude-desktop-install-system] import in the app (Developer -> Configure): %s\n' \
+		"$(OUT_DIR)/claude-desktop/$(CD_OS)/claude-setup.json"
+
 .PHONY: agents-install-local
 agents-install-local: claude-code-install-local codex-install-local dsh-install-local ## Install ALL agent configs locally (user mode) to their per-user dirs, backing up existing files (PROFILE=, ARGS=)
 	@echo "[agents-install-local] Claude Code, Codex, and DeepSeek Harness installed locally."

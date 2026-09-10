@@ -131,6 +131,25 @@ make claude-desktop-install-local PROFILE=<profile>
 
 The target generates a bundle for this OS with the helper path set to a user-writable directory (`$HOME/Library/Application Support/ClaudeDesktop` on macOS, `$HOME/.config/claude-desktop` on Linux), then places the helper scripts there. Override the directory with `CD_LOCAL_DIR=<dir>`. The generated `claude-setup.json` references the same directory, so the import works at once. The target prints the JSON path to import.
 
+### Fleet-path test (needs root)
+
+The local test uses a user directory. An MDM pushes a machine-wide directory instead. To test the layout the MDM produces, run one target:
+
+```sh
+make claude-desktop-install-system PROFILE=<profile>
+```
+
+The target generates a bundle for this OS at the default helper directory. On macOS that directory is `/Library/Application Support/ClaudeDesktop`. On Linux it is `/etc/claude-desktop`. The target then places the helper scripts there with `install.sh`. The package path uses the same script, so the two placements cannot differ.
+
+On macOS the target also places the SSO-bootstrap LaunchAgent in `/Library/LaunchAgents`. An MDM pushes the same pair.
+
+The target writes to a root-owned directory, so it calls `sudo`. Set `CD_SUDO=` when you already run as root.
+
+To rehearse the placement, use one of these two commands:
+
+- `make claude-desktop-install-system CD_INSTALL_ARGS=--dry-run` prints the planned actions. It still needs root, because `install.sh` checks for root before it reads `--dry-run`.
+- `make claude-desktop-install-system CD_SUDO= CD_INSTALL_ARGS='--target-root /tmp/cd-stage'` stages the files under a prefix without root.
+
 > **Windows scripts are not tested yet.** The PowerShell helpers are theoretical. Test them on a Windows machine before a production rollout.
 
 ---
