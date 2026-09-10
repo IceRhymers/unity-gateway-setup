@@ -86,16 +86,16 @@ Options:
 
 Examples:
   # First-time bootstrap:
-  bootstrap-state.sh --profile fevm-west
+  bootstrap-state.sh --profile ai_dev_tools
 
   # Second operator (env only, no DDL):
-  bootstrap-state.sh --profile fevm-west --env-only
+  bootstrap-state.sh --profile ai_dev_tools --env-only
 
   # Onboard a new operator:
-  bootstrap-state.sh --profile fevm-west --grant-to user@example.com
+  bootstrap-state.sh --profile ai_dev_tools --grant-to user@example.com
 
   # Dry run (no API calls):
-  bootstrap-state.sh --profile fevm-west --dry-run --out /tmp/lb
+  bootstrap-state.sh --profile ai_dev_tools --dry-run --out /tmp/lb
 
 Exit codes:
   0  success

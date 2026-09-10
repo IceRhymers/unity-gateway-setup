@@ -12,7 +12,7 @@
 #   --dry-run               Print planned actions, touch nothing (exit 0)
 #   --agents <list>         Comma-separated: claude-code,codex,claude-desktop
 #                           (default: claude-code,codex; claude-desktop is opt-in)
-#   --profile <name>        Databricks profile (default: fevm-west; Phase-B hint only)
+#   --profile <name>        Databricks profile (default: ai_dev_tools; Phase-B hint only)
 #   --source <root>         Tarball root: <root>/claude-code/<os>/ + <root>/codex/
 #                           + <root>/claude-desktop/<os>/  (default: .)
 #   --claude-source <dir>   Dir holding Claude files directly; overrides --source
@@ -45,11 +45,15 @@ set -eu
 TARGET_ROOT=""
 DRY_RUN=0
 AGENTS="claude-code,codex"
-PROFILE="fevm-west"
+PROFILE="ai_dev_tools"
 SOURCE="."
 CLAUDE_SOURCE=""
 CODEX_SOURCE=""
 CLAUDE_DESKTOP_SOURCE=""
+# The SSO-bootstrap LaunchAgent basename the generator emits. It is placed in
+# /Library/LaunchAgents, not the helper dir, so launchd loads it per login session.
+_CD_PLIST="ug-sso-bootstrap.plist"
+
 # Placement dir override for claude-desktop helpers. Must match the absolute path
 # baked into claude-setup.json when the generator used --install-dir-<os>. Empty =
 # the per-OS default in _raw_dir_for. Used by install, uninstall, and print-target-dir.
@@ -92,7 +96,7 @@ Options:
   --dry-run               Print planned actions, touch nothing (exit 0)
   --agents <list>         Comma-separated agents: claude-code,codex,claude-desktop
                           (default: claude-code,codex; claude-desktop is opt-in)
-  --profile <name>        Databricks profile name (default: fevm-west; Phase-B hint only)
+  --profile <name>        Databricks profile name (default: ai_dev_tools; Phase-B hint only)
   --source <root>         Tarball root: expects <root>/claude-code/<os>/, <root>/codex/,
                           <root>/claude-desktop/<os>/  (default: .)
   --claude-source <dir>   Dir holding Claude files directly (overrides --source)
@@ -423,6 +427,25 @@ _uninstall_agent() {
     _fatal 6 "Uninstall incomplete: some files could not be removed. Marker left intact for retry."
   fi
 
+  # The claude-desktop LaunchAgent lives outside the marker's directory, so remove
+  # it explicitly. Unload it first, or launchd keeps the job until the next logout.
+  if [ "${_ua_agent}" = "claude-desktop" ] && [ "${OS}" = "macos" ]; then
+    _ua_plist="${TARGET_ROOT:-}/Library/LaunchAgents/${_CD_PLIST}"
+    if [ -e "${_ua_plist}" ]; then
+      if [ "${DRY_RUN}" = "1" ]; then
+        _info "  [plan] launchctl unload \"${_ua_plist}\""
+        _info "  [plan] rm  \"${_ua_plist}\""
+      else
+        launchctl unload "${_ua_plist}" 2>/dev/null || true
+        if rm -f -- "${_ua_plist}"; then
+          _info "  removed: \"${_ua_plist}\""
+        else
+          _warn "Failed to remove '${_ua_plist}'"
+        fi
+      fi
+    fi
+  fi
+
   # Remove the marker last.
   if [ "${DRY_RUN}" = "1" ]; then
     _info "  [plan] rm  \"${_ua_marker}\""
@@ -539,7 +562,8 @@ _check_prereqs() {
 
   # python3 is used by the claude-code/codex auth helpers and by every OTEL/hook
   # helper (they shell out to 'python3 -c' on each token mint). It is NOT used by
-  # the claude-desktop credential helper (bash + sed only). So it is critical only
+  # the claude-desktop credential helper (which only runs 'ug auth-token'). So it
+  # is critical only
   # when a selected agent actually needs it: claude-code or codex, or
   # claude-desktop WITH its OTEL helper present. A claude-desktop-only, telemetry-off
   # install therefore does not require python3. A DATABRICKS_BEARER-only deployment
@@ -562,12 +586,26 @@ _check_prereqs() {
       critical
   else
     _one_check python3 \
-      "selected agents need no python3 (claude-desktop credential helper uses bash + sed only)." \
+      "selected agents need no python3 (claude-desktop credential helper only runs 'ug auth-token')." \
       info
   fi
   _one_check databricks \
     "Databricks CLI: required for token minting via 'databricks auth token'." \
     critical
+
+  # The claude-desktop credential helper mints every token with 'ug auth-token',
+  # so ug must be installed on the device and the developer must have run
+  # 'ug configure' once. The helper resolves ug from an absolute-path candidate
+  # list, so ug need not be on the installer's PATH - hence info, not critical.
+  if _contains "${AGENTS}" "claude-desktop"; then
+    if command -v ug >/dev/null 2>&1; then
+      _one_check ug    "claude-desktop: mints tokens via 'ug auth-token'." info
+      _one_check uv    "ug-sso-bootstrap.sh installs ug with it when ug is absent. A prerequisite: no package carries it." info
+    else
+      _one_check ucode "claude-desktop: mints tokens via 'ug auth-token'; run 'ug configure' once. Set UG_BIN if not on PATH." info
+      _one_check uv    "ug-sso-bootstrap.sh installs ug with it when ug is absent. A prerequisite: no package carries it." info
+    fi
+  fi
 
   if [ "${_prereq_emit}" = "1" ]; then
     _one_check jq   "emit_hook_events.sh: builds JSON payloads [bundle contains emitter — critical]" critical
@@ -721,9 +759,35 @@ _install_claude_desktop() {
     _cd_files="${_cd_files} otel-headers-helper.sh"
   fi
 
+  # Optional: the MDM-triggered SSO bootstrap. The script lives beside the helpers.
+  if [ -f "${_cd_src}/ug-sso-bootstrap.sh" ]; then
+    _action_copy  "${_cd_src}/ug-sso-bootstrap.sh" "${_cd_dir}/ug-sso-bootstrap.sh"
+    _action_chmod 755 "${_cd_dir}/ug-sso-bootstrap.sh"
+    _cd_files="${_cd_files} ug-sso-bootstrap.sh"
+  fi
+
   _action_chown "${_owner}" "${_cd_dir}"
 
   _write_version_marker "claude-desktop" "${_cd_dir}" "${_cd_src}" "${_cd_files}"
+
+  # The LaunchAgent plist goes to /Library/LaunchAgents, NOT the helper dir, so a
+  # login session loads it for every user. macOS only: Linux needs a systemd user
+  # unit, and the generator emits no plist for it.
+  if [ "${OS}" = "macos" ] && [ -f "${_cd_src}/${_CD_PLIST}" ]; then
+    _cd_agents_dir="${TARGET_ROOT:-}/Library/LaunchAgents"
+    _action_mkdir "${_cd_agents_dir}"
+    _action_copy  "${_cd_src}/${_CD_PLIST}" "${_cd_agents_dir}/${_CD_PLIST}"
+    # 644 root:wheel: launchd refuses a group- or world-writable agent plist.
+    _action_chmod 644 "${_cd_agents_dir}/${_CD_PLIST}"
+    _info "  agent  : ${_cd_agents_dir}/${_CD_PLIST}"
+    _info "           It runs ug-sso-bootstrap.sh at each user login, in the user's"
+    _info "           GUI session, so ug configure can open a browser for SSO."
+    _info "           NOTE: the bootstrap installs ug with uv when ug is absent, so"
+    _info "           this machine needs uv. uv is a prerequisite: no package carries"
+    _info "           it, because it installs per-user and self-updates."
+    _info "           It loads at the next login. To load it now, run as the user:"
+    _info "             launchctl load \"/Library/LaunchAgents/${_CD_PLIST}\""
+  fi
 
   _info "  note   : import claude-setup.json in the app (Developer -> Configure"
   _info "           third-party inference), then export the MDM profile from the app."
@@ -764,6 +828,11 @@ _phase_b_handoff() {
   printf '  Each developer must run ONCE, interactively:\n'
   printf '    databricks auth login --host <host> --profile %s\n' "${PROFILE}"
   printf '  Browser OAuth (U2M) -- CANNOT be pushed by MDM.\n'
+  if _contains "${AGENTS}" "claude-desktop"; then
+    printf '  For Claude Desktop, run this instead -- it covers the same login and is\n'
+    printf '  what its credential helper reads from:\n'
+    printf '    ug configure --profiles %s\n' "${PROFILE}"
+  fi
   # shellcheck disable=SC2016  # backticks are literal slash-command notation, not expansion
   printf '  Verify: `/status` in Claude Code; `codex doctor` for Codex.\n\n'
 }

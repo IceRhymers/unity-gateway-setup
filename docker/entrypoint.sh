@@ -4,7 +4,7 @@
 set -euo pipefail
 
 : "${DATABRICKS_WS_HOST:?DATABRICKS_WS_HOST must be set (workspace URL)}"
-: "${DATABRICKS_PROFILE_NAME:=fevm-west}"
+: "${DATABRICKS_PROFILE_NAME:=ai_dev_tools}"
 
 # 1. Fresh, isolated ~/.databrickscfg for the dev user. Both DEFAULT and the
 #    named profile point at the workspace, so `databricks auth login` (bare) and

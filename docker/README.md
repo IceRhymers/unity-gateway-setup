@@ -80,7 +80,7 @@ configs without restarting (keeps auth), run `make docker-reload`. It regenerate
 `make docker-login` prints an OAuth URL. Open it in your **host** browser. Complete
 SSO. The redirect to `localhost:8020` flows through the port map and socat bridge
 back into the container. The container caches the token inside itself, not on your
-host. Everything defaults to the `PROFILE` (fevm-west), so you do not need any
+host. Everything defaults to the `PROFILE` (ai_dev_tools), so you do not need any
 `--profile` juggling.
 
 ### Testing telemetry

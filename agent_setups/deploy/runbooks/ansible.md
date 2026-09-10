@@ -109,7 +109,7 @@ S3, artifact store). Adapt `local_tarball_path` and the copy task accordingly.
         msg: >
           Phase A complete on {{ inventory_hostname }}.
           Each developer must still run Phase B (ONCE, interactively):
-            databricks auth login --host <host> --profile fevm-west
+            databricks auth login --host <host> --profile ai_dev_tools
           This requires a browser and cannot be automated.
 ```
 
@@ -149,5 +149,5 @@ S3, artifact store). Adapt `local_tarball_path` and the copy task accordingly.
   extra var (`-e unity_gateway_version=abc1234-20260101`). `make deploy-package` prints
   the version string and embeds it in the tarball filename.
 - **Phase B:** after the play succeeds, tell developers to run
-  `databricks auth login --host <host> --profile fevm-west` once, interactively.
+  `databricks auth login --host <host> --profile ai_dev_tools` once, interactively.
   Check with `/status` in Claude Code or `codex --strict-config doctor` for Codex.

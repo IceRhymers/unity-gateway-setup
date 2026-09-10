@@ -1,5 +1,9 @@
 # Claude Desktop runbook — Unity AI Gateway third-party inference (MDM)
 
+> **Related documents.** This runbook covers the generator and the bundle. For the
+> fleet rollout, read `claude-desktop-mdm.md`. To rehearse the rollout in a
+> Parallels VM, read `claude-desktop-vm-test.md`.
+
 Claude Desktop reads an operator-imported configuration, not a file that MDM places on disk. So the deployment differs from Claude Code and Codex. The operator imports the generated JSON into the app, tests the connection, and then exports the OS-native MDM profile from the app.
 
 This generator produces two things per OS:
@@ -9,6 +13,8 @@ This generator produces two things per OS:
 
 This generator does not produce the `.mobileconfig` or `.reg` MDM artifacts. The Claude Desktop app exports those after you import the JSON.
 
+For a fleet you also need installer packages, because a configuration profile carries settings only and cannot place a file. Build them with `make claude-desktop-pkg` and `make ug-bootstrap-pkg`. See `claude-desktop-mdm.md`.
+
 ---
 
 ## Three-phase deployment model
@@ -17,7 +23,7 @@ This generator does not produce the `.mobileconfig` or `.reg` MDM artifacts. The
 |---|---|---|---|
 | **A — Helper placement** | IT admin | Place the helper scripts at the absolute path the JSON references | **Yes** |
 | **B — Import and export** | IT admin (once) | Import the JSON in the app, test, then export the MDM profile | **No** — the app UI does this once |
-| **C — User auth** | Each developer | `databricks auth login --host <host> --profile <profile>` | **No** — browser OAuth (U2M) |
+| **C — User auth** | The MDM triggers it. The developer signs in | The `ug-sso-bootstrap` LaunchAgent runs `ug configure`. A browser opens for SSO | **The trigger, yes.** The sign-in belongs to the person |
 
 Phase A places the scripts. Phase B produces the MDM profile you distribute to the fleet. Phase C binds each developer's Databricks identity. No phase is optional.
 
@@ -25,7 +31,36 @@ Phase A places the scripts. Phase B produces the MDM profile you distribute to t
 
 ## Why a credential helper
 
-Claude Desktop starts under `launchd` (macOS) with a minimal `PATH`. The app cannot find the Databricks CLI on `$PATH`. The helper resolves the CLI from an absolute-path candidate list instead. The helper prints only the OAuth access token to standard output. The app caches the token for `credential.ttlSec` seconds and re-runs the helper when the token expires.
+Claude Desktop needs a bearer token on every token refresh. The app caches the token for `credential.ttlSec` seconds, then runs the helper again.
+
+The helper is a thin wrapper around `ug auth-token`. That is `ug`'s own token helper, and it is the same one Claude Code's `apiKeyHelper` and Codex's auth command use. So a developer authenticates once with `ug configure`, and every surface after that reads its token from one place. This removes the second auth path that a direct `databricks auth token` call created.
+
+`ug auth-token` is a hidden command. `ug --help` does not list it. It is nonetheless the supported entry point for this purpose.
+
+### What `ug` handles, so the helper does not
+
+The wrapper carries no authentication logic. `ug` supplies all of it:
+
+- It short-circuits on `$DATABRICKS_BEARER` for CI.
+- It resolves the CLI profile from the workspace host.
+- It honours static-PAT profiles and the `use_pat` flag saved in its state. The
+  MDM deployment does not use that path. It uses OAuth single sign-on.
+- It retries token-cache lock contention with a jittered backoff. This matters. Claude Desktop runs the helper whenever `ttlSec` expires, and `ug`-launched agents compete for the same token cache.
+- It re-authenticates non-interactively when a session expires.
+
+Do not reimplement any of this in the helper.
+
+### What the wrapper does
+
+The wrapper has three jobs only:
+
+1. It resolves the `ug` binary from an absolute-path candidate list, because Claude Desktop starts under `launchd` (macOS) with a minimal `PATH`. Set `UG_BIN` to override the path.
+2. It passes `--host`, baked at generation time. This pins the token to the same workspace as `inference.baseUrl`. A developer with several workspaces configured in `ug` would otherwise get a token for whichever workspace `ug` selected last.
+3. It strips the trailing newline that `ug auth-token` prints, because Claude Desktop's credential contract wants the bare token.
+
+Set `$DATABRICKS_PROFILE` to force a profile. Otherwise `ug` resolves the profile from the baked host.
+
+The helper is POSIX `sh`. It needs no `jq`, no `python3`, and no `sed`.
 
 ---
 
@@ -46,6 +81,10 @@ Each macOS or Linux bundle contains:
 - `claude-setup.json`
 - `databricks-token.sh`
 - `otel-headers-helper.sh` (only when telemetry is wired)
+- `ug-sso-bootstrap.sh` and `ug-sso-bootstrap.plist` (the MDM-triggered SSO login;
+  the plist is macOS only, and `--no-sso-bootstrap` omits both). For a fleet these
+  ship in `ug-bootstrap.pkg`. The script installs `ug` with `uv`, which is a
+  prerequisite that no package carries.
 
 Each Windows bundle contains:
 
@@ -92,6 +131,25 @@ make claude-desktop-install-local PROFILE=<profile>
 
 The target generates a bundle for this OS with the helper path set to a user-writable directory (`$HOME/Library/Application Support/ClaudeDesktop` on macOS, `$HOME/.config/claude-desktop` on Linux), then places the helper scripts there. Override the directory with `CD_LOCAL_DIR=<dir>`. The generated `claude-setup.json` references the same directory, so the import works at once. The target prints the JSON path to import.
 
+### Fleet-path test (needs root)
+
+The local test uses a user directory. An MDM pushes a machine-wide directory instead. To test the layout the MDM produces, run one target:
+
+```sh
+make claude-desktop-install-system PROFILE=<profile>
+```
+
+The target generates a bundle for this OS at the default helper directory. On macOS that directory is `/Library/Application Support/ClaudeDesktop`. On Linux it is `/etc/claude-desktop`. The target then places the helper scripts there with `install.sh`. The package path uses the same script, so the two placements cannot differ.
+
+On macOS the target also places the SSO-bootstrap LaunchAgent in `/Library/LaunchAgents`. An MDM pushes the same pair.
+
+The target writes to a root-owned directory, so it calls `sudo`. Set `CD_SUDO=` when you already run as root.
+
+To rehearse the placement, use one of these two commands:
+
+- `make claude-desktop-install-system CD_INSTALL_ARGS=--dry-run` prints the planned actions. It still needs root, because `install.sh` checks for root before it reads `--dry-run`.
+- `make claude-desktop-install-system CD_SUDO= CD_INSTALL_ARGS='--target-root /tmp/cd-stage'` stages the files under a prefix without root.
+
 > **Windows scripts are not tested yet.** The PowerShell helpers are theoretical. Test them on a Windows machine before a production rollout.
 
 ---
@@ -110,11 +168,32 @@ The target generates a bundle for this OS with the helper path set to a user-wri
 
 ## Step 4 — User auth (Phase C)
 
-Each developer runs this command once. The command opens a browser for SSO. MDM cannot push this step.
+This command runs once per developer. It opens a browser for SSO.
 
 ```sh
-databricks auth login --host <workspace-url> --profile <profile>
+ug configure --profiles <profile>
 ```
+
+`--profiles` works here because your own machine already has the profile in
+`~/.databrickscfg`. It fails on a freshly imaged device, where no such file exists.
+
+So this form is for a local test only. In a fleet the MDM triggers the login through
+the generated `ug-sso-bootstrap` LaunchAgent, which passes `--workspaces <url>`
+instead and guards itself against opening a browser at every login. See
+`claude-desktop-mdm.md` section 8.
+
+This is the only authentication step, and it serves every surface. It sets up the terminal agents `ug` launches, and it is what the Claude Desktop credential helper reads from. A developer does not authenticate twice.
+
+To verify the helper independently of the app:
+
+```sh
+"/Library/Application Support/ClaudeDesktop/databricks-token.sh" | wc -c
+```
+
+It must print a byte count near 800 and exit 0. Count the bytes. Never print the
+token, because it is a live credential.
+
+It must print the first characters of a token and exit 0. Diagnostics go to standard error, so they do not corrupt the token contract.
 
 ---
 
@@ -134,10 +213,11 @@ The `otel-headers-helper` script mints the dedicated telemetry service-principal
 
 | Tool | Criticality |
 |---|---|
-| `databricks` | Always critical — the credential helper fetches the token with it |
+| `ug` | Always critical — the credential helper mints every token with `ug auth-token`, and `ug configure` performs the one-time login |
+| `databricks` | Critical when telemetry is on — the OTEL headers helper reads the UC secret with it. `ug` invokes it internally for tokens. |
 | `python3` | Critical when telemetry is on — the macOS/Linux OTEL helper uses it |
 
-The credential helper `databricks-token.sh` uses `sed` only. It does not need `python3`.
+The credential helper `databricks-token.sh` is POSIX `sh`. It needs no `jq`, no `python3`, and no `sed`. It runs one command and strips a newline.
 
 ---
 

@@ -42,7 +42,7 @@ A workspace admin performs step 1. The new operator performs steps 2, 3, and 4.
 
 The new operator does not need their own Postgres role. They assume the group role
 `terraform_writers`, the same as every other member. No credential is shared at any
-step. The Makefile default profile is `fevm-west`. If your profile name is different,
+step. The Makefile default profile is `ai_dev_tools`. If your profile name is different,
 pass `PROFILE=<your-profile>` to every `make tf-*` command.
 
 ---

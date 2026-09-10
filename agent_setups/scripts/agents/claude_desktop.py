@@ -16,10 +16,19 @@ So this generator does NOT emit the flat MDM plist/registry keys — the app
 exports those. It emits the importable JSON and the helper scripts the config
 references by absolute path.
 
+Authentication goes through ug. The credential helper is a thin wrapper around
+`ug auth-token`, ug's own cross-platform token helper and the same one Claude
+Code's apiKeyHelper and Codex's auth command use. A developer runs `ug configure`
+once, and every surface after that — the terminal agents and this desktop app —
+draws its token from that single place. ug owns the token logic (static PATs,
+token-cache lock contention, non-interactive re-auth); this generator owns the
+inference config, the models, and the telemetry, because ug has no Claude Desktop
+target and cannot discover models for it.
+
 Claude Desktop starts under launchd (macOS) with a minimal PATH, so the
-credential helper resolves the Databricks CLI from an absolute-path candidate
-list, never from $PATH. The config's credential.command is an absolute path that
-must match where the helper is installed (see install.sh / the runbook).
+credential helper resolves ug from an absolute-path candidate list, never from
+$PATH. The config's credential.command is an absolute path that must match where
+the helper is installed (see install.sh / the runbook).
 
 Conventions follow the internal "Onboarding Coding Agents - AI Gateway" playbook
 and the "DBX - Inference Configuration" customer document.
@@ -80,6 +89,43 @@ OTEL_HELPER_SH = "otel-headers-helper.sh"
 OTEL_HELPER_PS1 = "otel-headers-helper.ps1"
 OTEL_HELPER_CMD = "otel-headers-helper.cmd"
 
+# --- MDM-triggered SSO bootstrap (macOS / Linux) -----------------------------
+# The MDM pushes these two files. The LaunchAgent runs the script at each user
+# login, inside the user's GUI session, so `ug configure` can open a browser for
+# single sign-on. The script guards itself, so a browser opens only when the
+# developer is not already authenticated.
+SSO_BOOTSTRAP_SH = "ug-sso-bootstrap.sh"
+LAUNCHAGENT_PLIST = "ug-sso-bootstrap.plist"
+
+# Where the LaunchAgent plist belongs. /Library/LaunchAgents is machine-wide, so
+# the agent loads for every user who logs in. A per-user ~/Library/LaunchAgents
+# copy would need placing per account, which MDM cannot do in one push.
+LAUNCHAGENT_DIR = "/Library/LaunchAgents"
+
+# uv is a PREREQUISITE, not a payload. It installs per-user (~/.local/bin/uv) and it
+# self-updates (`uv self update`), so packaging it would go stale and fight its own
+# updater — the same reason ug is not packaged either. IT owns it as part of the macOS
+# baseline, alongside databricks, python3, jq, and curl.
+#
+# The bootstrap still resolves it by absolute path, because a LaunchAgent inherits a
+# minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin). These are the places uv actually lands:
+# the official installer, Homebrew, and a machine-wide placement by IT.
+UV_CANDIDATE_PATHS = (
+    "$HOME/.local/bin/uv",
+    "/opt/homebrew/bin/uv",
+    "/usr/local/bin/uv",
+)
+
+# What the bootstrap installs when ug is absent. Unpinned by default, which matches
+# `ug upgrade` (it runs `uv tool install --reinstall` against the same URL) and this
+# repo's treatment of ug as a self-updating tool. Pass --ug-ref to pin a fleet.
+UG_GIT_URL = "git+https://github.com/databricks/ucode"
+
+# The default reverse-DNS label for the LaunchAgent. Override with
+# --launchagent-label. The plist filename follows the label in the runbook, but
+# the bundle always writes LAUNCHAGENT_PLIST so install.sh can find it.
+DEFAULT_LAUNCHAGENT_LABEL = "com.databricks.ug-sso-claude-desktop"
+
 
 def _platform_path(install_dir: str, filename: str, platform: str) -> str:
     """Join an install dir + filename with the platform's path separator."""
@@ -94,6 +140,32 @@ def _platform_path(install_dir: str, filename: str, platform: str) -> str:
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _UC_TABLE_RE = re.compile(r"^[A-Za-z0-9_]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
 _HOST_UNSAFE_CHARS = "'\"`$;\\ "
+
+
+# A git ref is baked into the bootstrap's `uv tool install "<url>@<ref>"` argument.
+# Keep it to characters git accepts in a ref, so a hand-passed value cannot inject
+# shell syntax.
+_UG_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _validate_ug_ref(ug_ref: str | None) -> None:
+    """Reject a git ref that is unsafe to bake into the bootstrap script."""
+    if ug_ref is None:
+        return
+    if not _UG_REF_RE.match(ug_ref) or ".." in ug_ref:
+        raise SystemExit(
+            f"Refusing to bake an unsafe ug git ref: {ug_ref!r}. Use letters, digits, "
+            "'.', '_', '/', and '-', with no '..' sequence."
+        )
+
+
+def _validate_launchagent_label(label: str) -> None:
+    """Reject a LaunchAgent label that is unsafe to bake into a plist or a filename."""
+    if not _LABEL_RE.match(label):
+        raise SystemExit(
+            f"Refusing to bake an unsafe LaunchAgent label: {label!r}. Use a reverse-DNS "
+            "string of letters, digits, '.', '_', and '-', starting with a letter or digit."
+        )
 
 
 def _validate_bakeables(profile: str, host: str, traces_table: str | None) -> None:
@@ -125,116 +197,132 @@ def _family_tier(name: str) -> str | None:
     return None
 
 
-# --- Credential helper: bash (macOS / Linux) --------------------------------
-# The proven pure-bash helper. Prints ONLY the access token to stdout (no trailing
-# newline), diagnostics to stderr. Resolves the CLI from an absolute-path list so
-# it behaves identically under launchd. __PROFILE__ is baked at generation time and
-# is env-overridable (DATABRICKS_PROFILE) so one script serves a fleet.
-_CRED_HELPER_SH_TEMPLATE = r"""#!/usr/bin/env bash
+# --- Credential helper: POSIX sh (macOS / Linux) ----------------------------
+# Delegates to `ug auth-token` so ug is the single source of Databricks tokens
+# across every surface. Prints ONLY the bearer token to stdout (no trailing
+# newline), diagnostics to stderr. Resolves ug from an absolute-path list so it
+# behaves identically under launchd. __HOST__ is baked at generation time to pin
+# the token to the workspace inference.baseUrl points at.
+_CRED_HELPER_SH_TEMPLATE = r"""#!/usr/bin/env sh
 # Generated by unity-gateway-setup (agent_setups). Do not edit by hand.
 #
-# Databricks OAuth credential helper (pure bash) for Claude Desktop.
+# Databricks credential helper for Claude Desktop.
 #
-# Fetches a fresh Databricks OAuth access token for the configured profile and
-# prints it — and only it — to stdout. If the profile is not authenticated, the
-# script runs `databricks auth login` interactively (browser SSO), routes its
-# output to stderr, then retries the token fetch.
+# A THIN WRAPPER around `ug auth-token` — ug's own cross-platform token helper,
+# and the same one Claude Code's apiKeyHelper and Codex's auth command use. A
+# developer authenticates ONCE with `ug configure`; every surface after that —
+# the terminal agents and this desktop app — draws its token from that one place.
+#
+# All token logic lives in ug. Do not add any here. ug handles the
+# DATABRICKS_BEARER short-circuit, host-to-profile resolution, static-PAT
+# profiles, token-cache lock contention (retried with jittered backoff), and
+# non-interactive re-auth when a session expires.
+#
+# POSIX sh, so it runs under dash as well as bash. No bashisms.
 #
 # Output contract:
-#   stdout — the raw access_token, no trailing newline. Nothing else.
-#   stderr — diagnostic messages, login subprocess output, errors.
-#   exit 0 — success
-#   exit 1 — token fetch / login failed
+#   stdout - the raw bearer token, no trailing newline. Nothing else.
+#   stderr - diagnostics from ug, plus our own errors.
+#   exit 0 - success
+#   exit 1 - ug not found, or `ug auth-token` failed
 set -u
-set -o pipefail
 
-# Profile is baked at generation time; override with DATABRICKS_PROFILE.
-profile="${DATABRICKS_PROFILE:-__PROFILE__}"
+# Give ug a PATH it can work with. This is load-bearing, not hygiene.
+#
+# A launchd job gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, which holds none of the
+# places developer tools install to. This script resolves ug and uv by absolute path,
+# but ug then shells out to `databricks` BY BARE NAME, so PATH decides whether it
+# finds it. Without this, ug reports "databricks was not found" and tries to install
+# it with sudo, which cannot prompt from a launchd job.
+#
+# The SIP-protected system directories cannot receive a binary, so extending PATH is
+# the only fix available.
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
 
-# Resolve an absolute path to the Databricks CLI. Honors $DATABRICKS_CLI first,
-# then walks common install locations. We deliberately avoid $PATH so this script
-# behaves identically under Claude Desktop, launchd, systemd, and other minimal-
-# environment parents that do not inherit the user's interactive PATH.
-resolve_cli() {
-  if [ -n "${DATABRICKS_CLI:-}" ]; then
-    if [ -x "$DATABRICKS_CLI" ]; then
-      printf '%s' "$DATABRICKS_CLI"
+# The workspace this config routes to, baked at generation time. Passing it pins
+# the token to the SAME workspace as inference.baseUrl — a developer with several
+# workspaces configured in ug would otherwise get a token for whichever one ug
+# selected last. ug resolves the matching CLI profile from this host.
+host="__HOST__"
+
+# Resolve the ug binary WITHOUT trusting $PATH. Claude Desktop starts under
+# launchd with a minimal environment that does not inherit the user's PATH.
+resolve_ug() {
+  if [ -n "${UG_BIN:-}" ]; then
+    if [ -x "$UG_BIN" ]; then
+      printf '%s' "$UG_BIN"
       return 0
     fi
-    echo "databricks-token: DATABRICKS_CLI=$DATABRICKS_CLI is not executable" >&2
+    echo "databricks-token: UG_BIN=$UG_BIN is not executable" >&2
     return 1
   fi
   for candidate in \
-    /opt/homebrew/bin/databricks \
-    /usr/local/bin/databricks \
-    /usr/bin/databricks \
-    "$HOME/.local/bin/databricks" \
-    "$HOME/bin/databricks"
+    "$HOME/.local/bin/ug" \
+    "$HOME/.local/bin/ucode" \
+    /opt/homebrew/bin/ug \
+    /opt/homebrew/bin/ucode \
+    /usr/local/bin/ug \
+    /usr/local/bin/ucode \
+    /usr/bin/ug \
+    /usr/bin/ucode
   do
     if [ -x "$candidate" ]; then
       printf '%s' "$candidate"
       return 0
     fi
   done
-  echo "databricks-token: databricks CLI not found. Set DATABRICKS_CLI to its absolute path." >&2
+  echo "databricks-token: ug not found. Install ug and run 'ug configure', or set UG_BIN to its absolute path." >&2
   return 1
 }
 
-cli="$(resolve_cli)" || exit 1
+ug="$(resolve_ug)" || exit 1
 
-# Parse "access_token":"..." out of the JSON returned by `databricks auth token`.
-# Pure sed — no jq dependency.
-extract_access_token() {
-  sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
-}
-
-fetch_token() {
-  "$cli" auth token --profile "$profile" 2>/dev/null
-}
-
-response="$(fetch_token || true)"
-token="$(printf '%s' "$response" | extract_access_token)"
-
-if [ -z "$token" ]; then
-  echo "databricks-token: not authenticated for profile '$profile', opening browser login..." >&2
-  if ! "$cli" auth login --profile "$profile" >&2; then
-    echo "databricks-token: databricks auth login failed for profile '$profile'" >&2
-    exit 1
-  fi
-  response="$(fetch_token || true)"
-  token="$(printf '%s' "$response" | extract_access_token)"
+# The profile is left to ug, which resolves it from the host above.
+# $DATABRICKS_PROFILE overrides that for a developer with an unusual cfg.
+set -- auth-token --host "$host"
+if [ -n "${DATABRICKS_PROFILE:-}" ]; then
+  set -- "$@" --profile "$DATABRICKS_PROFILE"
 fi
 
+# Capture stdout so the trailing newline can be stripped: ug writes the token as
+# `token + "\n"`, and Claude Desktop's credential contract wants the bare token.
+token="$("$ug" "$@")" || {
+  echo "databricks-token: 'ug auth-token' failed for host $host." >&2
+  echo "databricks-token: run 'ug configure' to authenticate this workspace." >&2
+  exit 1
+}
+
 if [ -z "$token" ]; then
-  echo "databricks-token: still no access_token for profile '$profile' after login attempt" >&2
+  echo "databricks-token: 'ug auth-token' returned an empty token" >&2
   exit 1
 fi
 
-# Bare token to stdout. No trailing newline.
+# Bare token to stdout. No trailing newline. $(...) already stripped it.
 printf '%s' "$token"
 """
 
 
 # --- Credential helper: PowerShell (Windows) --------------------------------
-# THEORETICAL: authored from the macOS bash helper. Test on Windows before a
-# production rollout (see the runbook). Claude Desktop points credential.command
-# at the .cmd shim below, which runs this .ps1.
+# Also delegates to `ug auth-token`, so this port carries no auth logic of its
+# own — ug is one binary that behaves the same on Windows. Still test on Windows
+# before a production rollout (see the runbook). Claude Desktop points
+# credential.command at the .cmd shim below, which runs this .ps1.
 _CRED_HELPER_PS1_TEMPLATE = r"""# Generated by unity-gateway-setup (agent_setups). Do not edit by hand.
 # databricks-token.ps1
 #
-# Databricks OAuth credential helper for Windows (pure PowerShell), for Claude
-# Desktop. Fetches a fresh Databricks OAuth access token for the baked profile
-# and prints it — and only it — to stdout. If the profile is not authenticated,
-# it runs `databricks auth login` interactively, routes output to stderr, then
-# retries.
+# Databricks credential helper for Claude Desktop on Windows.
 #
-# THEORETICAL: test on Windows before distribution.
+# A THIN WRAPPER around `ug auth-token`. ug ships ONE cross-platform token helper
+# precisely so this file needs no auth logic: no CLI discovery, no JSON parsing,
+# no login retry. That is also why this port carries far less Windows-specific
+# risk than a hand-written OAuth path would.
 #
 # Output contract:
-#   stdout  - the raw access_token, no trailing newline. Nothing else.
-#   stderr  - diagnostic messages, login subprocess output, errors.
-#   exit 0  - success
-#   exit 1  - token fetch / login failed
+#   stdout - the raw bearer token, no trailing newline. Nothing else.
+#   stderr - diagnostics from ug, plus our own errors.
+#   exit 0 - success
+#   exit 1 - ug not found, or `ug auth-token` failed
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -246,74 +334,63 @@ if (Get-Variable -Name 'PSNativeCommandUseErrorActionPreference' -Scope Global -
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
 
-# Profile is baked at generation time; override with $env:DATABRICKS_PROFILE.
-$profile_name = if ($env:DATABRICKS_PROFILE) { $env:DATABRICKS_PROFILE } else { '__PROFILE__' }
+# The workspace this config routes to, baked at generation time, so the token is
+# pinned to the same workspace as inference.baseUrl.
+$workspaceHost = '__HOST__'
 
-# Resolve an absolute path to the Databricks CLI. Honors $env:DATABRICKS_CLI,
-# then walks common install locations. We avoid PATH so this behaves identically
-# when launched by Claude Desktop, scheduled tasks, or any minimal-environment parent.
-function Resolve-DatabricksCli {
-    if ($env:DATABRICKS_CLI) {
-        if (Test-Path -LiteralPath $env:DATABRICKS_CLI -PathType Leaf) {
-            return $env:DATABRICKS_CLI
-        }
-        [Console]::Error.WriteLine("databricks-token: DATABRICKS_CLI=$($env:DATABRICKS_CLI) is not a file")
+# Give ug a PATH it can work with, for the same reason the POSIX helper does: ug
+# shells out to `databricks` by bare name, and a launchd-style minimal environment
+# does not include the directories developer tools install to.
+$env:PATH = @(
+    "$env:LOCALAPPDATA\Programs\Databricks",
+    "$env:LOCALAPPDATA\Microsoft\WinGet\Links",
+    "$env:USERPROFILE\.local\bin",
+    "$env:ProgramFiles\Databricks",
+    $env:PATH
+) -join ';'
+
+# Resolve the ug executable without relying on PATH.
+function Resolve-Ug {
+    if ($env:UG_BIN) {
+        if (Test-Path -LiteralPath $env:UG_BIN -PathType Leaf) { return $env:UG_BIN }
+        [Console]::Error.WriteLine("databricks-token: UG_BIN=$($env:UG_BIN) is not a file")
         exit 1
     }
     $candidates = @(
-        "$env:ProgramFiles\Databricks\databricks.exe",
-        "$env:LOCALAPPDATA\Programs\Databricks\databricks.exe",
-        "$env:LOCALAPPDATA\Microsoft\WinGet\Links\databricks.exe",
-        "$env:USERPROFILE\.local\bin\databricks.exe",
-        "$env:USERPROFILE\bin\databricks.exe"
+        "$env:LOCALAPPDATA\Programs\ug\ug.exe",
+        "$env:LOCALAPPDATA\uv\tools\ucode\Scripts\ug.exe",
+        "$env:LOCALAPPDATA\uv\tools\ucode\Scripts\ucode.exe",
+        "$env:USERPROFILE\.local\bin\ug.exe",
+        "$env:USERPROFILE\.local\bin\ucode.exe",
+        "$env:ProgramFiles\ug\ug.exe"
     )
     foreach ($c in $candidates) {
-        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) {
-            return $c
-        }
+        if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return $c }
     }
-    [Console]::Error.WriteLine("databricks-token: databricks CLI not found. Set DATABRICKS_CLI to its absolute path.")
+    $onPath = Get-Command ug -ErrorAction SilentlyContinue
+    if (-not $onPath) { $onPath = Get-Command ucode -ErrorAction SilentlyContinue }
+    if ($onPath) { return $onPath.Source }
+    [Console]::Error.WriteLine("databricks-token: ug not found. Install ug and run 'ug configure', or set UG_BIN to its absolute path.")
     exit 1
 }
+$ug = Resolve-Ug
 
-$cli = Resolve-DatabricksCli
-
-function Get-TokenJson {
-    param([string]$Profile)
-    $tmpErr = [System.IO.Path]::GetTempFileName()
-    try {
-        $out = & $cli auth token --profile $Profile 2>$tmpErr
-        if ($LASTEXITCODE -eq 0) { return ($out | Out-String) }
-        return $null
-    } finally {
-        Remove-Item -LiteralPath $tmpErr -Force -ErrorAction SilentlyContinue
-    }
+# The profile is left to ug, which resolves it from the host above.
+$ugArgs = @('auth-token', '--host', $workspaceHost)
+if ($env:DATABRICKS_PROFILE) {
+    $ugArgs += @('--profile', $env:DATABRICKS_PROFILE)
 }
 
-function Get-AccessToken {
-    param([string]$Json)
-    if (-not $Json) { return $null }
-    $m = [regex]::Match($Json, '"access_token"\s*:\s*"([^"]+)"')
-    if ($m.Success) { return $m.Groups[1].Value }
-    return $null
+$token = (& $ug @ugArgs | Out-String)
+if ($LASTEXITCODE -ne 0) {
+    [Console]::Error.WriteLine("databricks-token: 'ug auth-token' failed for host $workspaceHost.")
+    [Console]::Error.WriteLine("databricks-token: run 'ug configure' to authenticate this workspace.")
+    exit 1
 }
-
-$json = Get-TokenJson -Profile $profile_name
-$token = Get-AccessToken -Json $json
-
+# ug writes the token as `token + "\n"`; Claude Desktop wants the bare token.
+$token = $token.Trim()
 if (-not $token) {
-    [Console]::Error.WriteLine("databricks-token: not authenticated for profile '$profile_name', opening browser login...")
-    & $cli auth login --profile $profile_name *>&2
-    if ($LASTEXITCODE -ne 0) {
-        [Console]::Error.WriteLine("databricks-token: databricks auth login failed for profile '$profile_name'")
-        exit 1
-    }
-    $json = Get-TokenJson -Profile $profile_name
-    $token = Get-AccessToken -Json $json
-}
-
-if (-not $token) {
-    [Console]::Error.WriteLine("databricks-token: still no access_token for profile '$profile_name' after login attempt")
+    [Console]::Error.WriteLine("databricks-token: 'ug auth-token' returned an empty token")
     exit 1
 }
 
@@ -416,18 +493,239 @@ $headers = @{ Authorization = "Bearer $($resp.access_token)" }
 """
 
 
-def _cred_helper_files(platform: str, install_dir: str, profile: str) -> dict[str, str]:
+# --- MDM-triggered SSO bootstrap: POSIX sh -----------------------------------
+# Run by the LaunchAgent at each user login, inside the user's GUI session.
+#
+# The guard is the whole point. `ug configure` sets force_login whenever
+# --use-pat is absent, so it runs `databricks auth login` UNCONDITIONALLY and a
+# browser opens on every invocation. Without the probe below, a login-triggered
+# agent would open a browser at every single login.
+#
+# `ug auth-token` is a safe probe: it never opens a browser, never waits for
+# input, and its internal `auth login --no-browser` retry is bounded at 30s.
+#
+# We pass --workspaces (a bare URL), never --profiles. --profiles requires the
+# named profile to exist in ~/.databrickscfg already and raises when it does not,
+# which is exactly the state of a freshly imaged device.
+_SSO_BOOTSTRAP_SH_TEMPLATE = r"""#!/usr/bin/env sh
+# Generated by unity-gateway-setup (agent_setups). Do not edit by hand.
+#
+# ug-sso-bootstrap.sh — bring this device's ug authentication up, once.
+#
+# The MDM pushes this script and a LaunchAgent that runs it at user login. It
+# runs in the user's GUI session, so `ug configure` can open a browser for single
+# sign-on. It uses NO personal access token.
+#
+# It guards itself: when the developer is already authenticated it exits silently
+# and opens no browser. So it is safe to run at every login.
+#
+# Exit codes are advisory only. The LaunchAgent does not retry, so a failure just
+# means the next login tries again. That makes the flow self-healing.
+set -u
+
+# Give ug a PATH it can work with. This is load-bearing, not hygiene.
+#
+# A launchd job gets PATH=/usr/bin:/bin:/usr/sbin:/sbin, which holds none of the
+# places developer tools install to. This script resolves ug and uv by absolute path,
+# but ug then shells out to `databricks` BY BARE NAME, so PATH decides whether it
+# finds it. Without this, ug reports "databricks was not found" and tries to install
+# it with sudo, which cannot prompt from a launchd job.
+#
+# The SIP-protected system directories cannot receive a binary, so extending PATH is
+# the only fix available.
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH
+
+host="__HOST__"
+log="$HOME/Library/Logs/ug-sso-bootstrap.log"
+
+# Keep the log in the user's own Logs directory. A world-writable location such
+# as /tmp would let another local account pre-create the path.
+mkdir -p "$(dirname "$log")" 2>/dev/null || true
+
+_log() {
+  printf '%s ug-sso-bootstrap: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >>"$log" 2>/dev/null
+}
+
+# Resolve ug without trusting $PATH. A LaunchAgent starts with a minimal
+# environment that does not inherit the user's interactive PATH.
+resolve_ug() {
+  if [ -n "${UG_BIN:-}" ] && [ -x "${UG_BIN:-}" ]; then
+    printf '%s' "$UG_BIN"
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.local/bin/ug" \
+    "$HOME/.local/bin/ucode" \
+    /opt/homebrew/bin/ug \
+    /opt/homebrew/bin/ucode \
+    /usr/local/bin/ug \
+    /usr/local/bin/ucode \
+    /usr/bin/ug \
+    /usr/bin/ucode
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Resolve uv without trusting $PATH either: a LaunchAgent inherits a minimal one.
+# uv is a prerequisite that IT owns, so this only looks for it. It never installs it.
+# The order follows where uv actually lands: the official installer first, then
+# Homebrew, then a machine-wide placement.
+resolve_uv() {
+  for candidate in \
+    "${UV_BIN:-}" \
+    "$HOME/.local/bin/uv" \
+    /opt/homebrew/bin/uv \
+    /usr/local/bin/uv
+  do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Install ug for THIS user. The LaunchAgent runs in the user's session, so
+# `uv tool install` lands in their home rather than root's. That is the whole reason
+# the install is deferred to login instead of running in a package script.
+install_ug() {
+  _iu_uv="$(resolve_uv)" || {
+    _log "ug absent, and no uv to install it with. uv is a prerequisite: IT deploys it"
+    _log "  as part of the macOS baseline. Install uv, or set UV_BIN, or install ug."
+    return 1
+  }
+  _log "ug absent; installing with ${_iu_uv} (this needs network access)"
+  if "${_iu_uv}" tool install "__UG_REQUIREMENT__" >>"$log" 2>&1; then
+    _log "ug install finished"
+    return 0
+  fi
+  _log "ug install failed. The next login will try again."
+  return 1
+}
+
+ug="$(resolve_ug || true)"
+if [ -z "$ug" ]; then
+  # ug is absent. Install it, then resolve again. A failure is not fatal: the next
+  # login retries, so a transient network outage costs one login.
+  install_ug || exit 0
+  ug="$(resolve_ug)" || {
+    _log "ug still not found after install. The next login will try again."
+    exit 0
+  }
+fi
+
+# --- The guard ---------------------------------------------------------------
+# Already authenticated? Then exit without opening a browser.
+if "$ug" auth-token --host "$host" >/dev/null 2>&1; then
+  _log "already authenticated for $host; no browser needed"
+  exit 0
+fi
+
+_log "not authenticated for $host; starting ug configure (a browser will open)"
+
+# --workspaces takes a bare URL and sets the workspace up from nothing, so this
+# works on a freshly imaged device with no ~/.databrickscfg. ug waits up to 300
+# seconds for the browser login.
+"$ug" configure \
+  --workspaces "$host" \
+  --agents claude \
+  --skip-validate \
+  --skip-upgrade \
+  --verbose low >>"$log" 2>&1
+
+if "$ug" auth-token --host "$host" >/dev/null 2>&1; then
+  _log "authentication complete for $host"
+  exit 0
+fi
+
+_log "authentication did not complete; the next login will try again"
+exit 0
+"""
+
+
+# --- MDM-triggered SSO bootstrap: LaunchAgent plist --------------------------
+# LimitLoadToSessionType=Aqua confines the agent to a GUI login session, so it
+# never fires for an ssh or background session where a browser cannot open.
+# RunAtLoad fires it once per login; there is no KeepAlive, so a dismissed login
+# is retried at the next login rather than immediately.
+#
+# The script handles its own logging, so no StandardOutPath is set here. A
+# launchd log path cannot expand $HOME, and a fixed world-writable path would be
+# a symlink risk.
+_LAUNCHAGENT_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Generated by unity-gateway-setup (agent_setups). Do not edit by hand. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__SCRIPT_PATH__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>
+"""
+
+# A LaunchAgent label is a reverse-DNS string. Keep it to characters launchd and
+# the filesystem both accept, so the plist filename can follow the label.
+_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _ug_requirement(ug_ref: str | None) -> str:
+    """The `uv tool install` argument for ug, optionally pinned to a git ref."""
+    return f"{UG_GIT_URL}@{ug_ref}" if ug_ref else UG_GIT_URL
+
+
+def _sso_bootstrap_files(install_dir: str, host: str, label: str,
+                         ug_ref: str | None = None) -> dict[str, str]:
+    """Return the SSO bootstrap script and its LaunchAgent plist.
+
+    macOS and Linux only. The plist is a macOS artifact; a Linux fleet would use a
+    systemd user unit instead, so the caller decides whether to include it.
+    """
+    script_path = f"{install_dir}/{SSO_BOOTSTRAP_SH}"
+    return {
+        SSO_BOOTSTRAP_SH: (
+            _SSO_BOOTSTRAP_SH_TEMPLATE
+            .replace("__HOST__", host)
+            .replace("__UG_REQUIREMENT__", _ug_requirement(ug_ref))
+        ),
+        LAUNCHAGENT_PLIST: (
+            _LAUNCHAGENT_PLIST_TEMPLATE
+            .replace("__LABEL__", label)
+            .replace("__SCRIPT_PATH__", script_path)
+        ),
+    }
+
+
+def _cred_helper_files(platform: str, install_dir: str, host: str) -> dict[str, str]:
     """Return the credential-helper file(s) for a platform, plus the command path.
 
     macOS/Linux: one databricks-token.sh (the credential.command target).
     Windows: databricks-token.ps1 (logic) + databricks-token.cmd (the command target).
+
+    The workspace host is baked in, not the profile: `ug auth-token --host` lets ug
+    resolve the matching CLI profile itself, which keeps the token pinned to the
+    same workspace as inference.baseUrl even when ug knows several.
     """
     if platform == "windows":
         return {
-            CRED_HELPER_PS1: _CRED_HELPER_PS1_TEMPLATE.replace("__PROFILE__", profile),
+            CRED_HELPER_PS1: _CRED_HELPER_PS1_TEMPLATE.replace("__HOST__", host),
             CRED_HELPER_CMD: _cmd_shim(CRED_HELPER_PS1, "credential helper"),
         }
-    return {CRED_HELPER_SH: _CRED_HELPER_SH_TEMPLATE.replace("__PROFILE__", profile)}
+    return {CRED_HELPER_SH: _CRED_HELPER_SH_TEMPLATE.replace("__HOST__", host)}
 
 
 def _cred_command_filename(platform: str) -> str:
@@ -561,6 +859,33 @@ class ClaudeDesktopGenerator(AgentGenerator):
             help=(
                 "Keep the Claude.ai sign-in option. Off by default "
                 "(authentication.disableClaudeAiSignIn: true) so the app uses the gateway only."
+            ),
+        )
+        parser.add_argument(
+            "--launchagent-label",
+            default=DEFAULT_LAUNCHAGENT_LABEL,
+            help=(
+                "Reverse-DNS Label for the SSO-bootstrap LaunchAgent (default: "
+                f"{DEFAULT_LAUNCHAGENT_LABEL}). Change it to your own organisation's prefix."
+            ),
+        )
+        parser.add_argument(
+            "--ug-ref",
+            default=None,
+            help=(
+                "Pin the ug version the SSO bootstrap installs, as a git ref (tag, branch, "
+                "or commit). Unpinned by default, which matches `ug upgrade`. Pin it when a "
+                "fleet needs a determinate ug version."
+            ),
+        )
+        parser.add_argument(
+            "--no-sso-bootstrap",
+            action="store_true",
+            help=(
+                "Do not emit ug-sso-bootstrap.sh or its LaunchAgent. By default the macOS "
+                "bundle carries both, so the MDM can trigger the one-time browser SSO "
+                "login without a developer configuring anything. Pass this when your MDM "
+                "already runs `ug configure` some other way."
             ),
         )
         parser.add_argument(
@@ -739,6 +1064,9 @@ class ClaudeDesktopGenerator(AgentGenerator):
 
         traces_table = self._otel_traces_table(ctx, args)
         _validate_bakeables(profile, ctx.host, traces_table)
+        if not args.no_sso_bootstrap:
+            _validate_launchagent_label(args.launchagent_label)
+            _validate_ug_ref(getattr(args, "ug_ref", None))
         if traces_table:
             # Static headers route the export to the traces UC table; the sensitive
             # Authorization header comes from the headersHelper (dedicated telemetry SP,
@@ -769,7 +1097,7 @@ class ClaudeDesktopGenerator(AgentGenerator):
             cred_cmd = _platform_path(install_dir, _cred_command_filename(platform), platform)
             cfg["inference"]["credential"]["command"] = cred_cmd
 
-            helper_files = _cred_helper_files(platform, install_dir, profile)
+            helper_files = _cred_helper_files(platform, install_dir, ctx.host)
 
             if traces_table:
                 cfg["otlp"]["headersHelper"] = _platform_path(
@@ -781,6 +1109,19 @@ class ClaudeDesktopGenerator(AgentGenerator):
                         ctx.telemetry.secret_full_name, args.databricks_bin, [traces_table],
                     )
                 )
+
+            # The MDM-triggered SSO bootstrap. The script is POSIX sh, so macOS and
+            # Linux both take it. The LaunchAgent is a macOS artifact; a Linux fleet
+            # needs a systemd user unit, and Windows a scheduled task. Neither is
+            # generated yet, so only macOS gets a trigger.
+            if not args.no_sso_bootstrap and platform in ("macos", "linux"):
+                sso = _sso_bootstrap_files(
+                    install_dir, ctx.host, args.launchagent_label,
+                    getattr(args, "ug_ref", None),
+                )
+                if platform == "linux":
+                    sso.pop(LAUNCHAGENT_PLIST, None)
+                helper_files.update(sso)
 
             files[f"claude-desktop/{platform}/{CONFIG_FILENAME}"] = json.dumps(cfg, indent=2) + "\n"
             for fname, content in helper_files.items():
@@ -817,11 +1158,17 @@ class ClaudeDesktopGenerator(AgentGenerator):
             "   (.mobileconfig on macOS, .reg on Windows). The app produces the MDM artifacts;",
             "   this generator does not.",
             "",
-            "Each developer authenticates once (browser OAuth, cannot be pushed by MDM):",
-            "  databricks auth login --host <workspace-url> --profile <profile>",
+            "Each developer authenticates once, through ug (browser OAuth, cannot be",
+            "pushed by MDM):",
+            "  ug configure --profiles <profile>",
             "",
-            "The credential helper needs the Databricks CLI installed (it resolves the CLI by",
-            "absolute path, not $PATH, because Claude Desktop starts under launchd).",
+            "That single step serves every surface. The credential helper delegates to",
+            "`ug auth-token`, the same helper Claude Code's apiKeyHelper and Codex use, so",
+            "the terminal agents and this desktop app draw their token from one place.",
+            "ug must be installed; the helper resolves it by absolute path, not $PATH,",
+            "because Claude Desktop starts under launchd. Set UG_BIN to override that path.",
+            "The baked --host pins the token to this workspace, so a developer with several",
+            "workspaces in ug still gets a token for the one this config routes to.",
         ]
         if args.telemetry != "off":
             lines += [

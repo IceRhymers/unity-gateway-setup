@@ -29,7 +29,7 @@ from agents.codex import (  # noqa: E402
 from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
 
 HOST = "https://myws.cloud.databricks.com"
-PROFILE = "fevm-west"
+PROFILE = "ai_dev_tools"
 
 
 def _context() -> GatewayContext:

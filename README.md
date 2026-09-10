@@ -117,7 +117,8 @@ table to decide where a change belongs.
 | OTEL export and hook events | **generator** | `ug` emits no OTEL and no hook events. Its own telemetry is a `User-Agent` string plus Claude Code MLflow tracing. |
 | Claude Desktop, DeepSeek Harness | **generator** | `ug` does not support either agent. |
 | Launching an agent | **`ug`** | `ug claude`, `ug codex`, and so on. |
-| Per-request OAuth for model calls | **both, by agent** | Claude Code and Codex get it from `apiKeyHelper` in the managed file. For every agent `ug` launches, `ug` mints the token. |
+| Per-request OAuth for model calls | **both, by agent** | Claude Code and Codex get it from `apiKeyHelper` in the managed file. For every agent `ug` launches, `ug` mints the token. Claude Desktop's credential helper calls `ug auth-token`, so it shares `ug`'s token rather than opening a second auth path. |
+| The canonical token source | **`ug`** | `ug configure` is the one login a developer performs. `ug auth-token` is the cross-platform helper every generated script should call instead of `databricks auth token`. |
 | MCP discovery and registration | **`ug`** | `ug mcp add` covers seven agents, removes stale servers, and bridges each server through the bundled `ug mcp-proxy`. |
 | Skills, spend tiers, workspace-level managed config | **`ug`** | `ug setup` and `ug publish` author a workspace-side `CodingAgentConfig` that developers pull. |
 | OpenCode, Gemini CLI, Copilot CLI, Pi, Cursor | **`ug`** | `ug` configures and launches each one. The generator emits nothing for them. |
@@ -165,8 +166,8 @@ See [`terraform/README.md`](terraform/README.md).
 ### 2. Generate the agent config
 
 ```bash
-make agent-claude-code PROFILE=fevm-west   # Claude Code managed-settings.json
-make agent-codex PROFILE=fevm-west         # Codex config.toml
+make agent-claude-code PROFILE=ai_dev_tools   # Claude Code managed-settings.json
+make agent-codex PROFILE=ai_dev_tools         # Codex config.toml
 ```
 
 This reads the Terraform outputs and writes a **self-contained bundle per OS** —
@@ -233,21 +234,29 @@ See [`docker/README.md`](docker/README.md).
 
 ```
 terraform/          Provision the gateway
-  infra/              Applyable deployment (defaults: fevm-west sandbox)
+  infra/              Applyable deployment (targets the ai_dev_tools profile)
   modules/            unity-foundation · model-service · telemetry
 agent_setups/       Generate agent configs from the TF outputs
   scripts/            The generator (Claude Code · Claude Desktop · Codex · dsh)
   generated/          Output (gitignored — embeds a workspace host)
 docker/             Isolated test harness (Claude Code + Codex + databricks CLI + ug)
 Makefile            Task runner — `make help` lists targets
+make/               Per-domain target files the Makefile includes
 ```
 
 ## Requirements
 
 - Terraform ≥ 1.5.0 and the Databricks provider ≥ 1.129.0 (first with the AI
   Gateway model-service resources).
-- The `databricks` CLI on PATH, with a `~/.databrickscfg` profile that has Unity
-  Catalog + AI Gateway access.
+- The `databricks` CLI on PATH, with a profile named `ai_dev_tools` that has Unity
+  Catalog + AI Gateway access. This repo targets that one profile name on every
+  machine, so a local test and an MDM rollout share one auth path. Point it at the
+  workspace you deploy to. Create it with `make login-profile
+  HOST=https://<workspace>.cloud.databricks.com`, which signs in through the browser
+  and stores no personal access token. Run `make login-profile` with no `HOST` and it
+  asks for the URL. The same target refreshes an expired session: press return at the
+  prompt to keep the workspace the profile already uses.
+  Run `make ensure-profile` to check the profile without changing it.
 - Python 3.10+ (stdlib only) for the config generator.
 - `ug` (`uv tool install git+https://github.com/databricks/ucode`, Python
   3.12+) on each developer machine — the launch entrypoint.

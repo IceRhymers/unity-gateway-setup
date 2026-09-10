@@ -23,7 +23,7 @@ from agents.claude_code import ClaudeCodeGenerator, OTEL_HELPER_FILENAME  # noqa
 from gateway import Endpoint, GatewayContext, Telemetry  # noqa: E402
 
 HOST = "https://myws.cloud.databricks.com"
-PROFILE = "fevm-west"
+PROFILE = "ai_dev_tools"
 
 
 def _context() -> GatewayContext:

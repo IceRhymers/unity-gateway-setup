@@ -206,8 +206,11 @@ printf '  1. Start Claude Desktop.\n'
 printf '  2. Help -> Troubleshooting -> Enable Developer Mode.\n'
 printf '  3. Developer -> Configure third-party inference -> import:\n'
 printf '       %s\n' "${SOURCE}/claude-setup.json"
-printf '  4. Test the connection.\n'
-printf 'Authenticate once (browser OAuth):\n'
-printf '  databricks auth login --host <host> --profile <profile>\n\n'
+printf '  4. Test the connection.\n\n'
+printf 'Authenticate once, through ug (browser OAuth). This is the only auth step,\n'
+printf 'and it also covers your terminal agents:\n'
+printf '  ug configure --profiles <profile>\n\n'
+printf 'The credential helper delegates to "ug auth-token", so Claude Desktop draws\n'
+printf 'its token from the same place ug uses. Set UG_BIN if ug is not on PATH.\n\n'
 
 exit 0
