@@ -73,12 +73,14 @@ if [ -z "${_found}" ]; then
   _err "The '${PROFILE_NAME}' profile is not configured on this machine."
   _err ""
   _err "This repo targets one profile NAME on every machine, so a local test matches"
-  _err "an MDM rollout. Point it at the workspace you deploy to, then re-run:"
+  _err "an MDM rollout. Point it at the workspace you deploy to:"
   _err ""
-  _err "  databricks auth login --host ${_hint_host} --profile ${PROFILE_NAME}"
+  _err "  make login-profile HOST=${_hint_host}"
   _err ""
   _err "That opens a browser for single sign-on and writes the profile. It stores no"
-  _err "personal access token."
+  _err "personal access token. The equivalent command, to run by hand, is:"
+  _err ""
+  _err "  databricks auth login --host ${_hint_host} --profile ${PROFILE_NAME}"
   # Name the other profiles, so an operator can see which workspace to reuse. Names
   # and hosts only: this never prints a token, and the CLI never returned one.
   _others="$(printf '%s' "${_profiles_json}" \

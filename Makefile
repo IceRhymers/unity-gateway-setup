@@ -77,6 +77,13 @@ ensure-profile: ## Verify the ai_dev_tools profile exists and authenticates, and
 ensure-profile-quiet:
 	@$(_ENSURE_PROFILE) --quiet
 
+# The mutating counterpart. Deliberately NOT gated by ensure-profile-quiet: this is
+# how an operator satisfies that gate. It also refreshes an expired session, which is
+# what ensure-profile reports as exit 5.
+.PHONY: login-profile
+login-profile: ## Create or refresh the ai_dev_tools profile with browser SSO (HOST=<workspace-url> required; PROFILE=, ARGS=)
+	sh agent_setups/deploy/login-profile.sh --profile $(PROFILE) --host "$(HOST)" $(ARGS)
+
 # ---- includes ----
 # Split by domain so a change to one subsystem does not scroll past the others.
 # Listed explicitly rather than globbed, so the set is reviewable and the read

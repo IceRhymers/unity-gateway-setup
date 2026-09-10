@@ -251,8 +251,10 @@ make/               Per-domain target files the Makefile includes
 - The `databricks` CLI on PATH, with a profile named `ai_dev_tools` that has Unity
   Catalog + AI Gateway access. This repo targets that one profile name on every
   machine, so a local test and an MDM rollout share one auth path. Point it at the
-  workspace you deploy to. Run `make ensure-profile` to check it. The target prints
-  the `databricks auth login` command when the profile is absent.
+  workspace you deploy to. Create it with `make login-profile
+  HOST=https://<workspace>.cloud.databricks.com`, which signs in through the browser
+  and stores no personal access token. The same target refreshes an expired session.
+  Run `make ensure-profile` to check the profile without changing it.
 - Python 3.10+ (stdlib only) for the config generator.
 - `ug` (`uv tool install git+https://github.com/databricks/ucode`, Python
   3.12+) on each developer machine — the launch entrypoint.
