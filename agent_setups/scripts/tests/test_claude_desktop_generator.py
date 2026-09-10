@@ -301,6 +301,56 @@ class PlatformSelectionTest(unittest.TestCase):
         self.assertEqual(cmd, f"/opt/cd/{CRED_HELPER_SH}")
 
 
+class FleetPathTest(unittest.TestCase):
+    """A shipped bundle must carry no path that belongs to the build machine.
+
+    `make claude-desktop-install-local` passes --install-dir-<os> "$HOME/..." on
+    purpose, so a developer can test the helpers without root. That same flag
+    makes a FLEET bundle undeployable. The helpers land in a home directory no
+    other account has, and Claude Desktop then calls a credential helper that is
+    not there. The generator defaults are machine-wide. These tests hold them
+    there, so a local-testing invocation cannot ship by mistake.
+    """
+
+    def _macos(self, **over) -> dict[str, str]:
+        return ClaudeDesktopGenerator().generate(
+            _context(with_telemetry=True),
+            _args(platforms="macos", telemetry="on", **over),
+        )
+
+    def test_no_build_machine_home_in_any_macos_file(self):
+        """$HOME is correct in a script (the shell expands it on the device).
+        An expanded /Users/<name> path is not: it names one build machine.
+        """
+        for name, body in self._macos().items():
+            offenders = [ln.strip() for ln in body.splitlines() if "/Users/" in ln]
+            self.assertEqual(offenders, [], msg=f"{name} carries a build-machine path")
+
+    def test_json_helper_paths_are_machine_wide(self):
+        cfg = _macos_json(self._macos())
+        for key, path in (
+            ("credential command", cfg["inference"]["credential"]["command"]),
+            ("otlp headersHelper", cfg["otlp"]["headersHelper"]),
+        ):
+            self.assertTrue(
+                path.startswith("/Library/"), msg=f"{key} is not machine-wide: {path}")
+
+    def test_launchagent_runs_a_machine_wide_script(self):
+        raw = self._macos()[f"claude-desktop/macos/{LAUNCHAGENT_PLIST}"]
+        script = plistlib.loads(raw.encode())["ProgramArguments"][-1]
+        self.assertTrue(
+            script.startswith("/Library/"), msg=f"plist runs a non-fleet path: {script}")
+
+    def test_a_home_install_dir_would_be_caught(self):
+        """Positive control. Without it the assertions above could pass vacuously."""
+        files = self._macos(install_dir_macos="/Users/dev/cd")
+        cmd = _macos_json(files)["inference"]["credential"]["command"]
+        self.assertIn("/Users/", cmd)
+        script = plistlib.loads(
+            files[f"claude-desktop/macos/{LAUNCHAGENT_PLIST}"].encode())["ProgramArguments"][-1]
+        self.assertIn("/Users/", script)
+
+
 class TelemetryOffTest(unittest.TestCase):
     def test_no_otlp_block_when_off(self):
         files = ClaudeDesktopGenerator().generate(_context(with_telemetry=True), _args(telemetry="off"))
