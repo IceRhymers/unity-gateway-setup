@@ -9,7 +9,7 @@ variable "databricks_profile" {
 variable "catalog_name" {
   description = "Catalog for the gateway objects. Referenced by default (see create_catalog)."
   type        = string
-  default     = "tanner_wendland_catalog"
+  default     = "tanner_wendland"
 }
 
 variable "create_catalog" {

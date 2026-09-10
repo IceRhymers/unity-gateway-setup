@@ -1,12 +1,15 @@
 # Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
 
 # --- auth ---
-databricks_profile = "fevm-west"
+databricks_profile = "ai_dev_tools"
 
 # --- foundation ---
-# Reference an existing catalog (default) because this environment does not
+# Reference an existing catalog (default) because the reference environment does not
 # permit catalog creation. Flip create_catalog = true where you own catalogs.
-catalog_name   = "tanner_wendland_catalog"
+#
+# A workspace on default storage cannot use the create path. Reference an existing
+# catalog there, and name it below.
+catalog_name   = "tanner_wendland"
 create_catalog = false
 
 # --- provider catalog ---
