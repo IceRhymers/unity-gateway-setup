@@ -206,7 +206,7 @@ via `telemetry_reader_groups`).
 
 Follow these steps:
 
-1. Install `ug` with `uv tool install git+https://github.com/databricks/ucode`.
+1. Install `ug` with `uv tool install git+https://github.com/databricks/unity-gateway`.
 2. Run `ug configure` and `ug mcp add` once.
 3. Run `ug` or `ug claude` from then on.
 
@@ -258,7 +258,7 @@ make/               Per-domain target files the Makefile includes
   prompt to keep the workspace the profile already uses.
   Run `make ensure-profile` to check the profile without changing it.
 - Python 3.10+ (stdlib only) for the config generator.
-- `ug` (`uv tool install git+https://github.com/databricks/ucode`, Python
+- `ug` (`uv tool install git+https://github.com/databricks/unity-gateway`, Python
   3.12+) on each developer machine — the launch entrypoint.
 - Docker, only for the test harness.
 

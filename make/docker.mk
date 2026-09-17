@@ -35,7 +35,7 @@ WS_HOST := $(shell databricks auth profiles -o json --skip-validate 2>/dev/null 
 NPM_REGISTRY     := $(shell npm config get registry 2>/dev/null)
 NPM_REGISTRY_ARG := $(if $(filter-out https://registry.npmjs.org/,$(NPM_REGISTRY)),--build-arg NPM_REGISTRY=$(NPM_REGISTRY),)
 # Override the ucode install source (pinned ref, mirror, private URL with token,
-# or a local path); empty uses the Dockerfile default (github.com/databricks/ucode).
+# or a local path); empty uses the Dockerfile default (github.com/databricks/unity-gateway).
 UCODE_SOURCE     ?=
 UCODE_SOURCE_ARG := $(if $(UCODE_SOURCE),--build-arg UCODE_SOURCE=$(UCODE_SOURCE),)
 # Forward a PyPI proxy/mirror into the build so `uv tool install ucode` resolves

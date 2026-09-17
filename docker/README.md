@@ -211,9 +211,9 @@ make docker-mcp ARGS="--agents claude"
 make docker-mcp ARGS="--agents codex"
 ```
 
-> The image installs `ug` from `github.com/databricks/ucode` at build time.
+> The image installs `ug` from `github.com/databricks/unity-gateway` at build time.
 > If that repo needs auth or a mirror, override the source:
-> `make docker-build UCODE_SOURCE="git+https://<token>@github.com/databricks/ucode"`.
+> `make docker-build UCODE_SOURCE="git+https://<token>@github.com/databricks/unity-gateway"`.
 
 ## Cleanup
 
