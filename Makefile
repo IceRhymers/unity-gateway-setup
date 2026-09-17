@@ -49,6 +49,9 @@ VERSION   := $(shell git describe --tags --always 2>/dev/null || printf 'nogit')
 DIST_DIR  ?= dist
 # Path to the single placement installer, baked into the image and packaged.
 INSTALL_SH := agent_setups/deploy/install.sh
+# Operator scripts that `make packages` copies into DIST_DIR, beside the packages.
+DEMO_INSTALL_SH    := agent_setups/deploy/demo-install.sh
+UNINSTALL_PKGS_SH  := agent_setups/deploy/uninstall-pkgs.sh
 
 .DEFAULT_GOAL := help
 

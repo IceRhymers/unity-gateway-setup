@@ -155,6 +155,33 @@ done
 
 That is the whole install, with no GUI at any point.
 
+### Install all three packages in one step
+
+The loop above installs two packages. A demo machine needs all three. `installer`
+takes one package per run, so a demo needs three commands. `demo-install.sh` runs
+`installer` once for each package, in a fixed order. `make packages` copies the
+script into `dist/`, beside the packages.
+
+Run the script on the guest, not on the host.
+
+```sh
+ssh "$GUEST" 'mkdir -p /tmp/ugw-dist'
+scp dist/*.pkg dist/demo-install.sh dist/uninstall-pkgs.sh "$GUEST":/tmp/ugw-dist/
+ssh "$GUEST" 'cd /tmp/ugw-dist && sudo ./demo-install.sh'
+```
+
+The script finds all three packages before it installs the first one. A missing
+package stops the script with exit code 4, and the guest stays unchanged. Pass
+`--dry-run` to print the plan and change nothing. Pass `--version <v>` when the
+directory holds two versions of one package.
+
+The script installs packages only. It does not install the `.mobileconfig`, because
+the Claude Desktop app exports that profile and an MDM deploys it. It does not
+authenticate. It prints the two remaining steps when it finishes.
+
+This is the right moment to take the snapshot. The packages are in place, and no
+developer has authenticated yet.
+
 Confirm what landed, and with which modes:
 
 ```sh

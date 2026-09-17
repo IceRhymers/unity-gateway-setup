@@ -206,6 +206,10 @@ make deploy-package
 # 2. Distribute. A package installs with `installer -pkg`, or through an MDM.
 #    A tarball needs install.sh, which places files with correct modes and writes
 #    a version marker. See the MDM runbooks below.
+#
+# 2a. One device, all three packages: `make packages` also copies demo-install.sh
+#     and uninstall-pkgs.sh into dist/. Copy dist/ to the device, then run
+#     `sudo ./demo-install.sh` there. It installs the three packages in one step.
 ```
 
 MDM runbooks for fleet deployment:

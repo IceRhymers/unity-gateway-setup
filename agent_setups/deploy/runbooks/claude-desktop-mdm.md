@@ -203,6 +203,9 @@ Deploy the package. This is what an MDM does, and what `installer` does locally.
 sudo installer -pkg dist/claude-desktop-<version>.pkg -target /
 ```
 
+To install all three packages on one device, run `sudo ./demo-install.sh` from a
+copy of `dist/`. See `claude-desktop-vm-test.md`.
+
 ### macOS and Linux, for a local build or a Linux fleet
 
 `install.sh` places the same files from a generated bundle, with no package.
