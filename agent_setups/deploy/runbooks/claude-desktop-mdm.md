@@ -203,6 +203,9 @@ Deploy the package. This is what an MDM does, and what `installer` does locally.
 sudo installer -pkg dist/claude-desktop-<version>.pkg -target /
 ```
 
+To install all three packages on one device, run `sudo ./demo-install.sh` from a
+copy of `dist/`. See `claude-desktop-vm-test.md`.
+
 ### macOS and Linux, for a local build or a Linux fleet
 
 `install.sh` places the same files from a generated bundle, with no package.
@@ -330,7 +333,7 @@ So the script installs `ug` at first login, in the user's own session:
 1. It resolves `uv` by absolute path, because a LaunchAgent inherits a minimal
    `PATH`. It checks `$UV_BIN`, then `~/.local/bin/uv`, then Homebrew, then
    `/usr/local/bin`. It never installs `uv`.
-2. It runs `uv tool install git+https://github.com/databricks/ucode`.
+2. It runs `uv tool install git+https://github.com/databricks/unity-gateway`.
 3. It resolves `ug` again, then continues to the SSO login.
 
 A failure is never fatal. The script logs it and exits 0, and the next login retries.

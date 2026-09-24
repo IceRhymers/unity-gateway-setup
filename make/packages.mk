@@ -52,10 +52,21 @@ claude-desktop-pkg: | ensure-profile-quiet ## Build the macOS .pkg that places t
 
 .PHONY: packages
 packages: coding-agents-pkg claude-desktop-pkg ug-bootstrap-pkg | ensure-profile-quiet ## Build every macOS installer package (generate the bundles first; PROFILE=, PKG_SIGN_ID=, ARGS=)
+	@# Ship the operator scripts beside the packages. demo-install.sh installs all
+	@# three in one step, and it tells the operator to run uninstall-pkgs.sh to undo
+	@# them, so both scripts must land in dist/ together.
+	@mkdir -p "$(DIST_DIR)"
+	@cp $(DEMO_INSTALL_SH) $(UNINSTALL_PKGS_SH) "$(DIST_DIR)/"
+	@chmod 755 "$(DIST_DIR)/demo-install.sh" "$(DIST_DIR)/uninstall-pkgs.sh"
 	@echo ""
 	@echo "[packages] Built in $(DIST_DIR)/:"
 	@ls -1 "$(DIST_DIR)"/*-$(PKG_VERSION).pkg 2>/dev/null | sed 's/^/  /'
 	@echo ""
+	@echo "[packages] Operator scripts copied into $(DIST_DIR)/:"
+	@echo "  demo-install.sh     installs all three packages in one step (run it on the device)"
+	@echo "  uninstall-pkgs.sh   removes them again, by receipt"
+	@echo ""
+	@echo "[packages] On the device:  sudo ./demo-install.sh"
 	@echo "[packages] Install order on a device: any. They share no file."
 	@echo "[packages] Still needed, and NOT built here:"
 	@echo "  - the .mobileconfig, which the Claude Desktop app exports after an import"

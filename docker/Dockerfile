@@ -77,7 +77,7 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
 # UCODE_SOURCE is pinned to a commit SHA by default (reproducible builds). Override
 # with a mirror, a private URL with token, or a local path — mirrors the
 # NPM_REGISTRY override pattern.
-ARG UCODE_SOURCE="git+https://github.com/databricks/ucode@95999aa5188951662ac1ccc95e1c05599d601a32"
+ARG UCODE_SOURCE="git+https://github.com/databricks/unity-gateway@95999aa5188951662ac1ccc95e1c05599d601a32"
 # PYPI_INDEX: if the build host resolves PyPI through a proxy/mirror, the Makefile
 # forwards it here (from uv's global config, mirroring NPM_REGISTRY) so uv can
 # fetch ucode's build backend. Empty (default) uses public PyPI, so builds on

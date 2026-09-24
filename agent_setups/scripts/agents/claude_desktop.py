@@ -119,7 +119,7 @@ UV_CANDIDATE_PATHS = (
 # What the bootstrap installs when ug is absent. Unpinned by default, which matches
 # `ug upgrade` (it runs `uv tool install --reinstall` against the same URL) and this
 # repo's treatment of ug as a self-updating tool. Pass --ug-ref to pin a fleet.
-UG_GIT_URL = "git+https://github.com/databricks/ucode"
+UG_GIT_URL = "git+https://github.com/databricks/unity-gateway"
 
 # The default reverse-DNS label for the LaunchAgent. Override with
 # --launchagent-label. The plist filename follows the label in the runbook, but
